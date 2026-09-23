@@ -1,14 +1,13 @@
-# security-auditor-mcp
+# CodeSentinel
 
 **Phase 1: MCP Foundation.** A Model Context Protocol (MCP) server that acts
 as a controlled, sandboxed bridge between an AI client (ChatGPT, Codex, Claude,
 or any MCP-compatible client) and a local project directory.
 
-This phase implements five read-only inspection tools plus the security
+The foundation implements five read-only inspection tools plus the security
 plumbing (path sandboxing, command allowlisting, timeouts, validation,
 logging) that later phases (vulnerability detection, AI remediation,
-runtime attack-testing) will build on. No security-auditing logic lives
-here yet -- this is purely the foundation.
+runtime attack-testing) build on.
 
 ## Tools provided
 
@@ -19,8 +18,10 @@ here yet -- this is purely the foundation.
 | search_files | Search file contents for a text or regex pattern. |
 | get_project_info | Detect project type, package manager, git branch, file counts. |
 | run_command | Execute an allowlisted, read-only shell command inside the project root, with a timeout. |
+| analyze_project | Phase 2 project discovery and framework detection. |
+| scan_project | Phase 3 deterministic static security analysis. |
 
-All five tools:
+All tools:
 - Validate input with strict Zod schemas (unknown keys rejected, bounded lengths/sizes).
 - Are sandboxed to a single configured PROJECT_ROOT -- path traversal, absolute paths, null bytes, and symlink escapes are all rejected.
 - Return structured JSON results (never raw exceptions) with a stable error-code vocabulary.
@@ -62,7 +63,7 @@ Design principles:
 ## Installation
 
     git clone <this-repo-url>
-    cd security-auditor-mcp
+    cd codesentinel
     npm install
     npm run build
 
@@ -104,7 +105,7 @@ Example (Claude Desktop-style config):
       "mcpServers": {
         "security-auditor": {
           "command": "node",
-          "args": ["/absolute/path/to/security-auditor-mcp/dist/index.js"],
+          "args": ["/absolute/path/to/codesentinel/dist/index.js"],
           "env": {
             "PROJECT_ROOT": "/absolute/path/to/the/project/you/want/to/audit"
           }
@@ -112,9 +113,9 @@ Example (Claude Desktop-style config):
       }
     }
 
-After connecting, the client will see five tools: list_files, read_file,
-search_files, get_project_info, and run_command, each with a JSON Schema
-description of its inputs.
+After connecting, the client will see list_files, read_file, search_files,
+get_project_info, run_command, analyze_project, and scan_project, each with a
+JSON Schema description of its inputs.
 
 ### Development mode
 
@@ -126,10 +127,11 @@ Runs the server directly from TypeScript source via tsx, without a build step.
 
     npm test
 
-This runs the full unit + security test suite (90 tests across 5 files)
-covering: path traversal and symlink-escape attempts, invalid/malformed
-input for every tool, command allowlist enforcement, timeout enforcement,
-output truncation, and end-to-end tool-handler behavior.
+This runs the full Phase 1 + Phase 2 + Phase 3 test suite covering: path
+traversal and symlink-escape attempts, invalid/malformed input for every tool,
+command allowlist enforcement, timeout enforcement, output truncation, project
+discovery, static security rules, ignored/generated directories, malformed
+files, large files, duplicate findings, and end-to-end tool-handler behavior.
 
 ## Error codes
 
@@ -148,12 +150,11 @@ All tool failures return a JSON body of the shape { "error": CODE, "message": ".
 | COMMAND_FAILED | Command could not be spawned or errored at the OS level. |
 | INTERNAL_ERROR | Unexpected internal error; details are not leaked to the client. |
 
-## What Phase 1 deliberately does NOT do
+## What CodeSentinel deliberately does NOT do yet
 
-This is a foundation layer only. It does not: scan for vulnerabilities,
-detect insecure code patterns, call any AI model for remediation, or
-perform runtime attack-testing against the target project. Those are
-planned for later phases and will be built on top of these five tools.
+CodeSentinel does not perform runtime exploitation, API route crawling,
+authentication testing, automatic code modification, AI-generated fixes, or
+post-fix re-testing. Phase 3 is deterministic static analysis only.
 
 
 ---
@@ -279,15 +280,101 @@ The full ProjectProfile shape:
   "not yet implemented" warning when Python markers are found, rather than
   silently returning an empty/misleading profile.
 
-## Running Phase 2 tests
+---
+
+# Phase 3: Static Security Analysis
+
+Phase 3 adds a deterministic security-rule engine and the `scan_project` MCP
+tool. It runs on top of the existing Phase 1 filesystem capabilities and Phase
+2 `ProjectProfile`; it does not duplicate sandbox/path traversal logic, and it
+does not ask an LLM whether a vulnerability exists.
+
+## New tool: scan_project
+
+| Tool | Description |
+|---|---|
+| scan_project | Runs static security rules against the authorized project and returns structured security findings. Read-only; performs no exploitation, mutation, or re-testing. |
+
+`scan_project` takes no input beyond the configured `PROJECT_ROOT`.
+
+## SecurityFinding model
+
+Findings are normalized and evidence-backed:
+
+    {
+      "id": "CS-NODE-003-...",
+      "ruleId": "CS-NODE-003",
+      "title": "Command injection indicator",
+      "category": "command_injection",
+      "severity": "critical",
+      "confidence": "medium",
+      "status": "suspected",
+      "file": "src/server.ts",
+      "line": 42,
+      "evidence": [
+        {
+          "file": "src/server.ts",
+          "line": 42,
+          "matchedText": "exec(`git log --author=${req.query.author}`)",
+          "context": "41: ...\n42: ...",
+          "reason": "exec/spawn-style command sink with request-derived input or dynamic command construction."
+        }
+      ],
+      "description": "...",
+      "remediation": "...",
+      "verificationStatus": "not_verified"
+    }
+
+Static pattern matches are normally reported as `suspected`, not `confirmed`.
+Supported statuses are `suspected`, `confirmed`, `false_positive`, and
+`verified`; Phase 3 currently emits `suspected` findings with
+`verificationStatus: "not_verified"`.
+
+## Initial deterministic rules
+
+The first Node.js/TypeScript/JavaScript rule set includes:
+
+- `CS-NODE-001` Hardcoded secrets and credentials.
+- `CS-NODE-002` SQL/NoSQL injection indicators.
+- `CS-NODE-003` Command injection indicators.
+- `CS-NODE-004` Path traversal indicators.
+- `CS-NODE-005` SSRF indicators.
+- `CS-NODE-006` XSS indicators.
+- `CS-NODE-007` Insecure CORS configuration.
+- `CS-NODE-008` Missing or weak authentication indicators.
+- `CS-NODE-009` Broken authorization indicators.
+- `CS-NODE-010` Unsafe file upload configuration.
+- `CS-NODE-011` Dangerous deserialization indicators.
+- `CS-NODE-012` Insecure security configuration.
+- `CS-NODE-013` Exposed environment/configuration secrets.
+- `CS-NODE-014` Obviously dangerous dependency/package usage.
+
+Each rule has a unique ID, category, title, description, severity, confidence,
+detection logic, evidence requirements, remediation guidance, and
+false-positive guidance. Rules are registered through `src/security/ruleRegistry.ts`
+so additional Node rules, Python rules, or other ecosystem-specific rules can be
+added without modifying the scanner core.
+
+## Phase 3 architecture
+
+    src/security/
+      types.ts                 # SecurityFinding, SecurityRule, evidence/status/severity models
+      scanner.ts               # scanProject orchestration using discovery + Phase 1 file/search helpers
+      ruleRegistry.ts           # Rule registration and lookup
+      rules/
+        nodeRules.ts            # Initial deterministic Node/TS/JS rules
+
+## Running tests
 
     npm test
 
-runs the complete suite (Phase 1 + Phase 2 together): 138 tests across 6
-files, including the 45 discovery tests and the analyze_project end-to-end
-tests in registry.test.ts.
+runs the complete suite (Phase 1 + Phase 2 + Phase 3 together): 147 tests
+across 7 files. Phase 3 tests include positive and negative examples for every
+initial rule, malformed files, oversized files, duplicate finding suppression,
+ignored directories (`node_modules`, `dist`, `.git`, generated output), and
+keyword noise in comments, documentation, and unrelated strings.
 
-## Known limitations / what remains for Phase 3
+## Known limitations
 
 - Python, FastAPI, and Django are not yet implemented -- only recognized
   and reported as ecosystem: "python" with a clear warning.
@@ -299,8 +386,11 @@ tests in registry.test.ts.
   yet modeled.
 - GraphQL API layers (Apollo, GraphQL Yoga) are not yet detected as a
   distinct backend framework category.
-- No vulnerability detection, authentication vulnerability analysis,
-  authorization/IDOR testing, runtime exploitation, or automatic
-  remediation is implemented anywhere in Phase 2, as scoped. Phase 3 is
-  expected to consume the ProjectProfile produced here as its starting
-  context for that analysis.
+- Static findings can be false positives, especially for authentication and
+  authorization when enforcement happens globally, upstream, or in another
+  service layer.
+- Phase 3 does not build a full AST or dataflow graph yet; rules use
+  deterministic file search, line/context checks, package metadata, and
+  discovered env/config files.
+- Runtime exploitation, route discovery, auth testing, automatic fixes,
+  AI-generated remediation, and re-testing remain out of scope.
