@@ -100,7 +100,7 @@ function skipString(text: string, start: number): number {
 }
 
 /** Index of the bracket matching the one at `openIdx`, or -1. */
-export function findMatching(text: string, openIdx: number, limit = 30_000): number {
+export function findMatching(text: string, openIdx: number, limit = 200_000): number {
   const open = text.charAt(openIdx);
   const close = open === '(' ? ')' : open === '[' ? ']' : open === '{' ? '}' : '';
   if (close === '') return -1;
@@ -125,7 +125,7 @@ export function findMatching(text: string, openIdx: number, limit = 30_000): num
 export function readCallArgs(text: string, openIdx: number): { args: CallArg[]; endIdx: number } | null {
   if (text.charAt(openIdx) !== '(') return null;
   const args: CallArg[] = [];
-  const limit = Math.min(text.length, openIdx + 20_000);
+  const limit = Math.min(text.length, openIdx + 200_000);
   let depth = 0;
   let argStart = openIdx + 1;
   const pushArg = (end: number): void => {

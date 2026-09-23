@@ -1,4 +1,5 @@
 import { expressAdapter } from './adapters/express.js';
+import { fastifyAdapter } from './adapters/fastify.js';
 import type { FrameworkAdapter, RouteFramework } from './types.js';
 
 /**
@@ -16,3 +17,4 @@ export function getAdapters(): FrameworkAdapter[] {
 }
 
 registerAdapter(expressAdapter);
+registerAdapter(fastifyAdapter);
