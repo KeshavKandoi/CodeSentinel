@@ -1,0 +1,10 @@
+{
+  "name": "fastify-routes-fixture",
+  "version": "1.0.0",
+  "dependencies": {
+    "fastify": "^4.28.0",
+    "@fastify/jwt": "^8.0.0",
+    "@fastify/multipart": "^8.0.0",
+    "@fastify/auth": "^4.6.0"
+  }
+}
