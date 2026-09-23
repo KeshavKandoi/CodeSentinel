@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   });
 
   const server = new Server(
-    { name: 'security-auditor-mcp', version: '1.0.0' },
+    { name: 'CodeSentinel', version: '1.0.0' },
     { capabilities: { tools: {} } }
   );
 
