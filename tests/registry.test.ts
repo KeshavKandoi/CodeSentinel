@@ -12,10 +12,10 @@ function getTool(name: string) {
 }
 
 describe('tool registry shape', () => {
-  it('exposes the Phase 1 tools plus Phase 2 and Phase 3 tools', () => {
+  it('exposes the Phase 1 tools plus Phase 2, 3 and 4 tools', () => {
     const names = toolDefinitions.map((t) => t.name).sort();
     expect(names).toEqual(
-      ['analyze_project', 'get_project_info', 'list_files', 'read_file', 'run_command', 'scan_project', 'search_files'].sort()
+      ['analyze_project', 'discover_routes', 'get_project_info', 'list_files', 'read_file', 'run_command', 'scan_project', 'search_files'].sort()
     );
   });
 
