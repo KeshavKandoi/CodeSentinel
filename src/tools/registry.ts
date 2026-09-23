@@ -7,6 +7,7 @@ import {
   searchFilesSchema,
   getProjectInfoSchema,
   runCommandSchema,
+  scanProjectSchema,
   safeValidate,
 } from '../validation/schemas.js';
 import { listFiles, readFile, searchFiles } from '../fs/fsOperations.js';
@@ -16,6 +17,7 @@ import type { ToolOutcome } from '../types.js';
 import { ok, err } from '../types.js';
 import { analyzeProjectSchema } from '../validation/schemas.js';
 import { runProjectDiscovery } from '../discovery/projectDiscovery.js';
+import { scanProject } from '../security/scanner.js';
 
 
 export interface McpToolResponse {
@@ -160,6 +162,24 @@ export const toolDefinitions: ToolDefinition[] = [
       } catch (e) {
         logger.error('analyze_project_failed', { message: (e as Error).message });
         return toMcpResponse(err('INTERNAL_ERROR', 'Project analysis failed unexpectedly.'));
+      }
+    },
+  },
+  {
+    name: 'scan_project',
+    description:
+      'Run deterministic Phase 3 static security analysis against the authorized project. Returns normalized SecurityFinding objects with rule IDs, severity, confidence, status, source evidence, remediation, and verification status. Read-only; does not exploit, modify, or retest code.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(scanProjectSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      logger.info('tool_execution', { tool: 'scan_project' });
+      try {
+        const result = await scanProject(config);
+        return toMcpResponse(result);
+      } catch (e) {
+        logger.error('scan_project_failed', { message: (e as Error).message });
+        return toMcpResponse(err('INTERNAL_ERROR', 'Security scan failed unexpectedly.'));
       }
     },
   },
