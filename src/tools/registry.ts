@@ -13,6 +13,10 @@ import { listFiles, readFile, searchFiles } from '../fs/fsOperations.js';
 import { getProjectInfo } from './projectInfo.js';
 import { runCommand, ALLOWED_COMMANDS } from '../exec/commandExecutor.js';
 import type { ToolOutcome } from '../types.js';
+import { ok, err } from '../types.js';
+import { analyzeProjectSchema } from '../validation/schemas.js';
+import { runProjectDiscovery } from '../discovery/projectDiscovery.js';
+
 
 export interface McpToolResponse {
   content: Array<{ type: 'text'; text: string }>;
@@ -139,6 +143,24 @@ export const toolDefinitions: ToolDefinition[] = [
       logger.info('tool_execution', { tool: 'get_project_info' });
       const result = getProjectInfo(config);
       return toMcpResponse(result);
+    },
+  },
+  {
+    name: 'analyze_project',
+    description:
+      'Analyze the project to detect its programming language(s), package manager, frontend/backend frameworks, database, ORM, test framework, entry points, build/start/test scripts, Docker configuration, environment/config files, and authentication-related dependencies. Returns a normalized ProjectProfile with evidence for every detected item. Read-only; does not perform vulnerability or security analysis.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(analyzeProjectSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      logger.info('tool_execution', { tool: 'analyze_project' });
+      try {
+        const profile = runProjectDiscovery(config.projectRoot);
+        return toMcpResponse(ok(profile));
+      } catch (e) {
+        logger.error('analyze_project_failed', { message: (e as Error).message });
+        return toMcpResponse(err('INTERNAL_ERROR', 'Project analysis failed unexpectedly.'));
+      }
     },
   },
   {
