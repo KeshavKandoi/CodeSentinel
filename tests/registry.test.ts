@@ -12,9 +12,11 @@ function getTool(name: string) {
 }
 
 describe('tool registry shape', () => {
-  it('exposes exactly the five Phase 1 tools', () => {
+  it('exposes the five Phase 1 tools plus the Phase 2 analyze_project tool', () => {
     const names = toolDefinitions.map((t) => t.name).sort();
-    expect(names).toEqual(['get_project_info', 'list_files', 'read_file', 'run_command', 'search_files'].sort());
+    expect(names).toEqual(
+      ['analyze_project', 'get_project_info', 'list_files', 'read_file', 'run_command', 'search_files'].sort()
+    );
   });
 
   it('every tool has a non-empty description and inputSchema', () => {
@@ -107,5 +109,32 @@ describe('run_command handler', () => {
   it('returns UNKNOWN_TOOL-shaped behavior is out of scope here (handled in index.ts), but confirms handler never throws on odd input', async () => {
     const response = await getTool('run_command').handler(config, null);
     expect(response.isError).toBe(true);
+  });
+});
+
+describe('analyze_project handler', () => {
+  it('returns a well-formed ProjectProfile for the configured project root', async () => {
+    const response = await getTool('analyze_project').handler(config, {});
+    expect(response.isError).toBe(false);
+    const parsed = JSON.parse(response.content[0].text);
+    expect(parsed.ecosystem).toBe('node');
+    expect(parsed.projectName).toBe('fixture');
+    expect(Array.isArray(parsed.languages)).toBe(true);
+    expect(Array.isArray(parsed.dependencies)).toBe(true);
+    expect(parsed).toHaveProperty('frameworks');
+    expect(parsed).toHaveProperty('docker');
+    expect(parsed).toHaveProperty('warnings');
+  });
+
+  it('rejects unexpected input fields (strict schema, no params expected)', async () => {
+    const response = await getTool('analyze_project').handler(config, { extra: 'nope' });
+    expect(response.isError).toBe(true);
+    const parsed = JSON.parse(response.content[0].text);
+    expect(parsed.error).toBe('INVALID_INPUT');
+  });
+
+  it('never throws even if called with null input', async () => {
+    const response = await getTool('analyze_project').handler(config, null);
+    expect(response.isError).toBe(false); // null coerces to {} default, same as get_project_info's pattern
   });
 });
