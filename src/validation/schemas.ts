@@ -85,3 +85,10 @@ export type AnalyzeProjectInput = z.infer<typeof analyzeProjectSchema>;
  */
 export const scanProjectSchema = z.object({}).strict();
 export type ScanProjectInput = z.infer<typeof scanProjectSchema>;
+
+/**
+ * Phase 4: discover_routes takes no input beyond PROJECT_ROOT. It statically
+ * inventories the application's externally reachable attack surface.
+ */
+export const discoverRoutesSchema = z.object({}).strict();
+export type DiscoverRoutesInput = z.infer<typeof discoverRoutesSchema>;
