@@ -69,3 +69,11 @@ export function safeValidate<T>(
     .join('; ');
   return { ok: false, message };
 }
+
+/**
+ * Phase 2: analyze_project takes no input beyond the configured
+ * PROJECT_ROOT (same pattern as get_project_info) — analysis always runs
+ * against the whole sandboxed project.
+ */
+export const analyzeProjectSchema = z.object({}).strict();
+export type AnalyzeProjectInput = z.infer<typeof analyzeProjectSchema>;
