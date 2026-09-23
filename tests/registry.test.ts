@@ -12,10 +12,10 @@ function getTool(name: string) {
 }
 
 describe('tool registry shape', () => {
-  it('exposes the five Phase 1 tools plus the Phase 2 analyze_project tool', () => {
+  it('exposes the Phase 1 tools plus Phase 2 and Phase 3 tools', () => {
     const names = toolDefinitions.map((t) => t.name).sort();
     expect(names).toEqual(
-      ['analyze_project', 'get_project_info', 'list_files', 'read_file', 'run_command', 'search_files'].sort()
+      ['analyze_project', 'get_project_info', 'list_files', 'read_file', 'run_command', 'scan_project', 'search_files'].sort()
     );
   });
 
@@ -136,5 +136,24 @@ describe('analyze_project handler', () => {
   it('never throws even if called with null input', async () => {
     const response = await getTool('analyze_project').handler(config, null);
     expect(response.isError).toBe(false); // null coerces to {} default, same as get_project_info's pattern
+  });
+});
+
+describe('scan_project handler', () => {
+  it('returns a well-formed SecurityScanResult for the configured project root', async () => {
+    const response = await getTool('scan_project').handler(config, {});
+    expect(response.isError).toBe(false);
+    const parsed = JSON.parse(response.content[0].text);
+    expect(parsed.project.ecosystem).toBe('node');
+    expect(Array.isArray(parsed.rulesRun)).toBe(true);
+    expect(Array.isArray(parsed.findings)).toBe(true);
+    expect(parsed.summary).toHaveProperty('total');
+  });
+
+  it('rejects unexpected input fields (strict schema, no params expected)', async () => {
+    const response = await getTool('scan_project').handler(config, { extra: 'nope' });
+    expect(response.isError).toBe(true);
+    const parsed = JSON.parse(response.content[0].text);
+    expect(parsed.error).toBe('INVALID_INPUT');
   });
 });
