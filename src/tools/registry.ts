@@ -18,6 +18,8 @@ import { ok, err } from '../types.js';
 import { analyzeProjectSchema } from '../validation/schemas.js';
 import { runProjectDiscovery } from '../discovery/projectDiscovery.js';
 import { scanProject } from '../security/scanner.js';
+import { discoverRoutesSchema } from '../validation/schemas.js';
+import { discoverRoutes } from '../routes/engine.js';
 
 
 export interface McpToolResponse {
@@ -180,6 +182,23 @@ export const toolDefinitions: ToolDefinition[] = [
       } catch (e) {
         logger.error('scan_project_failed', { message: (e as Error).message });
         return toMcpResponse(err('INTERNAL_ERROR', 'Security scan failed unexpectedly.'));
+      }
+    },
+  },
+  {
+    name: 'discover_routes',
+    description:
+      'Run Phase 4 static attack-surface discovery. Uses the Phase 2 ProjectProfile to pick framework adapters and returns a normalized inventory of externally reachable routes (method, path, source location, handler, middleware/dependencies, parameters, auth/authorization/upload indicators, public-or-protected, confidence, and evidence), plus a framework summary, counts, and warnings. Read-only and static: never starts the application or sends HTTP requests.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(discoverRoutesSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      logger.info('tool_execution', { tool: 'discover_routes' });
+      try {
+        return toMcpResponse(discoverRoutes(config));
+      } catch (e) {
+        logger.error('discover_routes_failed', { message: (e as Error).message });
+        return toMcpResponse(err('INTERNAL_ERROR', 'Route discovery failed unexpectedly.'));
       }
     },
   },
