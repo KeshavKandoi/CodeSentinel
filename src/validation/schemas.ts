@@ -77,3 +77,11 @@ export function safeValidate<T>(
  */
 export const analyzeProjectSchema = z.object({}).strict();
 export type AnalyzeProjectInput = z.infer<typeof analyzeProjectSchema>;
+
+/**
+ * Phase 3: scan_project takes no input beyond PROJECT_ROOT. It performs
+ * deterministic, read-only static security analysis over the authorized
+ * project and returns structured findings with evidence.
+ */
+export const scanProjectSchema = z.object({}).strict();
+export type ScanProjectInput = z.infer<typeof scanProjectSchema>;
