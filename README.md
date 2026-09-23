@@ -154,3 +154,153 @@ This is a foundation layer only. It does not: scan for vulnerabilities,
 detect insecure code patterns, call any AI model for remediation, or
 perform runtime attack-testing against the target project. Those are
 planned for later phases and will be built on top of these five tools.
+
+
+---
+
+# Phase 2: Project Discovery and Framework Detection
+
+Phase 2 adds a **Project Discovery module** that analyzes a project's
+structure, manifests, lockfiles, and configuration files to determine what
+kind of software project CodeSentinel is looking at -- language, package
+manager, frameworks, database, ORM, test framework, entry points, scripts,
+Docker setup, config/env files, and authentication-related dependencies --
+before any security analysis is attempted. Detection is deterministic: it
+inspects real files and dependency names rather than asking an LLM to
+guess, and every detected item carries evidence and a confidence level.
+
+Phase 1's five tools (list_files, read_file, search_files, get_project_info,
+run_command) are unchanged. get_project_info still exists and still returns
+its original lightweight summary; analyze_project is new and provides the
+richer Phase 2 analysis.
+
+## New tool: analyze_project
+
+| Tool | Description |
+|---|---|
+| analyze_project | Runs full project discovery and returns a normalized ProjectProfile as structured JSON: languages, package manager, frontend/backend frameworks, database, ORM, test framework, entry points, scripts, dependencies, Docker info, config/env files, and auth indicators -- each with supporting evidence and a confidence level. Read-only; performs no vulnerability or security analysis. |
+
+Like get_project_info, it takes no input beyond the configured PROJECT_ROOT.
+
+## The ProjectProfile model
+
+Every detected technology is represented as a DetectedItem:
+
+    {
+      "name": "Express",
+      "confidence": "high",
+      "evidence": [
+        { "source": "package.json dependencies", "detail": "\"express\" (^4.19.2) listed as a dependency" },
+        { "source": "content-match:src/index.ts", "detail": "Import/usage pattern for Express found" }
+      ]
+    }
+
+confidence is "high", "medium", or "low" -- never a bare guess. A bare
+dependency listing alone is medium confidence; confidence rises to high
+only when corroborated by a matching config file and/or an actual
+import/usage pattern found in a likely source file. A config file whose
+name merely matches a framework's convention (e.g. a leftover
+next.config.js) is never sufficient on its own to report that framework --
+this was validated by an explicit negative-case test (see below).
+
+The full ProjectProfile shape:
+
+    {
+      projectName: string | null,
+      ecosystem: "node" | "python" | "unknown",
+      languages: DetectedItem[],
+      packageManager: DetectedItem | null,
+      frameworks: { frontend: DetectedItem[], backend: DetectedItem[] },
+      database: DetectedItem[],
+      orm: DetectedItem[],
+      testFramework: DetectedItem[],
+      entryPoints: EntryPoint[],       // path + confidence + evidence
+      scripts: Record<string, string>, // from package.json "scripts"
+      dependencies: DependencyInfo[],  // name, version, dev flag
+      docker: { hasDockerfile, hasCompose, files, evidence },
+      configFiles: string[],
+      envFiles: string[],              // filenames only, contents never read
+      authIndicators: DetectedItem[],  // presence of auth-related deps only
+      warnings: string[]               // e.g. malformed package.json
+    }
+
+## Architecture
+
+    src/discovery/
+      types.ts                # ProjectProfile, DetectedItem, Evidence, Confidence, etc.
+      manifestReader.ts        # Sandboxed, non-throwing file/JSON reading (built on Phase 1's pathGuard)
+      projectDiscovery.ts       # Top-level entry point: detects ecosystem, dispatches to a pipeline
+      node/
+        context.ts               # Parses package.json into a NodeAnalysisContext (merged dependency map)
+        language.ts               # TypeScript / JavaScript detection
+        packageManager.ts          # npm / yarn / pnpm detection via lockfiles
+        frameworks.ts               # Backend (Express, NestJS, Fastify, Koa) and frontend (Next.js, React, Vue, Angular) detection
+        dataLayer.ts                 # Database (Postgres, MySQL, MongoDB, SQLite, Redis) and ORM (Prisma, TypeORM, Sequelize, Mongoose, Drizzle) detection
+        testFramework.ts              # Jest / Vitest / Mocha / Jasmine / AVA detection
+        authIndicators.ts              # Presence-only detection of auth-related dependencies
+        entryPoints.ts                  # Combines package.json main/start script + conventional filenames
+        dockerAndConfig.ts               # Dockerfile/compose, config file, and env file presence
+        nodeDiscovery.ts                  # Orchestrates all of the above into one ProjectProfile
+    tests/
+      fixtures/
+        express-ts/           # Express + TypeScript + Prisma + Postgres + Jest + Docker + JWT/bcrypt
+        nextjs-app/            # Next.js + React + Mongoose + MongoDB + next-auth + Vitest
+        generic-node/            # Plain Node.js app with a decoy next.config.js (negative-case fixture)
+        malformed-package/        # Deliberately invalid package.json (crash-safety fixture)
+      discovery/
+        projectDiscovery.test.ts  # 45 tests across all four fixtures
+      registry.test.ts             # (extended) analyze_project end-to-end tests
+
+## Design principles (Phase 2 specific)
+
+- Evidence over assertion. Every DetectedItem explains itself; nothing is
+  reported as a bare fact. This is designed so a downstream LLM consuming
+  this JSON can reason about how trustworthy each detection is, rather
+  than treating the whole profile as ground truth.
+- Dependencies are authoritative; config files corroborate. Framework
+  detection requires a real dependency entry in package.json. A
+  similarly-named config file (e.g. next.config.js) can raise confidence
+  from medium to high, but can never trigger detection by itself -- this
+  was a deliberate fix after an initial implementation produced a false
+  positive on the generic-node fixture's decoy file.
+- Never throws. All file access goes through manifestReader.ts, which
+  wraps every read in try/catch and treats "file missing" and "file
+  unreadable" as "not detected" rather than an error. A malformed
+  package.json produces a warning in the profile, not an exception --
+  verified by the malformed-package fixture.
+- Extensible to other ecosystems without rewriting. projectDiscovery.ts
+  picks an ecosystem via cheap marker-file checks (package.json -> node;
+  requirements.txt/pyproject.toml/setup.py/Pipfile -> python) and dispatches
+  to an ecosystem-specific pipeline. Node's pipeline lives entirely under
+  discovery/node/; adding Python support later means adding a sibling
+  discovery/python/ pipeline and one new dispatch branch, with zero changes
+  to existing Node detectors, the ProjectProfile type, or the MCP tool
+  layer. Phase 2 already reports ecosystem: "python" with an honest
+  "not yet implemented" warning when Python markers are found, rather than
+  silently returning an empty/misleading profile.
+
+## Running Phase 2 tests
+
+    npm test
+
+runs the complete suite (Phase 1 + Phase 2 together): 138 tests across 6
+files, including the 45 discovery tests and the analyze_project end-to-end
+tests in registry.test.ts.
+
+## Known limitations / what remains for Phase 3
+
+- Python, FastAPI, and Django are not yet implemented -- only recognized
+  and reported as ecosystem: "python" with a clear warning.
+- Monorepos / multi-package workspaces (e.g. Turborepo, Nx, npm workspaces)
+  are not specially handled; discovery runs against a single package.json
+  at the project root.
+- Framework detection covers Express, NestJS, Fastify, Koa, Next.js, React,
+  Vue, and Angular. Other frameworks (Remix, SvelteKit, Hapi, etc.) are not
+  yet modeled.
+- GraphQL API layers (Apollo, GraphQL Yoga) are not yet detected as a
+  distinct backend framework category.
+- No vulnerability detection, authentication vulnerability analysis,
+  authorization/IDOR testing, runtime exploitation, or automatic
+  remediation is implemented anywhere in Phase 2, as scoped. Phase 3 is
+  expected to consume the ProjectProfile produced here as its starting
+  context for that analysis.
