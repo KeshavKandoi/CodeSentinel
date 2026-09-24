@@ -694,6 +694,17 @@ finding-to-evidence-to-step traceability. The capability plan exposes Phase 9
 remediation as a separate controlled handoff; the orchestrator never edits
 source files itself.
 
+`dispatch_security_action` is the narrow agent-facing action boundary. Its
+allowlist contains only existing read-only/security-analysis capabilities and
+the bounded audit workflow actions. Each dispatch validates action-specific
+arguments, executes the existing implementation, and records the action name,
+redacted input summary, result status, duration, failure details, object IDs,
+and evidence references on the audit step. Unknown actions, `run_command`,
+remediation mutation actions, malformed arguments, traversal, unsafe targets,
+and oversized results are rejected. Repeated non-inspection actions are
+deduplicated, while runtime blocks remain blocked outcomes rather than being
+promoted to verified findings.
+
 Every state-changing orchestration operation is validated, bounded by steps,
 hypotheses, evidence references, verification requests, output bytes, and
 elapsed time, and recorded with timestamps, status, linked investigation steps,

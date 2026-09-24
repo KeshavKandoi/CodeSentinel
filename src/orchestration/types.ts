@@ -7,6 +7,7 @@ export const AUDIT_FOCUSES = ['general', 'authentication', 'authorization', 'api
 export type AuditFocus = (typeof AUDIT_FOCUSES)[number];
 
 export type AuditToolName =
+  | 'dispatch_security_action'
   | 'start_security_audit'
   | 'plan_security_investigation'
   | 'run_audit_analysis'
@@ -14,6 +15,26 @@ export type AuditToolName =
   | 'request_audit_verification'
   | 'complete_security_audit'
   | 'generate_security_audit_report';
+
+export const ORCHESTRATION_ACTIONS = [
+  'get_security_audit_state',
+  'plan_security_investigation',
+  'run_audit_analysis',
+  'record_audit_hypothesis',
+  'request_audit_verification',
+  'complete_security_audit',
+  'generate_security_audit_report',
+  'list_files',
+  'read_file',
+  'search_files',
+  'get_project_info',
+  'analyze_project',
+  'scan_project',
+  'discover_routes',
+  'analyze_access_control',
+  'list_verification_cases',
+] as const;
+export type OrchestrationAction = (typeof ORCHESTRATION_ACTIONS)[number];
 
 export interface AuditLimits {
   maxSteps: number;
@@ -43,7 +64,13 @@ export interface AuditStep {
   summary: string;
   investigationStepIds: string[];
   evidenceCount: number;
+  evidenceRefs?: string[];
   objectIds: string[];
+  actionName?: string;
+  inputSummary?: string;
+  resultStatus?: 'completed' | 'blocked' | 'failed';
+  durationMs?: number;
+  failure?: { code: string; message: string } | null;
 }
 
 export type AuditHypothesisStatus = 'proposed' | 'linked' | 'verified' | 'not_reproduced' | 'inconclusive' | 'blocked';

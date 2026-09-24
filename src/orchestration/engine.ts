@@ -1,14 +1,24 @@
 import crypto from 'node:crypto';
+import { z } from 'zod';
 import type { AppConfig } from '../config.js';
+import { listFiles, readFile, searchFiles } from '../fs/fsOperations.js';
+import { getProjectInfo } from '../tools/projectInfo.js';
+import { runProjectDiscovery } from '../discovery/projectDiscovery.js';
+import { scanProject } from '../security/scanner.js';
+import { discoverRoutes } from '../routes/engine.js';
+import { analyzeAccessControl } from '../access/engine.js';
+import { listVerificationCases } from '../runtime/engine.js';
 import { getInvestigation, recordHypothesis, requestRuntimeVerification, runSecurityAnalysis, startInvestigation } from '../investigation/orchestrator.js';
 import type { SecurityInvestigation } from '../investigation/types.js';
 import { generateSecurityReport } from '../report/engine.js';
 import { detachedRedacted, redactReportValue } from '../report/redaction.js';
 import type { SecurityReport, SecurityReportFinding } from '../report/types.js';
 import { err, ok, type ToolErrorCode, type ToolOutcome } from '../types.js';
-import type { RecordAuditHypothesisInput, RuntimeVerificationRequestInput, StartSecurityAuditInput } from '../validation/schemas.js';
+import { analyzeAccessControlSchema, analyzeProjectSchema, discoverRoutesSchema, getProjectInfoSchema, listFilesSchema, listVerificationCasesSchema, readFileSchema, scanProjectSchema, searchFilesSchema, recordAuditHypothesisSchema, runtimeVerificationRequestSchema } from '../validation/schemas.js';
+import type { DispatchSecurityActionInput, RecordAuditHypothesisInput, RuntimeVerificationRequestInput, StartSecurityAuditInput } from '../validation/schemas.js';
 import { buildCapabilityPlan, FOCUS_FINDING_CATEGORIES, inferFocus, scopesFor } from './planner.js';
-import type { AuditHypothesis, AuditLimits, AuditSession, AuditStateSummary, AuditStatus, AuditStep, AuditToolName, CapabilityPlan, FindingTrace } from './types.js';
+import type { AuditHypothesis, AuditLimits, AuditSession, AuditStateSummary, AuditStatus, AuditStep, AuditToolName, CapabilityPlan, FindingTrace, OrchestrationAction } from './types.js';
+import { ORCHESTRATION_ACTIONS } from './types.js';
 
 export const AUDIT_OBJECTIVE_NOTICE = 'An objective describes what to review. It is not a finding and not a claim that a vulnerability exists.';
 export const DEFAULT_LIMITS: AuditLimits = { maxSteps: 25, maxHypotheses: 10, maxEvidenceRefs: 100, maxVerificationRequests: 5, maxOutputBytes: 60_000, maxElapsedMs: 300_000 };
@@ -36,10 +46,12 @@ const isTerminal = (status: AuditStatus): boolean => TRANSITIONS[status].length 
 
 const sessions = new Map<string, AuditSession>();
 const locks = new Map<string, Promise<void>>();
+const dispatcherLocks = new Map<string, Promise<void>>();
 
 export function resetAuditSessionsForTests(): void {
   sessions.clear();
   locks.clear();
+  dispatcherLocks.clear();
 }
 
 const newId = (prefix: string): string => `${prefix}-${crypto.randomUUID()}`;
@@ -58,6 +70,15 @@ async function withLock<T>(key: string, operation: () => Promise<T>): Promise<T>
     release();
     if (locks.get(key) === current) locks.delete(key);
   }
+}
+
+async function withDispatcherLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = dispatcherLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  dispatcherLocks.set(key, current);
+  await previous;
+  try { return await operation(); } finally { release(); if (dispatcherLocks.get(key) === current) dispatcherLocks.delete(key); }
 }
 
 function notFound<T>(investigationId: string): ToolOutcome<T> {
@@ -541,5 +562,171 @@ export async function generateSecurityAuditReport(investigationId: string): Prom
       session.completedCapabilities.push('generate_security_audit_report');
     }
     return ok({ report: report.data, traceability: detachedRedacted(report.data.findings.map((f) => traceFinding(session, snapshot.data, f))) });
+  });
+}
+
+type DispatchResult = {
+  action: OrchestrationAction;
+  status: 'completed' | 'blocked' | 'failed';
+  durationMs: number;
+  stepId: string;
+  data: unknown;
+};
+
+const emptyActionArguments = z.object({}).strict();
+const safeActionText = (value: unknown): string => redactText(JSON.stringify(value) ?? '{}').slice(0, 1_000);
+const actionFailureIsBlocked = (code: ToolErrorCode): boolean => ['INVALID_INPUT', 'INVALID_TRANSITION', 'BUDGET_EXCEEDED', 'PATH_OUTSIDE_ROOT', 'PROJECT_BOUNDARY', 'TARGET_BLOCKED', 'COMMAND_NOT_ALLOWED', 'NOT_FOUND', 'NOT_A_FILE', 'NOT_A_DIRECTORY'].includes(code);
+
+function parseActionArguments<T>(schema: z.ZodType<T>, raw: Record<string, unknown>, investigationId?: string): ToolOutcome<T> {
+  if (investigationId && raw.investigationId !== undefined && raw.investigationId !== investigationId) return err('INVALID_INPUT', 'Action investigationId must match the orchestration session.');
+  const parsed = schema.safeParse(investigationId ? { ...raw, investigationId } : raw);
+  return parsed.success ? ok(parsed.data) : err('INVALID_INPUT', parsed.error.issues.map((issue) => `${issue.path.join('.') || 'arguments'}: ${issue.message}`).join('; '));
+}
+
+function actionEvidenceRefs(value: unknown, limit: number): string[] {
+  if (!value || typeof value !== 'object') return [];
+  const record = value as Record<string, unknown>;
+  const refs: string[] = [];
+  const listed = record.evidenceRefs && typeof record.evidenceRefs === 'object' ? (record.evidenceRefs as Record<string, unknown>).listed : null;
+  if (Array.isArray(listed)) for (const item of listed) if (item && typeof item === 'object' && typeof (item as Record<string, unknown>).id === 'string') refs.push((item as Record<string, string>).id);
+  if (Array.isArray(record.traceability)) for (const trace of record.traceability) if (trace && typeof trace === 'object' && Array.isArray((trace as Record<string, unknown>).evidence)) for (const evidence of (trace as Record<string, unknown>).evidence as unknown[]) if (evidence && typeof evidence === 'object' && typeof (evidence as Record<string, unknown>).id === 'string') refs.push((evidence as Record<string, string>).id);
+  if (Array.isArray(record.evidence)) for (const evidence of record.evidence) if (evidence && typeof evidence === 'object' && typeof (evidence as Record<string, unknown>).id === 'string') refs.push((evidence as Record<string, string>).id);
+  return [...new Set(refs)].slice(0, limit);
+}
+
+function annotateDispatchStep(session: AuditSession, beforeStepCount: number, action: OrchestrationAction, inputSummary: string, status: AuditStep['status'], durationMs: number, evidenceRefs: string[], objectIds: string[], failure: { code: string; message: string } | null): AuditStep {
+  const step = session.steps.slice(beforeStepCount).find((candidate) => !candidate.actionName && candidate.tool !== 'dispatch_security_action') ?? null;
+  if (step) {
+    step.actionName = action;
+    step.inputSummary = inputSummary;
+    step.resultStatus = status;
+    step.durationMs = durationMs;
+    step.failure = failure;
+    step.evidenceCount = Math.max(step.evidenceCount, evidenceRefs.length);
+    step.evidenceRefs = [...evidenceRefs].slice(0, 100);
+    step.objectIds = [...new Set([...step.objectIds, ...objectIds])].slice(0, 50);
+    return step;
+  }
+  const created = addStep(session, 'dispatch_security_action', status, failure ? `${action} failed: ${failure.message}` : `${action} completed.`, new Date(Date.now() - durationMs).toISOString(), { evidenceCount: evidenceRefs.length, objectIds: [action, ...objectIds].slice(0, 50) });
+  created.actionName = action;
+  created.inputSummary = inputSummary;
+  created.resultStatus = status;
+  created.durationMs = durationMs;
+  created.failure = failure;
+  created.evidenceRefs = [...evidenceRefs].slice(0, 100);
+  return created;
+}
+
+async function executeApprovedAction(config: AppConfig, action: OrchestrationAction, args: Record<string, unknown>, investigationId: string): Promise<ToolOutcome<unknown>> {
+  switch (action) {
+    case 'get_security_audit_state': {
+      const parsed = parseActionArguments(emptyActionArguments, args);
+      return parsed.ok ? getSecurityAuditState(investigationId) : parsed;
+    }
+    case 'plan_security_investigation': {
+      const parsed = parseActionArguments(emptyActionArguments, args);
+      return parsed.ok ? planSecurityInvestigation(investigationId) : parsed;
+    }
+    case 'run_audit_analysis': {
+      const parsed = parseActionArguments(emptyActionArguments, args);
+      return parsed.ok ? runAuditAnalysis(config, investigationId) : parsed;
+    }
+    case 'record_audit_hypothesis': {
+      const parsed = parseActionArguments(recordAuditHypothesisSchema, args, investigationId);
+      return parsed.ok ? recordAuditHypothesis(parsed.data) : parsed;
+    }
+    case 'request_audit_verification': {
+      const parsed = parseActionArguments(runtimeVerificationRequestSchema, args, investigationId);
+      return parsed.ok ? requestAuditVerification(config, parsed.data) : parsed;
+    }
+    case 'complete_security_audit': {
+      const parsed = parseActionArguments(emptyActionArguments, args);
+      return parsed.ok ? completeSecurityAudit(investigationId) : parsed;
+    }
+    case 'generate_security_audit_report': {
+      const parsed = parseActionArguments(emptyActionArguments, args);
+      return parsed.ok ? generateSecurityAuditReport(investigationId) : parsed;
+    }
+    case 'list_files': {
+      const parsed = parseActionArguments(listFilesSchema, args);
+      return parsed.ok ? listFiles(config, { dirPath: parsed.data.path, recursive: parsed.data.recursive, maxResults: parsed.data.maxResults }) : parsed;
+    }
+    case 'read_file': {
+      const parsed = parseActionArguments(readFileSchema, args);
+      return parsed.ok ? readFile(config, { filePath: parsed.data.path, maxBytes: parsed.data.maxBytes }) : parsed;
+    }
+    case 'search_files': {
+      const parsed = parseActionArguments(searchFilesSchema, args);
+      return parsed.ok ? searchFiles(config, { query: parsed.data.query, dirPath: parsed.data.path, caseSensitive: parsed.data.caseSensitive, isRegex: parsed.data.isRegex, maxResults: parsed.data.maxResults }) : parsed;
+    }
+    case 'get_project_info': {
+      const parsed = parseActionArguments(getProjectInfoSchema, args);
+      return parsed.ok ? getProjectInfo(config) : parsed;
+    }
+    case 'analyze_project': {
+      const parsed = parseActionArguments(analyzeProjectSchema, args);
+      return parsed.ok ? ok(runProjectDiscovery(config.projectRoot)) : parsed;
+    }
+    case 'scan_project': {
+      const parsed = parseActionArguments(scanProjectSchema, args);
+      return parsed.ok ? scanProject(config) : parsed;
+    }
+    case 'discover_routes': {
+      const parsed = parseActionArguments(discoverRoutesSchema, args);
+      return parsed.ok ? discoverRoutes(config) : parsed;
+    }
+    case 'analyze_access_control': {
+      const parsed = parseActionArguments(analyzeAccessControlSchema, args);
+      if (!parsed.ok) return parsed;
+      const routes = discoverRoutes(config);
+      return routes.ok ? ok(analyzeAccessControl(config, routes.data.entries)) : routes;
+    }
+    case 'list_verification_cases': {
+      const parsed = parseActionArguments(listVerificationCasesSchema, args);
+      return parsed.ok ? ok(listVerificationCases(config)) : parsed;
+    }
+  }
+}
+
+export async function dispatchSecurityAction(config: AppConfig, input: DispatchSecurityActionInput): Promise<ToolOutcome<DispatchResult>> {
+  return withDispatcherLock(input.investigationId, async () => {
+    const session = sessions.get(input.investigationId);
+    if (!session) return notFound(input.investigationId);
+    const pre = preflight(session, 'dispatch_security_action');
+    if (!pre.ok) return pre;
+    const inputSummary = safeActionText(input.arguments);
+    if (input.action !== 'get_security_audit_state' && session.steps.some((step) => step.actionName === input.action && step.inputSummary === inputSummary && step.resultStatus === 'completed')) {
+      return refuse(session, 'dispatch_security_action', 'DUPLICATE_OPERATION', `Action "${input.action}" with the same arguments has already executed.`);
+    }
+    const started = Date.now();
+    const beforeStepCount = session.steps.length;
+    let result: ToolOutcome<unknown>;
+    try {
+      result = await executeApprovedAction(config, input.action, input.arguments, input.investigationId);
+    } catch {
+      result = err('INTERNAL_ERROR', `Approved action "${input.action}" failed unexpectedly.`);
+    }
+    const durationMs = Date.now() - started;
+    if (!result.ok) {
+      const status: AuditStep['status'] = actionFailureIsBlocked(result.error.code) ? 'blocked' : 'failed';
+      const failure = { code: result.error.code, message: redactText(result.error.message).slice(0, 500) };
+      if (status === 'blocked') pushBlocked(session, 'dispatch_security_action', result.error.code, result.error.message); else pushError(session, `${result.error.code}: ${result.error.message}`);
+      annotateDispatchStep(session, beforeStepCount, input.action, inputSummary, status, durationMs, [], [], failure);
+      return err(result.error.code, result.error.message);
+    }
+    const data = detachedRedacted(result.data);
+    const serialized = JSON.stringify(data);
+    if (Buffer.byteLength(serialized, 'utf8') > session.limits.maxOutputBytes) {
+      const failure = { code: 'BUDGET_EXCEEDED', message: 'Approved action output exceeds the audit output limit.' };
+      pushBlocked(session, 'dispatch_security_action', failure.code, failure.message);
+      annotateDispatchStep(session, beforeStepCount, input.action, inputSummary, 'blocked', durationMs, [], [], failure);
+      return err('BUDGET_EXCEEDED', failure.message);
+    }
+    const evidenceRefs = actionEvidenceRefs(data, session.limits.maxEvidenceRefs);
+    const objectIds = data && typeof data === 'object' ? [input.investigationId, ...(('findings' in data && Array.isArray((data as Record<string, unknown>).findings)) ? ((data as Record<string, unknown>).findings as Array<Record<string, unknown>>).map((finding) => String(finding.findingId ?? '')).filter(Boolean) : [])] : [input.investigationId];
+    const blocked = input.action === 'request_audit_verification' && data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).verificationResults) && ((data as Record<string, unknown>).verificationResults as Array<Record<string, unknown>>).some((result) => result.status === 'blocked');
+    const actionStatus: DispatchResult['status'] = blocked ? 'blocked' : 'completed';
+    const step = annotateDispatchStep(session, beforeStepCount, input.action, inputSummary, actionStatus, durationMs, evidenceRefs, objectIds, null);
+    return ok({ action: input.action, status: actionStatus, durationMs, stepId: step.id, data });
   });
 }

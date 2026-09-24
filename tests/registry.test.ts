@@ -20,6 +20,7 @@ describe('tool registry shape', () => {
       'analyze_project',
       'apply_remediation',
       'complete_security_audit',
+      'dispatch_security_action',
       'discover_routes',
       'generate_security_audit_report',
       'generate_security_report',

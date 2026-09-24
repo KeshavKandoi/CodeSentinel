@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import type { McpToolResponse, ToolDefinition } from '../tools/registry.js';
 import type { ToolOutcome } from '../types.js';
-import { auditInvestigationIdSchema, recordAuditHypothesisSchema, runtimeVerificationRequestSchema, startSecurityAuditSchema } from '../validation/schemas.js';
+import { auditInvestigationIdSchema, dispatchSecurityActionSchema, recordAuditHypothesisSchema, runtimeVerificationRequestSchema, startSecurityAuditSchema } from '../validation/schemas.js';
 import {
   completeSecurityAudit, generateSecurityAuditReport, getSecurityAuditState, planSecurityInvestigation,
-  recordAuditHypothesis, requestAuditVerification, runAuditAnalysis, startSecurityAudit,
+  recordAuditHypothesis, requestAuditVerification, runAuditAnalysis, startSecurityAudit, dispatchSecurityAction,
 } from './engine.js';
 
 function respond<T>(outcome: ToolOutcome<T>): McpToolResponse {
@@ -25,6 +25,15 @@ function validate<S extends z.ZodType>(schema: S, raw: unknown): { ok: true; dat
 const idProps = { type: 'object', properties: { investigationId: { type: 'string' } }, required: ['investigationId'] };
 
 export const orchestrationToolDefinitions: ToolDefinition[] = [
+  {
+    name: 'dispatch_security_action',
+    description: 'Execute one explicitly allowlisted existing CodeSentinel read-only or security-analysis capability through an audit session. Shell execution, source mutation, arbitrary tools, and unapproved targets are not available.',
+    inputSchema: { type: 'object', properties: { investigationId: { type: 'string' }, action: { type: 'string' }, arguments: { type: 'object' } }, required: ['investigationId', 'action'] },
+    handler: async (config, raw) => {
+      const v = validate(dispatchSecurityActionSchema, raw);
+      return v.ok ? respond(await dispatchSecurityAction(config, v.data)) : invalid(v.message);
+    },
+  },
   {
     name: 'start_security_audit',
     description: 'Create a bounded security audit session from a security objective. The objective is what to review, not a finding. The external AI reasons; CodeSentinel executes deterministically and enforces limits.',

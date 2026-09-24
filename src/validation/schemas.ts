@@ -245,6 +245,7 @@ export type RemediationIdInput = z.infer<typeof remediationIdSchema>;
 // Phase 10: AI Security Orchestration
 // ---------------------------------------------------------------------------
 import { AUDIT_FOCUSES } from '../orchestration/types.js';
+import { ORCHESTRATION_ACTIONS } from '../orchestration/types.js';
 
 export const auditLimitsSchema = z.object({
   maxSteps: z.number().int().min(1).max(100).optional(),
@@ -281,3 +282,10 @@ export const recordAuditHypothesisSchema = z.object({
 export type StartSecurityAuditInput = z.infer<typeof startSecurityAuditSchema>;
 export type AuditInvestigationIdInput = z.infer<typeof auditInvestigationIdSchema>;
 export type RecordAuditHypothesisInput = z.infer<typeof recordAuditHypothesisSchema>;
+
+export const dispatchSecurityActionSchema = z.object({
+  investigationId: z.string().min(1).max(128),
+  action: z.enum(ORCHESTRATION_ACTIONS),
+  arguments: z.record(z.string(), z.unknown()).default({}),
+}).strict();
+export type DispatchSecurityActionInput = z.infer<typeof dispatchSecurityActionSchema>;
