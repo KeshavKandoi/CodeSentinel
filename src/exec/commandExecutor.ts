@@ -33,9 +33,14 @@ const DENYLISTED_SUBCOMMANDS: Record<string, Set<string>> = {
 };
 
 const SAFE_GIT_SUBCOMMANDS = new Set(['status', 'log', 'diff', 'branch', 'show', 'rev-parse']);
-const GIT_ESCAPE_OPTIONS = new Set(['-C', '--git-dir', '--work-tree', '--exec-path', '--upload-pack', '--config', '-c']);
+const GIT_ESCAPE_OPTIONS = new Set(['-C', '--git-dir', '--work-tree', '--exec-path', '--upload-pack', '--config', '--output', '--ext-diff', '--textconv', '--config-env', '-c']);
 const PATH_COMMANDS = new Set(['ls', 'cat', 'grep', 'find', 'wc']);
 const FIND_EXEC_OPTIONS = new Set(['-exec', '-execdir', '-delete', '-ok', '-okdir', '-fprint', '-fprint0']);
+const FILE_READING_OPTIONS: Record<string, Set<string>> = {
+  grep: new Set(['-f', '--file']),
+  find: new Set(['-files0-from']),
+  wc: new Set(['--files0-from']),
+};
 
 export interface RunCommandOptions {
   command: string;
@@ -86,6 +91,29 @@ export function validateCommand(opts: RunCommandOptions, _projectRoot?: string):
       }
     }
   }
+  if (PATH_COMMANDS.has(opts.command)) {
+    const fileOptions = FILE_READING_OPTIONS[opts.command];
+    if (fileOptions) {
+      for (let index = 0; index < opts.args.length; index += 1) {
+        const arg = opts.args[index]!;
+        const equal = arg.indexOf('=');
+        const option = equal >= 0 ? arg.slice(0, equal) : arg;
+        let value = equal >= 0 ? arg.slice(equal + 1) : null;
+        if (!fileOptions.has(option) && !(opts.command === 'grep' && arg.startsWith('-f') && arg.length > 2)) continue;
+        if (value === null) value = opts.args[index + 1] ?? '';
+        else if (opts.command === 'grep' && option === '-f' && arg.length > 2) value = arg.slice(2);
+        if (path.isAbsolute(value) || hasTraversalSegment(value)) {
+          return err('COMMAND_NOT_ALLOWED', 'Command file-option paths must remain inside the project root.');
+        }
+        if (!_projectRoot) continue;
+        try {
+          resolveExistingWithinRoot(_projectRoot, value);
+        } catch {
+          return err('COMMAND_NOT_ALLOWED', 'Command file-option paths must remain inside the project root.');
+        }
+      }
+    }
+  }
   if (opts.command === 'find' && opts.args.some((arg) => FIND_EXEC_OPTIONS.has(arg))) {
     return err('COMMAND_NOT_ALLOWED', 'find execution and deletion actions are not permitted.');
   }
@@ -124,6 +152,8 @@ export function runCommand(config: AppConfig, opts: RunCommandOptions): Promise<
     const stderrChunks: Buffer[] = [];
     let stdoutBytes = 0;
     let stderrBytes = 0;
+    let stdoutCaptureTruncated = false;
+    let stderrCaptureTruncated = false;
     let timedOut = false;
 
     let child;
@@ -148,16 +178,20 @@ export function runCommand(config: AppConfig, opts: RunCommandOptions): Promise<
     }, config.commandTimeoutMs);
 
     child.stdout?.on('data', (chunk: Buffer) => {
-      if (stdoutBytes < config.maxOutputBytes) {
-        stdoutChunks.push(chunk);
-        stdoutBytes += chunk.length;
-      }
+      const remaining = config.maxOutputBytes - stdoutBytes;
+      if (remaining <= 0) { stdoutCaptureTruncated = true; return; }
+      if (chunk.length > remaining) stdoutCaptureTruncated = true;
+      const bounded = chunk.subarray(0, remaining);
+      stdoutChunks.push(bounded);
+      stdoutBytes += bounded.length;
     });
     child.stderr?.on('data', (chunk: Buffer) => {
-      if (stderrBytes < config.maxOutputBytes) {
-        stderrChunks.push(chunk);
-        stderrBytes += chunk.length;
-      }
+      const remaining = config.maxOutputBytes - stderrBytes;
+      if (remaining <= 0) { stderrCaptureTruncated = true; return; }
+      if (chunk.length > remaining) stderrCaptureTruncated = true;
+      const bounded = chunk.subarray(0, remaining);
+      stderrChunks.push(bounded);
+      stderrBytes += bounded.length;
     });
 
     child.on('error', (e: Error) => {
@@ -179,8 +213,8 @@ export function runCommand(config: AppConfig, opts: RunCommandOptions): Promise<
         signal,
         stdout: stdoutRes.text,
         stderr: stderrRes.text,
-        stdoutTruncated: stdoutRes.truncated,
-        stderrTruncated: stderrRes.truncated,
+        stdoutTruncated: stdoutCaptureTruncated || stdoutRes.truncated,
+        stderrTruncated: stderrCaptureTruncated || stderrRes.truncated,
         timedOut,
         durationMs: Date.now() - startedAt,
       };
@@ -199,10 +233,14 @@ export function runCommand(config: AppConfig, opts: RunCommandOptions): Promise<
  * process's full environment (which may contain API keys/secrets used by
  * this MCP server itself) into commands run against the target project. */
 function buildSafeEnv(): NodeJS.ProcessEnv {
-  const allowedKeys = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'TERM'];
+  const allowedKeys = ['HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'TERM'];
   const safeEnv: NodeJS.ProcessEnv = {};
   for (const key of allowedKeys) {
     if (process.env[key] !== undefined) safeEnv[key] = process.env[key];
   }
+  // Never resolve an allowlisted command through a caller-controlled PATH.
+  // The MCP process environment may be attacker-influenced in an embedding
+  // host, so command allowlisting must include executable resolution.
+  safeEnv.PATH = '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
   return safeEnv;
 }
