@@ -124,11 +124,18 @@ export const runtimeTargetSchema = z
   })
   .strict();
 
+const boundedHeaderSchema = z
+  .record(z.string().min(1).max(128), z.string().max(4096).refine((value) => !/[\r\n]/.test(value), 'header values must not contain CR/LF'))
+  .superRefine((headers, ctx) => {
+    if (Object.keys(headers).length > 32) ctx.addIssue({ code: 'custom', message: 'too many session headers' });
+    if (JSON.stringify(headers).length > 32_000) ctx.addIssue({ code: 'custom', message: 'session headers are too large' });
+  });
+
 const testSessionSchema = z
   .object({
     id: z.string().min(1).max(128),
     kind: z.enum(['unauthenticated', 'authenticated']),
-    headers: z.record(z.string(), z.string()).optional(),
+    headers: boundedHeaderSchema.optional(),
   })
   .strict();
 
@@ -286,6 +293,9 @@ export type RecordAuditHypothesisInput = z.infer<typeof recordAuditHypothesisSch
 export const dispatchSecurityActionSchema = z.object({
   investigationId: z.string().min(1).max(128),
   action: z.enum(ORCHESTRATION_ACTIONS),
-  arguments: z.record(z.string(), z.unknown()).default({}),
+  arguments: z.record(z.string().min(1).max(128), z.unknown()).default({}).superRefine((args, ctx) => {
+    if (Object.keys(args).length > 32) ctx.addIssue({ code: 'custom', message: 'too many action arguments' });
+    if (JSON.stringify(args).length > 16_000) ctx.addIssue({ code: 'custom', message: 'action arguments are too large' });
+  }),
 }).strict();
 export type DispatchSecurityActionInput = z.infer<typeof dispatchSecurityActionSchema>;

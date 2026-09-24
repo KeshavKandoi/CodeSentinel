@@ -5,6 +5,7 @@ import {
   searchFilesSchema,
   getProjectInfoSchema,
   runCommandSchema,
+  dispatchSecurityActionSchema,
   safeValidate,
 } from '../src/validation/schemas.js';
 
@@ -135,6 +136,27 @@ describe('runCommandSchema', () => {
 
   it('rejects too many args (over the cap)', () => {
     const result = safeValidate(runCommandSchema, { command: 'ls', args: new Array(1000).fill('x') });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('bounded external-agent inputs', () => {
+  it('rejects oversized orchestration arguments', () => {
+    const result = safeValidate(dispatchSecurityActionSchema, {
+      investigationId: 'audit-1',
+      action: 'get_security_audit_state',
+      arguments: { oversized: 'x'.repeat(20_000) },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects excessive or CRLF-injected runtime session headers', async () => {
+    const { runtimeVerificationRequestSchema } = await import('../src/validation/schemas.js');
+    const result = safeValidate(runtimeVerificationRequestSchema, {
+      findingId: 'finding-1',
+      target: { allowedOrigin: 'http://127.0.0.1:3000' },
+      sessions: [{ id: 'user', kind: 'authenticated', headers: { Authorization: 'Bearer ok\r\nX-Injected: yes' } }],
+    });
     expect(result.ok).toBe(false);
   });
 });
