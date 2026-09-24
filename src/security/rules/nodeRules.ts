@@ -168,6 +168,23 @@ const xss = makeSearchRule(
   }
 );
 
+const openRedirect = makeSearchRule(
+  ruleBase({
+    id: 'CS-NODE-015',
+    category: 'open_redirect',
+    title: 'Open redirect indicator',
+    description: 'A redirect destination appears to be taken directly from request-controlled input.',
+    severity: 'medium',
+    confidence: 'medium',
+    evidenceRequirements: 'Redirect sink receives request-controlled URL data without an obvious same-origin or allowlist check.',
+    remediation: 'Allow only relative paths or destinations from an explicit origin allowlist.',
+    falsePositiveGuidance: 'A finding may be false positive when the destination is validated by a helper or strict allowlist before redirecting.',
+    languages: ['node'],
+  }),
+  String.raw`\b(?:res|reply)\.redirect\s*\(`,
+  (line) => /\b(?:res|reply)\.redirect\s*\(\s*(?:String\s*\(\s*)?(?:req\.(?:query|params|body)|request\.)/i.test(line)
+);
+
 const insecureCors = makeSearchRule(
   ruleBase({
     id: 'CS-NODE-007',
@@ -362,6 +379,7 @@ export const nodeSecurityRules: SecurityRule[] = [
   pathTraversal,
   ssrf,
   xss,
+  openRedirect,
   insecureCors,
   weakAuthentication,
   brokenAuthorization,

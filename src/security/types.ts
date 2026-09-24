@@ -11,6 +11,7 @@ export type SecurityCategory =
   | 'path_traversal'
   | 'ssrf'
   | 'xss'
+  | 'open_redirect'
   | 'cors'
   | 'authentication'
   | 'authorization'

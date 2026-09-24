@@ -48,6 +48,8 @@ app.get('/hello', (req, res) => {
   res.send(`<h1>${req.query.name}</h1>`);
 });
 
+app.get('/go', (req, res) => res.redirect(String(req.query.url)));
+
 app.post('/upload', upload.single('file'), (req, res) => res.json(req.file));
 
 app.post('/state', (req, res) => {
