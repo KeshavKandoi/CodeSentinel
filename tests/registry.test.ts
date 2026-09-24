@@ -12,10 +12,42 @@ function getTool(name: string) {
 }
 
 describe('tool registry shape', () => {
-  it('exposes the Phase 1 tools plus Phase 2 through 9 tools', () => {
+  it('exposes the Phase 1 tools plus Phase 2 through 10 tools', () => {
     const names = toolDefinitions.map((t) => t.name).sort();
     expect(names).toEqual(
-      ['analyze_access_control', 'analyze_project', 'apply_remediation', 'discover_routes', 'generate_security_report', 'get_investigation', 'get_project_info', 'get_security_agent_instructions', 'get_security_finding', 'list_files', 'list_verification_cases', 'propose_remediation', 'read_file', 'record_security_hypothesis', 'request_runtime_verification', 'rollback_remediation', 'run_command', 'run_security_analysis', 'scan_project', 'search_files', 'start_security_investigation', 'verify_finding', 'verify_remediation'].sort()
+      [
+      'analyze_access_control',
+      'analyze_project',
+      'apply_remediation',
+      'complete_security_audit',
+      'discover_routes',
+      'generate_security_audit_report',
+      'generate_security_report',
+      'get_investigation',
+      'get_project_info',
+      'get_security_agent_instructions',
+      'get_security_audit_state',
+      'get_security_finding',
+      'list_files',
+      'list_verification_cases',
+      'plan_security_investigation',
+      'propose_remediation',
+      'read_file',
+      'record_audit_hypothesis',
+      'record_security_hypothesis',
+      'request_audit_verification',
+      'request_runtime_verification',
+      'rollback_remediation',
+      'run_audit_analysis',
+      'run_command',
+      'run_security_analysis',
+      'scan_project',
+      'search_files',
+      'start_security_audit',
+      'start_security_investigation',
+      'verify_finding',
+      'verify_remediation',
+    ].sort()
     );
   });
 
