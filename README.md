@@ -597,6 +597,51 @@ disable SSRF/request limits, or perform destructive actions.
       text.ts                          # Source resolver: route/handler text extraction, string/comment stripping (pre-existing)
       engine.ts                         # NEW: orchestrates the above into AnalyzeAccessControlResult; state classification and finding generation
 
+## Phase 8 reporting and remediation intelligence
+
+Phase 8 turns a completed Phase 7 investigation into a bounded,
+evidence-backed `SecurityReport`. The external AI client reasons over the
+report; CodeSentinel constructs, validates, orders, redacts, and traces it.
+CodeSentinel does not contain an LLM API key, perform autonomous reasoning,
+modify application source, claim remediation was applied, or perform
+unrestricted penetration testing.
+
+    Codex / Claude Code / external AI
+                  |
+                  v
+             CodeSentinel MCP
+                  |
+                  v
+             Investigation
+                  |
+                  v
+                Evidence
+                  |
+                  v
+             Report Engine
+              /         \
+             v           v
+         Findings    Remediation
+                  |
+                  v
+          External AI reasoning
+
+`generate_security_report` requires a completed investigation and returns
+deterministically ordered findings, verification categories, analysis
+coverage, runtime summaries, bounded evidence references, limitations, and
+remediation recommendations. `get_security_finding` provides a finding-focused
+view. Every finding traces to an investigation finding, hypothesis when used,
+and registered static/runtime evidence. Static candidates remain candidates;
+only direct Phase 6 runtime evidence can produce `runtime_verified`, while
+`not_reproduced`, `inconclusive`, and `blocked` remain distinct outcomes.
+
+Remediation is advisory and category-driven: authentication findings recommend
+guards, authorization and IDOR findings recommend least-privilege and
+ownership enforcement, and input/secret categories receive boundary-validation
+or secret-rotation guidance when represented by the underlying finding model.
+Recommendations include affected location, reason, security principle, and
+whether runtime re-verification is appropriate. No source files are changed.
+
 ## Running tests
 
     npm test

@@ -57,8 +57,16 @@ export interface SecurityHypothesis {
 
 export interface InvestigationFinding {
   findingId: string;
+  origin: 'access_control' | 'security_scan';
   title: string;
   staticStatus: 'suspected';
+  category: string;
+  candidateType: string;
+  routeId: string;
+  path: string;
+  file: string;
+  description: string;
+  explanation: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   confidence: 'high' | 'medium' | 'low';
   lifecycle: InvestigationFindingLifecycle;

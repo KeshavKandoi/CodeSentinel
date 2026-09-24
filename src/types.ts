@@ -35,6 +35,9 @@ export type ToolErrorCode =
   | 'DUPLICATE_OPERATION'
   | 'BUDGET_EXCEEDED'
   | 'ANALYSIS_FAILED'
+  | 'INVESTIGATION_INCOMPLETE'
+  | 'REPORT_FINDING_NOT_FOUND'
+  | 'REPORT_INVALID'
   | 'INTERNAL_ERROR';
 
 export function ok<T>(data: T): ToolOutcome<T> {

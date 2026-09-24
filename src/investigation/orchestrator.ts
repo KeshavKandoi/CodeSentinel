@@ -112,8 +112,12 @@ function addStep(state: InvestigationInternals, operation: InvestigationStep['op
   state.investigation.steps.push({ id: id('step'), operation, status: 'completed', startedAt, finishedAt: now(), summary, evidenceRefs });
 }
 
-function createFindingView(finding: { id: string; title: string; severity: InvestigationFinding['severity']; confidence: InvestigationFinding['confidence']; verificationStatus: string }): InvestigationFinding {
-  return { findingId: finding.id, title: finding.title, staticStatus: 'suspected', severity: finding.severity, confidence: finding.confidence, lifecycle: 'static_candidate', runtimeVerificationStatus: finding.verificationStatus };
+function createFindingView(finding: { id: string; title: string; category: string; candidateType: string; routeId: string; path: string; file: string; description: string; explanation: string; severity: InvestigationFinding['severity']; confidence: InvestigationFinding['confidence']; verificationStatus: string }): InvestigationFinding {
+  return { findingId: finding.id, origin: 'access_control', title: finding.title, staticStatus: 'suspected', category: finding.category, candidateType: finding.candidateType, routeId: finding.routeId, path: finding.path, file: finding.file, description: finding.description, explanation: finding.explanation, severity: finding.severity, confidence: finding.confidence, lifecycle: 'static_candidate', runtimeVerificationStatus: finding.verificationStatus };
+}
+
+function createSecurityFindingView(finding: { id: string; title: string; category: string; file?: string; description: string; remediation: string; severity: InvestigationFinding['severity']; confidence: InvestigationFinding['confidence']; verificationStatus: string; evidence: Array<{ reason: string }> }): InvestigationFinding {
+  return { findingId: finding.id, origin: 'security_scan', title: finding.title, staticStatus: 'suspected', category: finding.category, candidateType: 'static_scan', routeId: '', path: '', file: finding.file ?? '', description: finding.description, explanation: finding.evidence[0]?.reason ?? finding.remediation, severity: finding.severity, confidence: finding.confidence, lifecycle: 'static_candidate', runtimeVerificationStatus: finding.verificationStatus };
 }
 
 export function startInvestigation(
@@ -186,7 +190,10 @@ export async function runSecurityAnalysis(config: AppConfig, investigationId: st
         routes: { total: state.routes.length, routeIds: state.routes.map((e) => e.id), warningCount: routes.data.warnings.length },
         accessControl: { totalRoutes: access.summary.totalRoutes, totalFindings: access.findings.length, findingIds: access.findings.map((f) => f.id), warningCount: access.warnings.length },
       };
-      state.investigation.findings = state.accessFindings.map(createFindingView);
+      state.investigation.findings = [
+        ...state.accessFindings.map(createFindingView),
+        ...state.securityFindings.map(createSecurityFindingView),
+      ];
       state.investigation.status = state.accessFindings.length > 0 ? 'awaiting_verification' : 'completed';
       state.investigation.updatedAt = now();
       return ok(state.investigation);

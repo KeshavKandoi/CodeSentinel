@@ -208,3 +208,8 @@ export type GetInvestigationInput = z.infer<typeof getInvestigationSchema>;
 export type RunSecurityAnalysisInput = z.infer<typeof runSecurityAnalysisSchema>;
 export type RecordSecurityHypothesisInput = z.infer<typeof recordSecurityHypothesisSchema>;
 export type RuntimeVerificationRequestInput = z.infer<typeof runtimeVerificationRequestSchema>;
+
+export const generateSecurityReportSchema = z.object({ investigationId: z.string().min(1).max(128) }).strict();
+export const getSecurityFindingSchema = z.object({ investigationId: z.string().min(1).max(128), findingId: z.string().min(1).max(256) }).strict();
+export type GenerateSecurityReportInput = z.infer<typeof generateSecurityReportSchema>;
+export type GetSecurityFindingInput = z.infer<typeof getSecurityFindingSchema>;
