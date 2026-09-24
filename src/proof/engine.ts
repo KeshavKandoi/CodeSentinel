@@ -6,6 +6,13 @@ import { runProjectDiscovery } from '../discovery/projectDiscovery.js';
 import { listFiles } from '../fs/fsOperations.js';
 import { verifyFinding } from '../runtime/engine.js';
 import type { VerifyFindingRequest } from '../runtime/engine.js';
+import { issueRuntimeRequest, RuntimeClientState } from '../runtime/httpClient.js';
+import { buildResult, blockedResult, hasUnresolvedSegment } from '../runtime/cases/common.js';
+import { buildSessionMap } from '../runtime/session.js';
+import type { RuntimeTarget, VerificationEvidence, VerificationResult } from '../runtime/types.js';
+import { scanProject } from '../security/scanner.js';
+import type { SecurityFinding } from '../security/types.js';
+import type { AttackSurfaceEntry } from '../routes/types.js';
 import { detachedRedacted } from '../report/redaction.js';
 import { err, ok, type ToolOutcome } from '../types.js';
 import type { ProofCaseType, SecurityGraph, SecurityGraphEdge, SecurityGraphNode, SecurityProofCase, SecurityReceipt } from './types.js';
@@ -20,7 +27,7 @@ export interface SecurityProofAdapter {
   execute(config: AppConfig, request: VerifyFindingRequest): ReturnType<typeof verifyFinding>;
 }
 
-const metadata = (type: ProofCaseType, findingId: string, method = 'GET', path = '/'): SecurityProofCase => ({
+const metadata = (type: ProofCaseType, findingId: string, method = 'GET', path = '/', executable = false, adapterNotes = 'No executable adapter is registered for this proof class.'): SecurityProofCase => ({
   id: `proof-case-${hash(`${type}|${findingId}`)}`, type, findingId,
   prerequisites: ['An evidence-backed static candidate or route relation exists.', 'The operator supplies an explicitly authorized target when execution is requested.'],
   requestShape: { method, path, body: null, headers: [] },
@@ -32,21 +39,46 @@ const metadata = (type: ProofCaseType, findingId: string, method = 'GET', path =
   evidenceCaptured: ['Bounded request metadata', 'Redacted response facts', 'Deterministic oracle result', 'Source and route references'],
   blockedStates: ['Target rejected by Phase 6 target guard', 'Missing concrete route/session', 'Unsupported candidate type', 'Request or budget safety limit'],
   inconclusiveStates: ['Generic success without semantic proof', 'Static signal lacks an executable proof case', 'Ambiguous or incomplete fixture behavior'],
+  executable,
+  adapterNotes,
 });
 
 const EXECUTABLE_ADAPTERS: SecurityProofAdapter[] = [
-  { type: 'idor_bola', candidateTypes: ['idor_candidate', 'user_resource_access'], buildCase: (id, method, path) => metadata('idor_bola', id, method, path), execute: (config, request) => verifyFinding(config, request) },
-  { type: 'missing_authentication', candidateTypes: ['missing_authentication'], buildCase: (id, method, path) => metadata('missing_authentication', id, method, path), execute: (config, request) => verifyFinding(config, request) },
-  { type: 'missing_authorization', candidateTypes: ['missing_authorization'], buildCase: (id, method, path) => metadata('missing_authorization', id, method, path), execute: (config, request) => verifyFinding(config, request) },
-  { type: 'authorization_inconsistency', candidateTypes: ['inconsistent_authorization'], buildCase: (id, method, path) => metadata('authorization_inconsistency', id, method, path), execute: (config, request) => verifyFinding(config, request) },
+  { type: 'idor_bola', candidateTypes: ['idor_candidate', 'user_resource_access'], buildCase: (id, method, path) => metadata('idor_bola', id, method, path, true, 'Delegates to the existing Phase 6 ownership proof.'), execute: (config, request) => verifyFinding(config, request) },
+  { type: 'missing_authentication', candidateTypes: ['missing_authentication'], buildCase: (id, method, path) => metadata('missing_authentication', id, method, path, true, 'Delegates to the existing Phase 6 authentication proof.'), execute: (config, request) => verifyFinding(config, request) },
+  { type: 'missing_authorization', candidateTypes: ['missing_authorization'], buildCase: (id, method, path) => metadata('missing_authorization', id, method, path, true, 'Delegates to the existing Phase 6 authorization proof.'), execute: (config, request) => verifyFinding(config, request) },
+  { type: 'authorization_inconsistency', candidateTypes: ['inconsistent_authorization'], buildCase: (id, method, path) => metadata('authorization_inconsistency', id, method, path, true, 'Delegates to the existing Phase 6 cross-method proof.'), execute: (config, request) => verifyFinding(config, request) },
 ];
+
+const SAFE_SOURCE_ADAPTERS: Array<{ type: ProofCaseType; categories: string[]; marker: string; parameter: string; title: string; notes: string }> = [
+  { type: 'path_traversal', categories: ['path_traversal'], marker: 'CODESENTINEL_PROOF_OUTSIDE_ROOT', parameter: 'path', title: 'Path traversal proof', notes: 'Requires a local fixture to return the exact outside-root marker only when traversal succeeds.' },
+  { type: 'open_redirect', categories: ['open_redirect', 'insecure_redirects'], marker: 'https://codesentinel.invalid/proof', parameter: 'url', title: 'Open redirect proof', notes: 'Uses a non-routable documentation destination and never follows an external redirect.' },
+  { type: 'ssrf', categories: ['ssrf'], marker: 'CODESENTINEL_PROOF_SSRF_SENTINEL', parameter: 'url', title: 'SSRF proof', notes: 'Requires a local fixture-controlled SSRF oracle; no external or metadata target is used.' },
+  { type: 'sql_injection', categories: ['injection'], marker: 'CODESENTINEL_PROOF_SQLI_SENTINEL', parameter: 'query', title: 'SQL injection proof', notes: 'Requires a local fixture-controlled semantic marker, never a generic SQL error.' },
+  { type: 'command_injection', categories: ['command_injection'], marker: 'CODESENTINEL_PROOF_COMMAND_SENTINEL', parameter: 'command', title: 'Command injection proof', notes: 'Requires a local fixture-controlled marker; CodeSentinel never executes the supplied value.' },
+  { type: 'xss_reflected', categories: ['xss'], marker: 'CODESENTINEL_PROOF_XSS_SENTINEL', parameter: 'q', title: 'Reflected XSS proof', notes: 'Verifies exact unencoded reflection of a unique inert marker, not script execution.' },
+];
+
+function safeSourceAdapter(type: ProofCaseType): typeof SAFE_SOURCE_ADAPTERS[number] | null {
+  return SAFE_SOURCE_ADAPTERS.find((adapter) => adapter.type === type) ?? null;
+}
+
+function isLocalProofTarget(target: RuntimeTarget): boolean {
+  try {
+    const hostname = new URL(target.allowedOrigin).hostname.toLowerCase().replace(/\.$/, '');
+    return hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.');
+  } catch { return false; }
+}
 
 function adapterForCandidate(candidateType: string): SecurityProofAdapter | null {
   return EXECUTABLE_ADAPTERS.find((adapter) => adapter.candidateTypes.includes(candidateType)) ?? null;
 }
 
 export function listSecurityProofAdapters(): Array<Pick<SecurityProofAdapter, 'type' | 'candidateTypes'>> {
-  return EXECUTABLE_ADAPTERS.map(({ type, candidateTypes }) => ({ type, candidateTypes: [...candidateTypes] }));
+  return [
+    ...EXECUTABLE_ADAPTERS.map(({ type, candidateTypes }) => ({ type, candidateTypes: [...candidateTypes] })),
+    ...SAFE_SOURCE_ADAPTERS.map(({ type, categories }) => ({ type, candidateTypes: [...categories] })),
+  ];
 }
 
 export function buildSecurityProofCaseTemplate(type: ProofCaseType): SecurityProofCase {
@@ -75,13 +107,59 @@ export function listSecurityReceiptsForFinding(findingId: string): SecurityRecei
 
 export function resetSecurityProofsForTests(): void { receipts.clear(); }
 
+async function findStaticCandidate(config: AppConfig, findingId: string): Promise<{ finding: SecurityFinding; entry: AttackSurfaceEntry; adapter: typeof SAFE_SOURCE_ADAPTERS[number] } | null> {
+  const scan = await scanProject(config);
+  if (!scan.ok) return null;
+  const finding = scan.data.findings.find((item) => item.id === findingId);
+  if (!finding || !finding.file) return null;
+  const routes = discoverRoutes(config);
+  if (!routes.ok) return null;
+  const entry = routes.data.entries.find((item) => item.file === finding.file && finding.line !== undefined && finding.line >= item.sourceRange.startLine && finding.line <= item.sourceRange.endLine);
+  if (!entry) return null;
+  const adapter = SAFE_SOURCE_ADAPTERS.find((item) => item.categories.includes(finding.category)) ?? null;
+  return adapter ? { finding, entry, adapter } : null;
+}
+
+function proofPath(entry: AttackSurfaceEntry, adapter: typeof SAFE_SOURCE_ADAPTERS[number]): string | null {
+  if (hasUnresolvedSegment(entry.path) || entry.method !== 'GET' && entry.method !== 'ALL') return null;
+  const parameter = entry.queryParameters[0]?.name ?? entry.bodyParameters[0]?.name ?? adapter.parameter;
+  const value = encodeURIComponent(adapter.marker);
+  return `${entry.path}${entry.path.includes('?') ? '&' : '?'}${encodeURIComponent(parameter)}=${value}`;
+}
+
+async function executeSafeSourceProof(config: AppConfig, request: VerifyFindingRequest, candidate: Awaited<ReturnType<typeof findStaticCandidate>>): Promise<{ status: SecurityReceipt['status']; proofCase: SecurityProofCase; evidence: VerificationEvidence[]; summary: string }> {
+  if (!candidate) throw new Error('unsupported proof candidate');
+  const { finding, entry, adapter } = candidate;
+  const proofCase = metadata(adapter.type, finding.id, 'GET', entry.path, true, adapter.notes);
+  if (!isLocalProofTarget(request.target)) return { status: 'blocked', proofCase, evidence: [], summary: 'Proof adapters only execute against localhost or loopback targets.' };
+  const path = proofPath(entry, adapter);
+  if (!path) return { status: 'blocked', proofCase, evidence: [], summary: 'The route is not a concrete safe GET proof target.' };
+  const evidence = [await issueRuntimeRequest(request.target, buildSessionMap(request.sessions ?? []), { method: 'GET', path, sessionId: null }, new RuntimeClientState(request.target))];
+  const response = evidence[0]!.response;
+  if (response.status === 0) return { status: 'blocked', proofCase, evidence, summary: evidence[0]!.note };
+  const location = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'location')?.[1] ?? '';
+  const proved = adapter.type === 'open_redirect'
+    ? response.status >= 300 && response.status < 400 && location.includes(adapter.marker)
+    : response.bodySnippet.includes(adapter.marker);
+  if (proved) return { status: 'verified', proofCase, evidence, summary: `${adapter.title} semantic oracle matched the fixture proof marker; HTTP status alone was not used.` };
+  if (response.status >= 200 && response.status < 300) return { status: 'inconclusive', proofCase, evidence, summary: `${adapter.title} received a response without the required semantic oracle marker.` };
+  return { status: 'not_reproduced', proofCase, evidence, summary: `${adapter.title} did not produce the required semantic oracle.` };
+}
+
 export async function proveSecurityFinding(config: AppConfig, request: VerifyFindingRequest): Promise<ToolOutcome<SecurityReceipt>> {
   const cases = listSecurityProofCases(config);
   const proofCase = cases.find((item) => item.findingId === request.findingId);
   if (!proofCase) {
-    const receipt = receiptForBlocked(request.findingId, metadata('sql_injection', request.findingId), 'No supported proof case was established from the current route/access-control inventory.');
-    receipts.set(receipt.receiptId, receipt);
-    return ok(receipt);
+    const candidate = await findStaticCandidate(config, request.findingId);
+    if (!candidate) {
+      const receipt = receiptForBlocked(request.findingId, metadata('sql_injection', request.findingId), 'No executable proof adapter was established from the current route/static inventory.');
+      receipts.set(receipt.receiptId, receipt);
+      return ok(receipt);
+    }
+    const execution = await executeSafeSourceProof(config, request, candidate);
+    const responseFacts = execution.evidence.map((item) => ({ status: item.response.status, headers: item.response.headers, bodySnippet: item.response.bodySnippet, finalUrl: item.response.finalUrl }));
+    const receipt: SecurityReceipt = { receiptId: `receipt-${hash(`${request.findingId}|${execution.status}|${JSON.stringify(responseFacts)}`)}`, findingId: request.findingId, proofCase: execution.proofCase, status: execution.status, redactedRequest: execution.evidence[0] ? { ...execution.evidence[0].request } : null, responseFacts, oracle: execution.status, whyProven: execution.status === 'verified' ? execution.summary : '', sourceRefs: [`${candidate.finding.file}:${candidate.finding.line ?? 0}`, `${candidate.entry.file}:${candidate.entry.line}`], evidenceRefs: [`static:${candidate.finding.id}`, `route:${candidate.entry.id}`], remediationRef: null, reVerification: { status: null, receiptId: null }, limitation: execution.status === 'verified' ? null : execution.summary };
+    const safe = detachedRedacted(receipt); receipts.set(safe.receiptId, safe); return ok(safe);
   }
   const adapter = proofCase.type === 'idor_bola' ? EXECUTABLE_ADAPTERS[0] : EXECUTABLE_ADAPTERS.find((item) => item.type === proofCase.type);
   if (!adapter) {
@@ -93,7 +171,7 @@ export async function proveSecurityFinding(config: AppConfig, request: VerifyFin
   if (!result.ok) { const receipt = receiptForBlocked(request.findingId, proofCase, result.error.message, [request.findingId]); receipts.set(receipt.receiptId, receipt); return ok(receipt); }
   const verification = result.data.result;
   const status = verification.status === 'verified' || verification.status === 'not_reproduced' || verification.status === 'inconclusive' || verification.status === 'blocked' ? verification.status : 'inconclusive';
-  const responseFacts = verification.evidence.map((item) => ({ status: item.response.status, bodySnippet: item.response.bodySnippet, finalUrl: item.response.finalUrl }));
+  const responseFacts = verification.evidence.map((item) => ({ status: item.response.status, headers: item.response.headers, bodySnippet: item.response.bodySnippet, finalUrl: item.response.finalUrl }));
   const receipt: SecurityReceipt = { receiptId: `receipt-${hash(`${request.findingId}|${verification.status}|${JSON.stringify(responseFacts)}`)}`, findingId: request.findingId, proofCase, status, redactedRequest: verification.evidence[0] ? { ...verification.evidence[0].request } : null, responseFacts, oracle: verification.status, whyProven: verification.status === 'verified' ? verification.summary : '', sourceRefs: [result.data.finding.file, result.data.finding.path].filter(Boolean), evidenceRefs: verification.evidence.map((_, index) => `runtime:${request.findingId}:${index}`), remediationRef: null, reVerification: { status: null, receiptId: null }, limitation: verification.status === 'verified' ? null : verification.summary };
   const safe = detachedRedacted(receipt);
   receipts.set(safe.receiptId, safe);
