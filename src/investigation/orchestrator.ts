@@ -52,6 +52,15 @@ function boundedBudget(budget?: Partial<InvestigationBudget>): InvestigationBudg
   return merged;
 }
 
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function boundary(config: AppConfig, projectPath: string): string | null {
   const requested = path.resolve(projectPath);
   const configured = path.resolve(config.projectRoot);
@@ -83,6 +92,7 @@ function operationKey(value: string): string {
 function checkTime(state: InvestigationInternals): string | null {
   if (Date.now() - Date.parse(state.investigation.createdAt) > state.investigation.budget.maxElapsedMs) {
     state.investigation.status = 'blocked';
+    state.investigation.updatedAt = now();
     return 'Investigation elapsed-time budget exceeded.';
   }
   return null;
@@ -103,7 +113,7 @@ function addStep(state: InvestigationInternals, operation: InvestigationStep['op
 }
 
 function createFindingView(finding: { id: string; title: string; severity: InvestigationFinding['severity']; confidence: InvestigationFinding['confidence']; verificationStatus: string }): InvestigationFinding {
-  return { findingId: finding.id, title: finding.title, severity: finding.severity, confidence: finding.confidence, lifecycle: 'static_candidate', runtimeVerificationStatus: finding.verificationStatus };
+  return { findingId: finding.id, title: finding.title, staticStatus: 'suspected', severity: finding.severity, confidence: finding.confidence, lifecycle: 'static_candidate', runtimeVerificationStatus: finding.verificationStatus };
 }
 
 export function startInvestigation(
@@ -121,6 +131,7 @@ export function startInvestigation(
       .sort((a, b) => a.investigation.updatedAt.localeCompare(b.investigation.updatedAt))[0];
     if (!removable) return err('BUDGET_EXCEEDED', 'The bounded investigation store is full; complete or remove an existing investigation before starting another.');
     investigations.delete(removable.investigation.id);
+    investigationLocks.delete(removable.investigation.id);
   }
   const investigation: SecurityInvestigation = {
     id: id('investigation'), projectPath: path.resolve(input.projectPath), scope: input.scope,
@@ -144,13 +155,17 @@ export async function runSecurityAnalysis(config: AppConfig, investigationId: st
     try {
       const profile = runProjectDiscovery(config.projectRoot);
       state.investigation.execution.analysisSteps = 1;
+      if (checkTime(state)) return err('BUDGET_EXCEEDED', 'Investigation elapsed-time budget exceeded after project discovery.');
       const scan = await scanProject(config);
       state.investigation.execution.analysisSteps = 2;
+      if (checkTime(state)) return err('BUDGET_EXCEEDED', 'Investigation elapsed-time budget exceeded after static scanning.');
       const routes = discoverRoutes(config);
       if (!routes.ok) throw new Error(routes.error.message);
       state.investigation.execution.analysisSteps = 3;
+      if (checkTime(state)) return err('BUDGET_EXCEEDED', 'Investigation elapsed-time budget exceeded after route discovery.');
       const access = analyzeAccessControl(config, routes.data.entries);
       state.investigation.execution.analysisSteps = 4;
+      if (checkTime(state)) return err('BUDGET_EXCEEDED', 'Investigation elapsed-time budget exceeded after access-control analysis.');
       state.securityFindings = scan.ok ? scan.data.findings : [];
       state.routes = routes.data.entries;
       state.accessFindings = access.findings;
@@ -172,10 +187,16 @@ export async function runSecurityAnalysis(config: AppConfig, investigationId: st
         accessControl: { totalRoutes: access.summary.totalRoutes, totalFindings: access.findings.length, findingIds: access.findings.map((f) => f.id), warningCount: access.warnings.length },
       };
       state.investigation.findings = state.accessFindings.map(createFindingView);
-      state.investigation.status = 'awaiting_verification';
+      state.investigation.status = state.accessFindings.length > 0 ? 'awaiting_verification' : 'completed';
       state.investigation.updatedAt = now();
       return ok(state.investigation);
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (/budget/i.test(message)) {
+        state.investigation.status = 'blocked';
+        state.investigation.updatedAt = now();
+        return err('BUDGET_EXCEEDED', 'Investigation budget was exhausted during deterministic analysis.');
+      }
       state.investigation.status = 'failed';
       state.investigation.updatedAt = now();
       return err('ANALYSIS_FAILED', 'Deterministic security analysis failed unexpectedly.');
@@ -224,7 +245,7 @@ export async function requestRuntimeVerification(config: AppConfig, input: Verif
     const supported = new Set(['missing_authentication', 'missing_authorization', 'idor_candidate', 'user_resource_access', 'inconsistent_authorization']);
     if (!supported.has(finding.candidateType)) return err('UNSUPPORTED_CANDIDATE_TYPE', `Finding candidateType "${finding.candidateType}" is not supported by Phase 6.`);
     if (state.investigation.execution.runtimeVerifications >= state.investigation.budget.maxRuntimeVerifications) return err('BUDGET_EXCEEDED', 'Maximum runtime verifications for this investigation has been reached.');
-    const targetKey = operationKey(`${input.investigationId}|runtime|${input.hypothesisId}|${input.findingId}|${input.target.allowedOrigin}`);
+    const targetKey = operationKey(`${input.investigationId}|runtime|${input.hypothesisId}|${input.findingId}|${stableStringify({ target: input.target, sessions: input.sessions ?? [], sessionParams: input.sessionParams ?? {} })}`);
     if (state.investigation.execution.operations.includes(`runtime:${targetKey}`)) return err('DUPLICATE_OPERATION', 'This hypothesis and target have already been verified.');
     const elapsed = checkTime(state);
     if (elapsed) return err('BUDGET_EXCEEDED', elapsed);
@@ -241,6 +262,7 @@ export async function requestRuntimeVerification(config: AppConfig, input: Verif
     state.investigation.execution.operations.push(`runtime:${targetKey}`);
     state.runtimeResults.set(input.hypothesisId, result.data.result);
     const runtimeRef = addEvidence(state, { kind: 'runtime_verification', reference: `runtime:${input.hypothesisId}`, summary: result.data.result.summary });
+    if (!hypothesis.evidenceRefs.includes(runtimeRef)) hypothesis.evidenceRefs.push(runtimeRef);
     state.investigation.runtimeResults[input.hypothesisId] = {
       status: result.data.result.status,
       confidence: result.data.result.confidence,

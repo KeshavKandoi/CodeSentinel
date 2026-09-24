@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { toolDefinitions } from '../../src/tools/registry.js';
@@ -6,6 +6,7 @@ import { resetInvestigationsForTests } from '../../src/investigation/orchestrato
 import type { AppConfig } from '../../src/config.js';
 
 const FIXTURE = fs.realpathSync(fileURLToPath(new URL('../fixtures/access-control-express', import.meta.url)));
+const EMPTY_FIXTURE = fs.realpathSync(fileURLToPath(new URL('../fixtures/generic-node', import.meta.url)));
 const config: AppConfig = { projectRoot: FIXTURE, commandTimeoutMs: 5000, maxOutputBytes: 1_000_000, maxReadFileBytes: 2_000_000, maxListResults: 2_000 };
 
 function tool(name: string) {
@@ -43,6 +44,14 @@ describe('Phase 7 registration and input safety', () => {
     });
     expect(response.isError).toBe(true);
     expect(payload(response).error).toBe('PROJECT_BOUNDARY');
+  });
+
+  it('rejects non-four-stage analysis budgets with a clear validation error', async () => {
+    const response = await tool('start_security_investigation').handler(config, {
+      projectPath: FIXTURE, scope: ['authentication'], hypothesis: 'invalid budget', budget: { maxAnalysisSteps: 3 },
+    });
+    expect(payload(response).error).toBe('INVALID_INPUT');
+    expect(payload(response).message).toContain('exactly four');
   });
 });
 
@@ -117,9 +126,9 @@ describe('Phase 7 state machine and budgets', () => {
     });
     const id = payload(started).id as string;
     const analysis = await tool('run_security_analysis').handler(config, { investigationId: id });
-    expect(payload(analysis).error).toBe('ANALYSIS_FAILED');
+    expect(payload(analysis).error).toBe('BUDGET_EXCEEDED');
     const state = payload(await tool('get_investigation').handler(config, { investigationId: id }));
-    expect(state.status).toBe('failed');
+    expect(state.status).toBe('blocked');
     expect(state.execution.evidenceBytes).toBeLessThanOrEqual(1_000);
   });
 
@@ -135,6 +144,49 @@ describe('Phase 7 state machine and budgets', () => {
     const state = payload(await tool('get_investigation').handler(config, { investigationId: started.id }));
     expect(state.execution.analysisSteps).toBe(4);
     expect(state.steps.filter((step: { operation: string }) => step.operation === 'access_control_analysis')).toHaveLength(1);
+  });
+
+  it('blocks analysis when the elapsed-time budget is exceeded', async () => {
+    vi.useFakeTimers();
+    try {
+      const started = payload(await tool('start_security_investigation').handler(config, {
+        projectPath: FIXTURE, scope: ['route_security'], hypothesis: 'elapsed', budget: { maxElapsedMs: 1_000 },
+      }));
+      vi.advanceTimersByTime(1_001);
+      const analysis = await tool('run_security_analysis').handler(config, { investigationId: started.id });
+      expect(payload(analysis).error).toBe('BUDGET_EXCEEDED');
+      const state = payload(await tool('get_investigation').handler(config, { investigationId: started.id }));
+      expect(state.status).toBe('blocked');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('completes investigations with no verification-relevant findings', async () => {
+    const emptyConfig = { ...config, projectRoot: EMPTY_FIXTURE };
+    const started = payload(await tool('start_security_investigation').handler(emptyConfig, {
+      projectPath: EMPTY_FIXTURE, scope: ['general_application_security'], hypothesis: 'no findings expected',
+    }));
+    const analysis = payload(await tool('run_security_analysis').handler(emptyConfig, { investigationId: started.id }));
+    expect(analysis.status).toBe('completed');
+    expect(analysis.findings).toHaveLength(0);
+  });
+
+  it('cleans up only terminal investigations when the bounded store reaches capacity', async () => {
+    const completed = payload(await tool('start_security_investigation').handler(config, {
+      projectPath: EMPTY_FIXTURE, scope: ['general_application_security'], hypothesis: 'terminal',
+    }));
+    await tool('run_security_analysis').handler({ ...config, projectRoot: EMPTY_FIXTURE }, { investigationId: completed.id });
+    for (let index = 0; index < 99; index += 1) {
+      const response = await tool('start_security_investigation').handler(config, {
+        projectPath: FIXTURE, scope: ['authentication'], hypothesis: `active-${index}`,
+      });
+      expect(response.isError).toBe(false);
+    }
+    const replacement = await tool('start_security_investigation').handler(config, {
+      projectPath: FIXTURE, scope: ['authentication'], hypothesis: 'replacement',
+    });
+    expect(replacement.isError).toBe(false);
   });
 });
 
@@ -172,7 +224,9 @@ describe('Phase 7 complete workflow', () => {
     const investigatedFinding = completed.findings.find((finding: { findingId: string }) => finding.findingId === findingId);
     expect(investigatedFinding).toBeDefined();
     expect(investigatedFinding.runtimeVerificationStatus).toBe('blocked');
+    expect(investigatedFinding.staticStatus).toBe('suspected');
     expect(investigatedFinding.lifecycle).not.toBe('runtime_verified');
+    expect(completed.hypotheses[0].evidenceRefs.some((ref: string) => ref.startsWith('evidence-'))).toBe(true);
     expect(completed.runtimeResults[hypothesis.id].status).toBe('blocked');
     const repeated = await tool('request_runtime_verification').handler(config, runtimeInput);
     expect(payload(repeated).error).toBe('INVALID_TRANSITION');

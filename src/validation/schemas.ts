@@ -168,7 +168,7 @@ export const investigationScopeSchema = z.enum([
 ]);
 
 export const investigationBudgetSchema = z.object({
-  maxAnalysisSteps: z.number().int().min(4).max(4).optional(),
+  maxAnalysisSteps: z.number().int().refine((value) => value === 4, 'Phase 7 currently requires exactly four deterministic analysis stages.').optional(),
   maxHypotheses: z.number().int().positive().max(25).optional(),
   maxRuntimeVerifications: z.number().int().positive().max(10).optional(),
   maxElapsedMs: z.number().int().min(1_000).max(600_000).optional(),

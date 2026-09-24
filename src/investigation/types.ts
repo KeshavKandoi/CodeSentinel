@@ -58,6 +58,7 @@ export interface SecurityHypothesis {
 export interface InvestigationFinding {
   findingId: string;
   title: string;
+  staticStatus: 'suspected';
   severity: 'critical' | 'high' | 'medium' | 'low' | 'info';
   confidence: 'high' | 'medium' | 'low';
   lifecycle: InvestigationFindingLifecycle;
