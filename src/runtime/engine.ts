@@ -195,13 +195,9 @@ async function executeCase(
 }
 
 /**
- * Attaches runtime verification metadata to a *new* object -- the original
- * finding is never mutated. Status is only ever promoted to 'verified' when
- * runtime evidence actually confirms it; every other runtime outcome
- * (blocked/inconclusive/not_reproduced) leaves the original static
- * `status: 'suspected'` untouched and records the full detail in
- * runtimeVerification instead, so a finding that could not be verified is
- * never silently reported as confirmed.
+ * Attaches runtime verification metadata to a *new* object. Static access
+ * findings intentionally remain `status: 'suspected'`; runtime state belongs
+ * in the separate verification metadata and verificationStatus fields.
  */
 function attachVerification(
   finding: AccessControlFinding,
@@ -209,7 +205,6 @@ function attachVerification(
 ): AccessControlFinding & { runtimeVerification: VerificationResult } {
   return {
     ...finding,
-    status: result.status === 'verified' ? 'verified' : finding.status,
     verificationStatus: result.status === 'verified' ? 'manually_verified' : finding.verificationStatus,
     runtimeVerification: result,
   };

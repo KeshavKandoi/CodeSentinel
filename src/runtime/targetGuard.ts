@@ -194,6 +194,7 @@ export async function validateTarget(target: RuntimeTarget): Promise<ValidationB
 }
 
 const PATH_ESCAPE_RE = /^\s*\/\/|@|\\\\|^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+const ENCODED_PATH_ESCAPE_RE = /%2f|%5c|%40/i;
 
 /** Builds and validates the full request URL for one call within an
  * already-validated target. Rejects any path that could smuggle an
@@ -206,7 +207,7 @@ export async function validateUrl(target: RuntimeTarget, path: string): Promise<
   if (typeof path !== 'string' || path.length === 0 || !path.startsWith('/')) {
     return blocked(`Request path "${path}" must be a non-empty string starting with "/".`);
   }
-  if (PATH_ESCAPE_RE.test(path)) {
+  if (PATH_ESCAPE_RE.test(path) || ENCODED_PATH_ESCAPE_RE.test(path)) {
     return blocked(`Request path "${path}" contains a scheme, protocol-relative prefix, embedded credential, or backslash and is rejected.`);
   }
 
@@ -238,6 +239,18 @@ export async function validateRedirect(target: RuntimeTarget, location: string, 
     resolved = new URL(location, currentUrl);
   } catch {
     return blocked(`Redirect Location "${location}" is not a valid URL.`);
+  }
+  const parsedOrigin = parseAllowedOrigin(target.allowedOrigin);
+  if ('reason' in parsedOrigin) return blocked(parsedOrigin.reason);
+  const redirectPort = resolved.port !== '' ? Number.parseInt(resolved.port, 10) : resolved.protocol === 'https:' ? 443 : 80;
+  if (
+    resolved.protocol !== parsedOrigin.scheme ||
+    resolved.hostname.toLowerCase().replace(/\.$/, '') !== parsedOrigin.hostname ||
+    redirectPort !== parsedOrigin.port ||
+    resolved.username !== '' ||
+    resolved.password !== ''
+  ) {
+    return blocked(`Redirect destination "${resolved.toString()}" is outside the configured allowed origin.`);
   }
   const path = `${resolved.pathname}${resolved.search}`;
   return validateUrl(target, path === '' ? '/' : path).then((result) => {

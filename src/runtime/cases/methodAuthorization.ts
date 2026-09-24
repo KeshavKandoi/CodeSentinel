@@ -74,12 +74,24 @@ export async function runMethodAuthorizationCase(
     );
   }
 
-  if (isSuccessStatus(response)) {
+  const isWrite = vcase.method === 'POST' || vcase.method === 'PUT' || vcase.method === 'PATCH' || vcase.method === 'DELETE';
+  if (isSuccessStatus(response) && isWrite) {
     return buildResult(
       vcase,
       'verified',
       'medium',
-      `${vcase.method} ${vcase.path} received ${response.status} with no authentication, confirming this method lacks the protection its sibling method has.`,
+      `${vcase.method} ${vcase.path} received ${response.status} with no authentication, confirming the unprotected state-changing method lacks the protection its sibling method has.`,
+      evidence,
+      startedAt
+    );
+  }
+
+  if (isSuccessStatus(response)) {
+    return buildResult(
+      vcase,
+      'inconclusive',
+      'medium',
+      `${vcase.method} ${vcase.path} received ${response.status}, but a successful read alone does not prove that the sibling method's protection was bypassed.`,
       evidence,
       startedAt
     );

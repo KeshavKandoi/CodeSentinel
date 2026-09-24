@@ -8,6 +8,8 @@ import {
   getProjectInfoSchema,
   runCommandSchema,
   scanProjectSchema,
+  verifyFindingSchema,
+  listVerificationCasesSchema,
   safeValidate,
 } from '../validation/schemas.js';
 import { listFiles, readFile, searchFiles } from '../fs/fsOperations.js';
@@ -22,6 +24,7 @@ import { discoverRoutesSchema } from '../validation/schemas.js';
 import { discoverRoutes } from '../routes/engine.js';
 import { analyzeAccessControlSchema } from '../validation/schemas.js';
 import { analyzeAccessControl } from '../access/engine.js';
+import { listVerificationCases, verifyFinding } from '../runtime/engine.js';
 
 
 export interface McpToolResponse {
@@ -221,6 +224,49 @@ export const toolDefinitions: ToolDefinition[] = [
       } catch (e) {
         logger.error('analyze_access_control_failed', { message: (e as Error).message });
         return toMcpResponse(err('INTERNAL_ERROR', 'Access-control analysis failed unexpectedly.'));
+      }
+    },
+  },
+  {
+    name: 'list_verification_cases',
+    description:
+      'List deterministic Phase 6 verification cases derived from the current Phase 5 access-control findings. This is discovery-only and never sends requests; findings are recomputed from the current project because no finding database is persisted.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(listVerificationCasesSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      try {
+        return toMcpResponse(ok(listVerificationCases(config)));
+      } catch (e) {
+        logger.error('list_verification_cases_failed', { message: (e as Error).message });
+        return toMcpResponse(err('INTERNAL_ERROR', 'Verification-case discovery failed unexpectedly.'));
+      }
+    },
+  },
+  {
+    name: 'verify_finding',
+    description:
+      'Run one narrowly scoped Phase 6 runtime verification case for an explicit current Phase 5 finding and explicitly authorized target. Requests are bounded, evidence is redacted, and static finding status remains suspected while runtime verification is attached separately.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        findingId: { type: 'string' },
+        target: { type: 'object' },
+        sessions: { type: 'array' },
+        sessionParams: { type: 'object' },
+      },
+      required: ['findingId', 'target'],
+    },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(verifyFindingSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      try {
+        const result = await verifyFinding(config, validation.data);
+        if (!result.ok) return toMcpResponse(err(result.error.code, result.error.message));
+        return toMcpResponse(ok(result.data));
+      } catch (e) {
+        logger.error('verify_finding_failed', { message: (e as Error).message });
+        return toMcpResponse(err('INTERNAL_ERROR', 'Runtime verification failed unexpectedly.'));
       }
     },
   },

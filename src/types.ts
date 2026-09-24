@@ -25,6 +25,8 @@ export type ToolErrorCode =
   | 'COMMAND_NOT_ALLOWED'
   | 'COMMAND_TIMEOUT'
   | 'COMMAND_FAILED'
+  | 'TARGET_BLOCKED'
+  | 'UNSUPPORTED_CANDIDATE_TYPE'
   | 'INTERNAL_ERROR';
 
 export function ok<T>(data: T): ToolOutcome<T> {

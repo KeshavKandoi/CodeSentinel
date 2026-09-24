@@ -57,6 +57,9 @@ export interface RuntimeTarget {
    * route the fixture/target explicitly marks as a safe, non-destructive
    * test endpoint. Defaults to false: destructive methods are blocked. */
   allowDestructiveMethods?: boolean;
+  /** Explicit paths approved by the operator as disposable test endpoints.
+   * Unsafe methods are never sent to arbitrary discovered routes. */
+  vettedTestPaths?: string[];
 }
 
 export type TestSessionKind = 'unauthenticated' | 'authenticated';

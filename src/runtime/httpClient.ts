@@ -21,10 +21,12 @@ const DEFAULT_MAX_CONCURRENCY = 2;
 const DEFAULT_MAX_REQUESTS_PER_CASE = 12;
 
 const ALLOWED_METHODS = new Set<HttpMethod>(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
+const UNSAFE_METHODS = new Set<HttpMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 const SENSITIVE_HEADER_RE = /^(authorization|cookie|set-cookie|proxy-authorization|x-api-key|x-auth-token|x-access-token)$/i;
 const SENSITIVE_VALUE_RE =
   /\b(sk-[a-zA-Z0-9_-]{10,}|ghp_[a-zA-Z0-9]{20,}|xox[baprs]-[a-zA-Z0-9-]{10,}|AKIA[0-9A-Z]{16}|Bearer\s+[A-Za-z0-9._-]{10,})\b/g;
+const SENSITIVE_BODY_FIELD_RE = /("?(?:authorization|cookie|set-cookie|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^,;\s}]+)/gi;
 
 function redactHeaders(headers: Headers): Record<string, string> {
   const out: Record<string, string> = {};
@@ -35,7 +37,7 @@ function redactHeaders(headers: Headers): Record<string, string> {
 }
 
 function redactBody(text: string): string {
-  return text.replace(SENSITIVE_VALUE_RE, '[REDACTED]');
+  return text.replace(SENSITIVE_VALUE_RE, '[REDACTED]').replace(SENSITIVE_BODY_FIELD_RE, '$1[REDACTED]');
 }
 
 function toEvidence(req: RuntimeRequest, response: RuntimeResponse, note: string): VerificationEvidence {
@@ -102,6 +104,9 @@ export class RuntimeClientState {
     await this.acquire();
     try {
       await this.throttle();
+      if (this.requestsIssued >= this.maxRequests) {
+        throw new Error('RUNTIME_REQUEST_LIMIT');
+      }
       this.requestsIssued++;
       return await fn();
     } finally {
@@ -146,7 +151,8 @@ async function performRequest(
   target: RuntimeTarget,
   url: URL,
   req: RuntimeRequest,
-  session: TestSession | null
+  session: TestSession | null,
+  state: RuntimeClientState
 ): Promise<VerificationEvidence> {
   const timeoutMs = target.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBytes = target.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -162,13 +168,13 @@ async function performRequest(
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response: Response;
     try {
-      response = await fetch(currentUrl, {
-        method: req.method,
-        headers,
-        body: req.body,
-        redirect: 'manual',
-        signal: controller.signal,
-      });
+      response = await state.run(() => fetch(currentUrl, {
+          method: req.method,
+          headers,
+          body: req.body,
+          redirect: 'manual',
+          signal: controller.signal,
+        }));
     } catch (e) {
       clearTimeout(timer);
       return toEvidence(
@@ -176,7 +182,7 @@ async function performRequest(
         {
           status: 0,
           headers: {},
-          bodySnippet: `Request failed: ${(e as Error).message}`,
+          bodySnippet: '',
           bodyTruncated: false,
           durationMs: Date.now() - startedAt,
           redirected: hop > 0,
@@ -255,9 +261,10 @@ export async function issueRuntimeRequest(
   if (!ALLOWED_METHODS.has(req.method as HttpMethod)) {
     return blockedEvidence(req, `Method "${req.method}" is not permitted for runtime verification.`);
   }
-  if (!state.canIssue()) {
-    return blockedEvidence(req, 'Per-case request limit reached; no further requests issued.');
+  if (UNSAFE_METHODS.has(req.method) && (target.allowDestructiveMethods !== true || !target.vettedTestPaths?.includes(req.path))) {
+    return blockedEvidence(req, `Method "${req.method}" is blocked unless allowDestructiveMethods is true and the exact path is listed in vettedTestPaths.`);
   }
+  if (!state.canIssue()) return blockedEvidence(req, 'Per-case request limit reached; no further requests issued.');
 
   const validated = await validateUrl(target, req.path);
   if (!validated.ok) return blockedEvidence(req, validated.reason);
@@ -267,5 +274,12 @@ export async function issueRuntimeRequest(
     return blockedEvidence(req, `Requested session "${req.sessionId}" is not configured.`);
   }
 
-  return state.run(() => performRequest(target, validated.url, req, session));
+  try {
+    return await performRequest(target, validated.url, req, session, state);
+  } catch (e) {
+    if ((e as Error).message === 'RUNTIME_REQUEST_LIMIT') {
+      return blockedEvidence(req, 'Per-case request limit reached; no further requests issued.');
+    }
+    return blockedEvidence(req, 'Runtime request was blocked before it was sent.');
+  }
 }
