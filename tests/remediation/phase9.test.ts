@@ -40,7 +40,7 @@ describe('Phase 9 controlled remediation', () => {
     const applied = body(await tool('apply_remediation').handler(config, { remediationId: proposal.proposalId }));
     expect(applied.status).toBe('applied_pending_verification');
     const verified = body(await tool('verify_remediation').handler(config, { remediationId: proposal.proposalId }));
-    expect(verified.status).toBe('verified_resolved');
+    expect(verified.status).toBe('verification_inconclusive');
     const rolledBack = body(await tool('rollback_remediation').handler(config, { remediationId: proposal.proposalId }));
     expect(rolledBack.status).toBe('rolled_back');
     expect(fs.readFileSync(path.join(root, 'src/vulnerable.ts'), 'utf8')).toBe(original);

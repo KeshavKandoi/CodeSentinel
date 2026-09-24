@@ -218,7 +218,8 @@ export async function verifyRemediation(config: AppConfig, remediationId: string
         runtimeStatus = runtime.data.result.status;
       }
     }
-    const status: RemediationLifecycle = originalPresent ? 'still_vulnerable' : related.length > 0 ? 'changed_finding' : record.proposal.requiresRuntimeVerification && runtimeStatus !== 'verified' ? 'verification_inconclusive' : 'verified_resolved';
+    const replaySafe = runtimeStatus === 'not_reproduced';
+    const status: RemediationLifecycle = originalPresent ? 'still_vulnerable' : related.length > 0 ? 'changed_finding' : !record.proposal.requiresRuntimeVerification ? 'verification_inconclusive' : !replaySafe ? 'verification_inconclusive' : 'verified_resolved';
     const verification: RemediationVerification = { status, beforeFindingId: record.proposal.findingId, afterInvestigationId: after.data.id, staticFindingPresent: originalPresent, relatedFindings: related.map((finding) => ({ findingId: finding.findingId, title: finding.title, category: finding.category, path: finding.path, file: finding.file })), runtimeStatus, runtimeReceiptId, summary: originalPresent ? 'The original finding remains after deterministic re-analysis.' : related.length > 0 ? 'The original finding changed or a related security finding was introduced.' : status === 'verified_resolved' ? 'The original finding was absent after deterministic re-analysis and its verified proof no longer reproduced.' : 'Static re-analysis did not establish a verified resolution.', verifiedAt: now() };
     record.verification = verification; record.status = status; record.updatedAt = now(); return ok(safeRecord(record));
   });

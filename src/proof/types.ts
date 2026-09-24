@@ -8,6 +8,28 @@ export const PROOF_CASE_TYPES = [
 export type ProofCaseType = (typeof PROOF_CASE_TYPES)[number];
 export type ProofStatus = 'verified' | 'not_reproduced' | 'inconclusive' | 'blocked';
 
+export interface ProofReplayContract {
+  proofType: ProofCaseType;
+  method: string;
+  relativeRoute: string;
+  parameterName: string;
+  inertProbeValue: string;
+  targetConstraints: {
+    allowedOrigin: string;
+    loopbackOnly: boolean;
+    maxRequestsPerCase: number;
+    requestTimeoutMs: number;
+    maxResponseBytes: number;
+    maxRedirects: 0;
+  };
+  sessionLabelReferences: string[];
+  oracleDefinition: {
+    kind: 'body_contains' | 'location_contains';
+    marker: string;
+    safeResult: string;
+  };
+}
+
 export interface SecurityProofCase {
   id: string;
   type: ProofCaseType;
@@ -39,6 +61,9 @@ export interface SecurityReceipt {
   evidenceRefs: string[];
   remediationRef: string | null;
   reVerification: { status: ProofStatus | null; receiptId: string | null };
+  replayContract: ProofReplayContract | null;
+  replayOfReceiptId: string | null;
+  beforeAfter: { beforeStatus: ProofStatus; afterStatus: ProofStatus } | null;
   limitation: string | null;
 }
 
