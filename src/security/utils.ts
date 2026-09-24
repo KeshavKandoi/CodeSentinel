@@ -45,7 +45,7 @@ export function contextFor(content: string, lineNumber: number, radius = 1): str
   const lines = content.split('\n');
   const start = Math.max(0, lineNumber - radius - 1);
   const end = Math.min(lines.length, lineNumber + radius);
-  return lines.slice(start, end).map((line, index) => `${start + index + 1}: ${line}`).join('\n');
+  return lines.slice(start, end).map((line, index) => `${start + index + 1}: ${redactSecurityText(line)}`).join('\n');
 }
 
 export function lineAt(content: string, lineNumber: number): string {
@@ -65,11 +65,21 @@ export function makeFinding(rule: SecurityRule, evidence: SecurityEvidence): Sec
     status: 'suspected',
     file: evidence.file,
     line: evidence.line,
-    evidence: [evidence],
+    evidence: [{ ...evidence, matchedText: evidence.matchedText ? redactSecurityText(evidence.matchedText) : evidence.matchedText, context: evidence.context ? redactSecurityText(evidence.context) : evidence.context }],
     description: rule.description,
     remediation: rule.remediation,
     verificationStatus: 'not_verified',
   };
+}
+
+/** Static scanner evidence is returned directly by an MCP tool, so it must
+ * not echo literal credentials merely because a rule matched their source. */
+export function redactSecurityText(value: string): string {
+  return value
+    .replace(/\bBearer\s+[A-Za-z0-9._-]+\b/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:sk|ghp|xox[baprs])[-_][A-Za-z0-9._-]+\b/gi, '[REDACTED]')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/gi, '[REDACTED]')
+    .replace(/((?:api[_-]?key|secret|password|passwd|pwd|token|private[_-]?key|client[_-]?secret|access[_-]?key)\s*[:=]\s*["'`]?)[^\s,'"`;}]+/gi, '$1[REDACTED]');
 }
 
 export function dedupeFindings(findings: SecurityFinding[]): SecurityFinding[] {
