@@ -672,7 +672,7 @@ execution, credential discovery, or arbitrary filesystem mutation is added.
 
     npm test
 
-runs the complete suite (Phase 1 through Phase 7). Phase 5 and Phase 6 tests cover public/authenticated/
+runs the complete Phase 1 through Phase 9 suite. Phase 5 and Phase 6 tests cover public/authenticated/
 role-protected/ownership-protected/unknown classification, IDOR and missing-
 authentication/authorization finding generation, inconsistent-authorization
 detection across sibling methods, false-positive resistance (comment/string
