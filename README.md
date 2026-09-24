@@ -58,7 +58,7 @@ Design principles:
 - Fail closed, never throw. Every internal operation returns { ok: true, data } or { ok: false, error } (see types.ts). Handlers never let raw exceptions escape to the MCP transport; a last-resort try/catch in index.ts exists purely as a safety net.
 - Sandboxing is centralized. All filesystem access goes through pathGuard.ts's resolveWithinRoot / resolveExistingWithinRoot, which normalize ".." segments, reject absolute paths and null bytes, and re-verify containment after resolving symlinks.
 - Commands never touch a shell. run_command uses spawn(..., { shell: false }), so arguments are passed directly to execve -- shell metacharacters (;, |, &&, backtick, $()) in arguments are inert, not interpreted.
-- Least privilege by default. run_command's allowlist is a fixed, non-configurable set of read-only inspection tools (ls, cat, git, npm, etc.), and known mutating subcommands (git push, npm install, ...) are denylisted even for allowed binaries.
+- Least privilege by default. run_command's allowlist is a fixed, non-configurable set of read-only inspection tools (ls, cat, git, etc.). Interpreters, package managers, repository override options, path escapes, and find execution/deletion options are rejected before spawning.
 
 ## Installation
 
@@ -725,7 +725,7 @@ remediation remains guarded by Phase 9 hashes, snapshots, and rollback checks.
 
     npm test
 
-runs the complete Phase 1 through Phase 9 suite. Phase 5 and Phase 6 tests cover public/authenticated/
+runs the complete Phase 1 through Phase 10 suite. Phase 5 and Phase 6 tests cover public/authenticated/
 role-protected/ownership-protected/unknown classification, IDOR and missing-
 authentication/authorization finding generation, inconsistent-authorization
 detection across sibling methods, false-positive resistance (comment/string

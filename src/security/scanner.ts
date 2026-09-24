@@ -24,6 +24,7 @@ export async function scanProject(config: AppConfig): Promise<ToolOutcome<Securi
         caseSensitive: options.caseSensitive ?? false,
         isRegex: options.isRegex ?? true,
         maxResults: options.maxResults ?? 10_000,
+        allowSensitive: true,
       });
       if (!result.ok) {
         warnings.push(`Search failed for pattern "${query}": ${result.error.message}`);
@@ -33,7 +34,7 @@ export async function scanProject(config: AppConfig): Promise<ToolOutcome<Securi
     },
     async readFile(filePath) {
       if (!fileCache.has(filePath)) {
-        fileCache.set(filePath, readFile(config, { filePath }));
+        fileCache.set(filePath, readFile(config, { filePath, allowSensitive: true }));
       }
       const result = fileCache.get(filePath);
       if (!result?.ok) {

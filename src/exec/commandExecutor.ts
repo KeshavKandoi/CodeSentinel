@@ -1,14 +1,16 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { resolveExistingWithinRoot } from '../fs/pathGuard.js';
 import type { AppConfig } from '../config.js';
 import type { CommandResult } from '../types.js';
 import { ok, err, type ToolOutcome } from '../types.js';
 
 /**
  * Allowlist of executables run_command may invoke. This is intentionally
- * narrow for Phase 1: read-only inspection and common package-manager /
- * VCS commands needed to understand a project, nothing that installs,
- * writes, or mutates system state, and no shells or interpreters that
- * could be used to execute arbitrary code.
+ * narrow read-only inspection commands only. Interpreters and package
+ * managers are deliberately excluded: shell:false prevents shell parsing,
+ * but it does not make `node -e`, `python3 -c`, or npm lifecycle execution
+ * safe.
  *
  * Extend this list deliberately in later phases, not by request-time
  * override — the allowlist itself is not configurable via tool input.
@@ -22,26 +24,25 @@ export const ALLOWED_COMMANDS = new Set([
   'find',
   'wc',
   'git',
-  'npm',
-  'node',
-  'python3',
-  'pip3',
 ]);
 
 // Subcommands we refuse even for otherwise-allowed binaries, because they
 // mutate state or reach the network rather than just inspecting the repo.
 const DENYLISTED_SUBCOMMANDS: Record<string, Set<string>> = {
   git: new Set(['push', 'clone', 'fetch', 'pull', 'reset', 'clean', 'checkout']),
-  npm: new Set(['install', 'i', 'uninstall', 'publish', 'link', 'run']),
-  pip3: new Set(['install', 'uninstall']),
 };
+
+const SAFE_GIT_SUBCOMMANDS = new Set(['status', 'log', 'diff', 'branch', 'show', 'rev-parse']);
+const GIT_ESCAPE_OPTIONS = new Set(['-C', '--git-dir', '--work-tree', '--exec-path', '--upload-pack', '--config', '-c']);
+const PATH_COMMANDS = new Set(['ls', 'cat', 'grep', 'find', 'wc']);
+const FIND_EXEC_OPTIONS = new Set(['-exec', '-execdir', '-delete', '-ok', '-okdir', '-fprint', '-fprint0']);
 
 export interface RunCommandOptions {
   command: string;
   args: string[];
 }
 
-export function validateCommand(opts: RunCommandOptions): ToolOutcome<true> {
+export function validateCommand(opts: RunCommandOptions, _projectRoot?: string): ToolOutcome<true> {
   if (typeof opts.command !== 'string' || opts.command.trim() === '') {
     return err('INVALID_INPUT', 'Command must be a non-empty string');
   }
@@ -54,14 +55,56 @@ export function validateCommand(opts: RunCommandOptions): ToolOutcome<true> {
       `Command "${opts.command}" is not in the allowlist: [${[...ALLOWED_COMMANDS].join(', ')}]`
     );
   }
+  if (opts.args.some((arg) => arg.includes('\0'))) {
+    return err('INVALID_INPUT', 'Command arguments must not contain null bytes');
+  }
   const denied = DENYLISTED_SUBCOMMANDS[opts.command];
-  if (denied && opts.args.length > 0 && denied.has(opts.args[0])) {
+  if (denied && opts.args.some((arg) => denied.has(arg))) {
     return err(
       'COMMAND_NOT_ALLOWED',
       `Subcommand "${opts.command} ${opts.args[0]}" is not permitted in Phase 1 (read-only sandbox).`
     );
   }
+  if (opts.command === 'git') {
+    if (!SAFE_GIT_SUBCOMMANDS.has(opts.args[0] ?? '')) {
+      return err('COMMAND_NOT_ALLOWED', 'Only read-only git subcommands are permitted.');
+    }
+    if (opts.args.some((arg) => isGitEscapeOption(arg) || path.isAbsolute(arg) || hasTraversalSegment(arg))) {
+      return err('COMMAND_NOT_ALLOWED', 'Git path and repository override options are not permitted.');
+    }
+  }
+  if (PATH_COMMANDS.has(opts.command) && opts.args.some((arg) => path.isAbsolute(arg) || hasTraversalSegment(arg))) {
+    return err('COMMAND_NOT_ALLOWED', 'Command paths must remain inside the project root.');
+  }
+  if (_projectRoot && PATH_COMMANDS.has(opts.command)) {
+    const pathArgs = opts.args.filter((arg) => arg !== '--' && !arg.startsWith('-'));
+    for (const arg of pathArgs) {
+      try {
+        resolveExistingWithinRoot(_projectRoot, arg);
+      } catch {
+        return err('COMMAND_NOT_ALLOWED', 'Command paths must remain inside the project root.');
+      }
+    }
+  }
+  if (opts.command === 'find' && opts.args.some((arg) => FIND_EXEC_OPTIONS.has(arg))) {
+    return err('COMMAND_NOT_ALLOWED', 'find execution and deletion actions are not permitted.');
+  }
   return ok(true);
+}
+
+function hasTraversalSegment(value: string): boolean {
+  return value.split(/[\\/]+/).includes('..');
+}
+
+function isGitEscapeOption(value: string): boolean {
+  return GIT_ESCAPE_OPTIONS.has(value)
+    || value.startsWith('--git-dir=')
+    || value.startsWith('--work-tree=')
+    || value.startsWith('--exec-path=')
+    || value.startsWith('--upload-pack=')
+    || value.startsWith('--output=')
+    || value.startsWith('--config-env=')
+    || value.startsWith('-c');
 }
 
 function truncate(buf: Buffer, maxBytes: number): { text: string; truncated: boolean } {
@@ -72,7 +115,7 @@ function truncate(buf: Buffer, maxBytes: number): { text: string; truncated: boo
 }
 
 export function runCommand(config: AppConfig, opts: RunCommandOptions): Promise<ToolOutcome<CommandResult>> {
-  const validation = validateCommand(opts);
+  const validation = validateCommand(opts, config.projectRoot);
   if (!validation.ok) return Promise.resolve(validation as ToolOutcome<CommandResult>);
 
   return new Promise((resolve) => {

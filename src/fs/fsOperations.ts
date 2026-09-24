@@ -22,6 +22,12 @@ const DEFAULT_IGNORED_DIRS = new Set([
   '__pycache__',
 ]);
 
+/** Credential/configuration files are never exposed through inspection APIs. */
+export function isSensitiveInspectionPath(filePath: string): boolean {
+  const normalized = filePath.replaceAll('\\', '/').replace(/^\.\//, '');
+  return /(^|\/)(\.env(?:\.[^/]+)?|\.ssh(?:\/|$)|credentials?(?:\/|$)|id_(?:rsa|dsa|ecdsa|ed25519)(?:$|\/)|[^/]+\.(?:pem|key|p12|pfx)|\.git\/config)$/.test(normalized);
+}
+
 function toPathError<T>(e: unknown, attemptedPath: string): ToolOutcome<T> {
   if (e instanceof PathOutsideRootError) {
     return err('PATH_OUTSIDE_ROOT', `Access denied: "${attemptedPath}" is outside the project root.`);
@@ -74,6 +80,7 @@ export function listFiles(config: AppConfig, opts: ListFilesOptions): ToolOutcom
 
       const entryAbs = path.join(dirAbs, entry.name);
       const relPosix = toRelativePosix(config.projectRoot, entryAbs);
+      if (isSensitiveInspectionPath(relPosix)) continue;
 
       if (entry.isDirectory()) {
         results.push({ path: relPosix, type: 'directory' });
@@ -98,6 +105,8 @@ export function listFiles(config: AppConfig, opts: ListFilesOptions): ToolOutcom
 export interface ReadFileOptions {
   filePath: string;
   maxBytes?: number;
+  /** Internal scanner use only; MCP callers never receive this capability. */
+  allowSensitive?: boolean;
 }
 
 export interface ReadFileResult {
@@ -108,6 +117,9 @@ export interface ReadFileResult {
 }
 
 export function readFile(config: AppConfig, opts: ReadFileOptions): ToolOutcome<ReadFileResult> {
+  if (!opts.allowSensitive && isSensitiveInspectionPath(opts.filePath)) {
+    return err('INVALID_INPUT', 'Sensitive credential and repository configuration files are not available through inspection tools.');
+  }
   let absPath: string;
   try {
     absPath = resolveExistingWithinRoot(config.projectRoot, opts.filePath);
@@ -166,11 +178,16 @@ export interface SearchFilesOptions {
   caseSensitive: boolean;
   maxResults: number;
   isRegex: boolean;
+  /** Internal scanner use only; MCP callers never receive this capability. */
+  allowSensitive?: boolean;
 }
 
 export function searchFiles(config: AppConfig, opts: SearchFilesOptions): ToolOutcome<SearchMatch[]> {
   if (opts.query.length === 0) {
     return err('INVALID_INPUT', 'Search query must not be empty');
+  }
+  if (!opts.allowSensitive && isSensitiveInspectionPath(opts.dirPath)) {
+    return err('INVALID_INPUT', 'Sensitive credential and repository configuration paths are not available through inspection tools.');
   }
 
   let absDir: string;
@@ -238,6 +255,7 @@ export function searchFiles(config: AppConfig, opts: SearchFilesOptions): ToolOu
       }
 
       const relPosix = toRelativePosix(config.projectRoot, entryAbs);
+      if (!opts.allowSensitive && isSensitiveInspectionPath(relPosix)) continue;
       const lines = text.split('\n');
       for (let i = 0; i < lines.length; i++) {
         if (results.length >= cap) return;
