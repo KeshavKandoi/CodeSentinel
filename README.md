@@ -394,3 +394,136 @@ keyword noise in comments, documentation, and unrelated strings.
   discovered env/config files.
 - Runtime exploitation, route discovery, auth testing, automatic fixes,
   AI-generated remediation, and re-testing remain out of scope.
+
+---
+
+# Phase 5: Access-Control Analysis
+
+Phase 5 adds a deterministic access-control engine and the `analyze_access_control`
+MCP tool. It orchestrates the existing `src/access/` building blocks (`controls.ts`,
+`identity.ts`, `ownership.ts`, `globals.ts`, `patterns.ts`, `text.ts`) — which
+already implemented guard/decorator classification, identity-source detection,
+and ownership-check analysis — into a single, normalized result. It consumes the
+Phase 4 `AttackSurfaceEntry[]` inventory rather than rediscovering routes, and it
+never starts the target application, sends HTTP requests, or executes project code.
+
+## New tool: analyze_access_control
+
+| Tool | Description |
+|---|---|
+| analyze_access_control | Runs Phase 4 route discovery, then classifies each route's access-control state and produces suspected findings for missing authentication, missing authorization, IDOR/BOLA candidates, and inconsistent authorization across methods on the same resource. Read-only and static. |
+
+Like `discover_routes`, it takes no input beyond the configured `PROJECT_ROOT`.
+
+## The AccessControlEntry matrix
+
+Every analyzed route becomes one `AccessControlEntry`, carrying its classified
+`state`, the authentication/authorization controls and ownership checks found
+for it, its resource parameters/loads, identity sources, a confidence level,
+and evidence:
+
+    {
+      "routeId": "RT-EXPRESS-...",
+      "method": "DELETE",
+      "path": "/documents/:id",
+      "state": "authenticated",
+      "explicitlyPublic": false,
+      "administrative": false,
+      "stateChanging": true,
+      "authentication": [ { "mechanism": "generic", "name": "authenticate", "confidence": "high", ... } ],
+      "authorization": [],
+      "ownership": [],
+      "resourceParameters": ["id"],
+      "resourceLoads": [ { "parameter": "id", "operation": "delete", ... } ],
+      "confidence": "medium",
+      "evidence": [ ... ]
+    }
+
+### Access-control states
+
+`public` (no protection detected), `authenticated` (an authentication control
+but no role/permission/policy check), `role_protected`, `permission_protected`,
+`ownership_protected` (authenticated + an explicit ownership/tenant comparison),
+`mixed` (a public marker contradicted by a guard also present -- reviewed, not
+guessed), and `unknown` (the route's source could not be resolved, so the
+engine declines to classify it rather than guessing).
+
+## Finding types
+
+Findings reuse the existing `SecurityFinding` shape via `AccessControlFinding`
+(`status: 'suspected'`, `verificationStatus: 'not_verified'` -- Phase 5 never
+claims a vulnerability is confirmed). Five candidate types, each with its own
+rule ID, are currently implemented:
+
+| Rule ID | Candidate type | Trigger (conservative, evidence-gated) |
+|---|---|---|
+| CS-ACCESS-001 | missing_authentication | A state-changing route with a resource parameter, or an administrative route, has no detected authentication control and isn't marked explicitly public. |
+| CS-ACCESS-002 | missing_authorization | An administrative route is authenticated but has no detected role/permission/policy check. |
+| CS-ACCESS-003 | idor_candidate | A resource is loaded by a caller-supplied identifier and then written/deleted with no visible ownership/tenant comparison. |
+| CS-ACCESS-004 | user_resource_access | Same as above, but for a read -- lower severity/confidence since read-only exposure is less immediately dangerous. |
+| CS-ACCESS-005 | inconsistent_authorization | A method on a resource path has no detected protection while a sibling method on the same path is role/permission/ownership-protected. |
+
+## Confidence semantics
+
+Confidence on an `AccessControlEntry` is the weakest confidence among: the
+underlying Phase 4 route's own confidence, and every authentication/authorization
+control contributing to its classification. A route whose source could not be
+resolved is always `low` confidence and `unknown` state -- never guessed. Static
+findings can be false positives, especially where enforcement happens globally,
+upstream (a gateway/proxy), or in a service layer not visible in this repository;
+every rule's `falsePositiveGuidance` documents this explicitly.
+
+## Static suspected vs. runtime-verified
+
+Everything Phase 5 produces is static evidence: pattern-matched guards, decorators,
+identity sources, and resource-load/ownership comparisons in source text. It is
+**not** proof that a route is actually exploitable. `status: 'suspected'` and
+`verificationStatus: 'not_verified'` reflect this on every finding. Confirming or
+disproving a suspected finding against a real running instance of the target
+application -- with explicit target-authorization boundaries -- is out of scope
+for Phase 5 and belongs exclusively to the not-yet-implemented Phase 6 runtime
+verification engine.
+
+## Phase 5 architecture
+
+    src/access/
+      types.ts                 # AccessControlEntry, AccessControlFinding, AccessState, etc. (pre-existing)
+      controls.ts               # Guard/decorator/global-guard classification into AuthControl/AuthorizationControl (pre-existing)
+      identity.ts                 # Identity-source detection (req.user, getServerSession, Depends(), etc.) (pre-existing)
+      ownership.ts                  # Resource-load and ownership-comparison analysis (pre-existing)
+      globals.ts                     # Global guard/middleware/default-permission collection (pre-existing)
+      patterns.ts                     # Guard-name classification heuristics (pre-existing)
+      text.ts                          # Source resolver: route/handler text extraction, string/comment stripping (pre-existing)
+      engine.ts                         # NEW: orchestrates the above into AnalyzeAccessControlResult; state classification and finding generation
+
+## Running tests
+
+    npm test
+
+runs the complete suite (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5
+together): 241 tests across 11 files. Phase 5 tests cover public/authenticated/
+role-protected/ownership-protected/unknown classification, IDOR and missing-
+authentication/authorization finding generation, inconsistent-authorization
+detection across sibling methods, false-positive resistance (comment/string
+text mentioning "admin"/"role"/"token" that must not be misdetected as a real
+guard), a malformed-file crash-safety case, a Python/FastAPI smoke test, and
+end-to-end MCP tool-handler tests including the `discover_routes` ->
+`analyze_access_control` data-flow chain.
+
+## Known limitations
+
+- Ownership/ID comparisons are detected via deterministic pattern matching on
+  source text (identity references, resource-parameter aliases, comparison
+  operators), not a full dataflow or type-aware analysis; a database-level
+  policy or a service-layer ownership check that isn't in the route's own file
+  chain will not be detected and will not be flagged as a false negative here.
+- `inconsistent_authorization` only compares methods that share the same file
+  and normalized resource path; it does not currently reason across files or
+  across differently-named-but-equivalent routes.
+- Administrative-route detection is a path-prefix and role-requirement
+  heuristic (`/admin`, `/internal`, `/manage`, `/moderation`, or a role
+  requirement matching admin/staff/superuser); other privileged-path
+  conventions are not yet recognized.
+- As with Phase 3, all findings are `suspected`, never `confirmed`; runtime
+  verification against a real, explicitly authorized target is deferred to
+  Phase 6.
