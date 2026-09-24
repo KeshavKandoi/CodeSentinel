@@ -61,7 +61,8 @@ describe('Phase 7 state machine and budgets', () => {
     const analysis = await tool('run_security_analysis').handler(config, { investigationId: id });
     expect(analysis.isError).toBe(false);
     const duplicate = await tool('run_security_analysis').handler(config, { investigationId: id });
-    expect(payload(duplicate).error).toBe('DUPLICATE_OPERATION');
+    expect(duplicate.isError).toBe(false);
+    expect(payload(duplicate).execution.analysisSteps).toBe(4);
     const noEvidence = await tool('record_security_hypothesis').handler(config, {
       investigationId: id, title: 'No evidence', description: 'invalid', evidenceRefs: ['missing-ref'],
     });
@@ -83,6 +84,57 @@ describe('Phase 7 state machine and budgets', () => {
     const state = payload(await tool('get_investigation').handler(config, { investigationId: id }));
     expect(JSON.stringify(state)).not.toContain('supersecret-token');
     expect(analysis.status).toBe('awaiting_verification');
+  });
+
+  it('rejects cross-investigation references and mismatched finding evidence', async () => {
+    const first = payload(await tool('start_security_investigation').handler(config, {
+      projectPath: FIXTURE, scope: ['authorization'], hypothesis: 'first',
+    }));
+    const second = payload(await tool('start_security_investigation').handler(config, {
+      projectPath: FIXTURE, scope: ['authorization'], hypothesis: 'second',
+    }));
+    await tool('run_security_analysis').handler(config, { investigationId: first.id });
+    const firstAnalysis = payload(await tool('get_investigation').handler(config, { investigationId: first.id }));
+    const findingId = firstAnalysis.analysis.accessControl.findingIds[0];
+    const foreignEvidenceId = firstAnalysis.evidence.find((e: { reference: string }) => e.reference === `accessFinding:${findingId}`).id;
+    await tool('run_security_analysis').handler(config, { investigationId: second.id });
+    const crossReference = await tool('record_security_hypothesis').handler(config, {
+      investigationId: second.id, title: 'Cross-project evidence', description: 'invalid',
+      evidenceRefs: [foreignEvidenceId],
+    });
+    expect(payload(crossReference).error).toBe('HYPOTHESIS_INVALID');
+    const mismatch = await tool('record_security_hypothesis').handler(config, {
+      investigationId: second.id, title: 'Mismatched evidence', description: 'invalid',
+      findingId, evidenceRefs: ['project'],
+    });
+    expect(payload(mismatch).error).toBe('HYPOTHESIS_INVALID');
+  });
+
+  it('fails safely when the evidence-byte budget is exhausted', async () => {
+    const started = await tool('start_security_investigation').handler(config, {
+      projectPath: FIXTURE, scope: ['general_application_security'], hypothesis: 'small evidence budget',
+      budget: { maxEvidenceBytes: 1_000 },
+    });
+    const id = payload(started).id as string;
+    const analysis = await tool('run_security_analysis').handler(config, { investigationId: id });
+    expect(payload(analysis).error).toBe('ANALYSIS_FAILED');
+    const state = payload(await tool('get_investigation').handler(config, { investigationId: id }));
+    expect(state.status).toBe('failed');
+    expect(state.execution.evidenceBytes).toBeLessThanOrEqual(1_000);
+  });
+
+  it('serializes concurrent analysis calls for one investigation', async () => {
+    const started = payload(await tool('start_security_investigation').handler(config, {
+      projectPath: FIXTURE, scope: ['route_security'], hypothesis: 'concurrency',
+    }));
+    const results = await Promise.all([
+      tool('run_security_analysis').handler(config, { investigationId: started.id }),
+      tool('run_security_analysis').handler(config, { investigationId: started.id }),
+    ]);
+    expect(results.every((result) => result.isError === false)).toBe(true);
+    const state = payload(await tool('get_investigation').handler(config, { investigationId: started.id }));
+    expect(state.execution.analysisSteps).toBe(4);
+    expect(state.steps.filter((step: { operation: string }) => step.operation === 'access_control_analysis')).toHaveLength(1);
   });
 });
 
@@ -106,12 +158,13 @@ describe('Phase 7 complete workflow', () => {
       severity: 'high',
       confidence: 'medium',
     }));
-    const runtime = await tool('request_runtime_verification').handler(config, {
+    const runtimeInput = {
       investigationId,
       hypothesisId: hypothesis.id,
       findingId,
       target: { allowedOrigin: 'http://10.0.0.4:3000' },
-    });
+    };
+    const runtime = await tool('request_runtime_verification').handler(config, runtimeInput);
     expect(runtime.isError).toBe(false);
     const completed = payload(await tool('get_investigation').handler(config, { investigationId }));
     expect(completed.status).toBe('completed');
@@ -120,6 +173,9 @@ describe('Phase 7 complete workflow', () => {
     expect(investigatedFinding).toBeDefined();
     expect(investigatedFinding.runtimeVerificationStatus).toBe('blocked');
     expect(investigatedFinding.lifecycle).not.toBe('runtime_verified');
+    expect(completed.runtimeResults[hypothesis.id].status).toBe('blocked');
+    const repeated = await tool('request_runtime_verification').handler(config, runtimeInput);
+    expect(payload(repeated).error).toBe('INVALID_TRANSITION');
   });
 
   it('refuses runtime verification without a matching evidence-backed hypothesis', async () => {

@@ -1,7 +1,7 @@
 import type { AccessControlFinding } from '../access/types.js';
 import type { AttackSurfaceEntry } from '../routes/types.js';
 import type { SecurityFinding } from '../security/types.js';
-import type { VerificationResult } from '../runtime/types.js';
+import type { VerificationResult, VerificationStatus } from '../runtime/types.js';
 
 export const INVESTIGATION_SCOPES = [
   'authentication',
@@ -15,7 +15,7 @@ export const INVESTIGATION_SCOPES = [
 
 export type InvestigationScope = (typeof INVESTIGATION_SCOPES)[number];
 export type InvestigationStatus = 'created' | 'running' | 'awaiting_verification' | 'completed' | 'blocked' | 'failed';
-export type InvestigationFindingLifecycle = 'static_candidate' | 'investigated' | 'runtime_verified' | 'not_reproduced' | 'inconclusive' | 'ready_for_report';
+export type InvestigationFindingLifecycle = 'static_candidate' | 'investigated' | 'runtime_verified' | 'not_reproduced' | 'inconclusive' | 'blocked' | 'ready_for_report';
 
 export interface InvestigationBudget {
   maxAnalysisSteps: number;
@@ -71,6 +71,15 @@ export interface InvestigationAnalysisSummary {
   accessControl: { totalRoutes: number; totalFindings: number; findingIds: string[]; warningCount: number };
 }
 
+export interface InvestigationRuntimeResult {
+  status: VerificationStatus;
+  confidence: 'high' | 'medium' | 'low';
+  summary: string;
+  requestsIssued: number;
+  blockedReason: string | null;
+  evidenceRef: string;
+}
+
 export interface SecurityInvestigation {
   id: string;
   projectPath: string;
@@ -81,6 +90,7 @@ export interface SecurityInvestigation {
   evidence: InvestigationEvidence[];
   hypotheses: SecurityHypothesis[];
   findings: InvestigationFinding[];
+  runtimeResults: Record<string, InvestigationRuntimeResult>;
   analysis: InvestigationAnalysisSummary | null;
   budget: InvestigationBudget;
   execution: { analysisSteps: number; runtimeVerifications: number; evidenceBytes: number; operations: string[] };

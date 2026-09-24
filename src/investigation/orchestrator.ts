@@ -15,6 +15,7 @@ import type {
   InvestigationInternals,
   InvestigationScope,
   InvestigationStep,
+  InvestigationRuntimeResult,
   SecurityHypothesis,
   SecurityInvestigation,
 } from './types.js';
@@ -28,6 +29,8 @@ const DEFAULT_BUDGET: InvestigationBudget = {
 };
 
 const investigations = new Map<string, InvestigationInternals>();
+const investigationLocks = new Map<string, Promise<void>>();
+const MAX_STORED_INVESTIGATIONS = 100;
 
 function id(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
@@ -57,6 +60,20 @@ function boundary(config: AppConfig, projectPath: string): string | null {
 
 function get(idValue: string): InvestigationInternals | null {
   return investigations.get(idValue) ?? null;
+}
+
+async function withInvestigationLock<T>(investigationId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = investigationLocks.get(investigationId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  investigationLocks.set(investigationId, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (investigationLocks.get(investigationId) === current) investigationLocks.delete(investigationId);
+  }
 }
 
 function operationKey(value: string): string {
@@ -98,9 +115,16 @@ export function startInvestigation(
   let budget: InvestigationBudget;
   try { budget = boundedBudget(input.budget); } catch (e) { return err('INVALID_INPUT', (e as Error).message); }
   const timestamp = now();
+  if (investigations.size >= MAX_STORED_INVESTIGATIONS) {
+    const removable = [...investigations.values()]
+      .filter((item) => ['completed', 'failed', 'blocked'].includes(item.investigation.status))
+      .sort((a, b) => a.investigation.updatedAt.localeCompare(b.investigation.updatedAt))[0];
+    if (!removable) return err('BUDGET_EXCEEDED', 'The bounded investigation store is full; complete or remove an existing investigation before starting another.');
+    investigations.delete(removable.investigation.id);
+  }
   const investigation: SecurityInvestigation = {
     id: id('investigation'), projectPath: path.resolve(input.projectPath), scope: input.scope,
-    status: 'created', hypothesis: input.hypothesis, steps: [], evidence: [], hypotheses: [], findings: [], analysis: null,
+    status: 'created', hypothesis: input.hypothesis, steps: [], evidence: [], hypotheses: [], findings: [], runtimeResults: {}, analysis: null,
     budget, execution: { analysisSteps: 0, runtimeVerifications: 0, evidenceBytes: 0, operations: [] }, createdAt: timestamp, updatedAt: timestamp,
   };
   investigations.set(investigation.id, { investigation, accessFindings: [], routes: [], securityFindings: [], runtimeResults: new Map() });
@@ -108,66 +132,77 @@ export function startInvestigation(
 }
 
 export async function runSecurityAnalysis(config: AppConfig, investigationId: string): Promise<ToolOutcome<SecurityInvestigation>> {
-  const state = get(investigationId);
-  if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${investigationId}" was not found.`);
-  const duplicate = state.investigation.execution.operations.includes('static-analysis');
-  if (duplicate) return err('DUPLICATE_OPERATION', 'Static analysis has already been run for this investigation.');
-  if (state.investigation.status !== 'created') return err('INVALID_TRANSITION', `Static analysis cannot start from status "${state.investigation.status}".`);
-  const elapsed = checkTime(state);
-  if (elapsed) return err('BUDGET_EXCEEDED', elapsed);
-  state.investigation.status = 'running';
-  state.investigation.execution.operations.push('static-analysis');
-  try {
-    const profile = runProjectDiscovery(config.projectRoot);
-    const scan = await scanProject(config);
-    const routes = discoverRoutes(config);
-    if (!routes.ok) throw new Error(routes.error.message);
-    const access = analyzeAccessControl(config, routes.data.entries);
-    if (state.investigation.budget.maxAnalysisSteps < 4) throw new Error('Analysis-step budget is too small for the required deterministic pipeline.');
-    state.investigation.execution.analysisSteps = 4;
-    state.securityFindings = scan.ok ? scan.data.findings : [];
-    state.routes = routes.data.entries;
-    state.accessFindings = access.findings;
-    const scanRefs = state.securityFindings.map((finding) => `securityFinding:${finding.id}`);
-    const routeRefs = state.routes.map((entry) => `route:${entry.id}`);
-    const accessRefs = state.accessFindings.map((finding) => `accessFinding:${finding.id}`);
-    for (const finding of state.securityFindings) addEvidence(state, { kind: 'security_finding', reference: `securityFinding:${finding.id}`, summary: `${finding.title} (${finding.severity}, ${finding.confidence}).` });
-    for (const entry of state.routes) addEvidence(state, { kind: 'route', reference: `route:${entry.id}`, summary: `${entry.method} ${entry.path} (${entry.framework}).` });
-    for (const finding of state.accessFindings) addEvidence(state, { kind: 'access_finding', reference: `accessFinding:${finding.id}`, summary: `${finding.title} on ${finding.method} ${finding.path}.` });
-    const projectRef = addEvidence(state, { kind: 'project', reference: 'project', summary: `${profile.projectName ?? 'Unnamed project'} (${profile.ecosystem}).` });
-    addStep(state, 'project_discovery', 'Project profile collected.', [projectRef]);
-    addStep(state, 'static_analysis', `Static scanner produced ${state.securityFindings.length} findings.`, scanRefs);
-    addStep(state, 'route_discovery', `Route discovery produced ${state.routes.length} entries.`, routeRefs);
-    addStep(state, 'access_control_analysis', `Access-control analysis produced ${state.accessFindings.length} findings.`, accessRefs);
-    state.investigation.analysis = {
-      project: { name: profile.projectName, ecosystem: profile.ecosystem },
-      scan: { total: scan.ok ? scan.data.findings.length : 0, findingIds: state.securityFindings.map((f) => f.id), warningCount: scan.ok ? scan.data.warnings.length : 1 },
-      routes: { total: state.routes.length, routeIds: state.routes.map((e) => e.id), warningCount: routes.data.warnings.length },
-      accessControl: { totalRoutes: access.summary.totalRoutes, totalFindings: access.findings.length, findingIds: access.findings.map((f) => f.id), warningCount: access.warnings.length },
-    };
-    state.investigation.findings = state.accessFindings.map(createFindingView);
-    state.investigation.status = 'awaiting_verification';
-    state.investigation.updatedAt = now();
-    return ok(state.investigation);
-  } catch (e) {
-    state.investigation.status = 'failed';
-    state.investigation.updatedAt = now();
-    return err('ANALYSIS_FAILED', 'Deterministic security analysis failed unexpectedly.');
-  }
+  return withInvestigationLock(investigationId, async () => {
+    const state = get(investigationId);
+    if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${investigationId}" was not found.`);
+    if (state.investigation.execution.operations.includes('static-analysis')) return ok(state.investigation);
+    if (state.investigation.status !== 'created') return err('INVALID_TRANSITION', `Static analysis cannot start from status "${state.investigation.status}".`);
+    const elapsed = checkTime(state);
+    if (elapsed) return err('BUDGET_EXCEEDED', elapsed);
+    state.investigation.status = 'running';
+    state.investigation.execution.operations.push('static-analysis');
+    try {
+      const profile = runProjectDiscovery(config.projectRoot);
+      state.investigation.execution.analysisSteps = 1;
+      const scan = await scanProject(config);
+      state.investigation.execution.analysisSteps = 2;
+      const routes = discoverRoutes(config);
+      if (!routes.ok) throw new Error(routes.error.message);
+      state.investigation.execution.analysisSteps = 3;
+      const access = analyzeAccessControl(config, routes.data.entries);
+      state.investigation.execution.analysisSteps = 4;
+      state.securityFindings = scan.ok ? scan.data.findings : [];
+      state.routes = routes.data.entries;
+      state.accessFindings = access.findings;
+      const scanRefs = state.securityFindings.map((finding) => `securityFinding:${finding.id}`);
+      const routeRefs = state.routes.map((entry) => `route:${entry.id}`);
+      const accessRefs = state.accessFindings.map((finding) => `accessFinding:${finding.id}`);
+      for (const finding of state.securityFindings) addEvidence(state, { kind: 'security_finding', reference: `securityFinding:${finding.id}`, summary: `${finding.title} (${finding.severity}, ${finding.confidence}).` });
+      for (const entry of state.routes) addEvidence(state, { kind: 'route', reference: `route:${entry.id}`, summary: `${entry.method} ${entry.path} (${entry.framework}).` });
+      for (const finding of state.accessFindings) addEvidence(state, { kind: 'access_finding', reference: `accessFinding:${finding.id}`, summary: `${finding.title} on ${finding.method} ${finding.path}.` });
+      const projectRef = addEvidence(state, { kind: 'project', reference: 'project', summary: `${profile.projectName ?? 'Unnamed project'} (${profile.ecosystem}).` });
+      addStep(state, 'project_discovery', 'Project profile collected.', [projectRef]);
+      addStep(state, 'static_analysis', `Static scanner produced ${state.securityFindings.length} findings.`, scanRefs);
+      addStep(state, 'route_discovery', `Route discovery produced ${state.routes.length} entries.`, routeRefs);
+      addStep(state, 'access_control_analysis', `Access-control analysis produced ${state.accessFindings.length} findings.`, accessRefs);
+      state.investigation.analysis = {
+        project: { name: profile.projectName, ecosystem: profile.ecosystem },
+        scan: { total: scan.ok ? scan.data.findings.length : 0, findingIds: state.securityFindings.map((f) => f.id), warningCount: scan.ok ? scan.data.warnings.length : 1 },
+        routes: { total: state.routes.length, routeIds: state.routes.map((e) => e.id), warningCount: routes.data.warnings.length },
+        accessControl: { totalRoutes: access.summary.totalRoutes, totalFindings: access.findings.length, findingIds: access.findings.map((f) => f.id), warningCount: access.warnings.length },
+      };
+      state.investigation.findings = state.accessFindings.map(createFindingView);
+      state.investigation.status = 'awaiting_verification';
+      state.investigation.updatedAt = now();
+      return ok(state.investigation);
+    } catch {
+      state.investigation.status = 'failed';
+      state.investigation.updatedAt = now();
+      return err('ANALYSIS_FAILED', 'Deterministic security analysis failed unexpectedly.');
+    }
+  });
 }
 
 export function recordHypothesis(config: AppConfig, input: { investigationId: string; title: string; description: string; findingId?: string; evidenceRefs: string[]; severity?: SecurityHypothesis['severity']; confidence?: SecurityHypothesis['confidence'] }): ToolOutcome<SecurityHypothesis> {
   const state = get(input.investigationId);
   if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${input.investigationId}" was not found.`);
   if (state.investigation.status !== 'awaiting_verification') return err('INVALID_TRANSITION', `A hypothesis cannot be recorded from status "${state.investigation.status}".`);
+  const elapsed = checkTime(state);
+  if (elapsed) return err('BUDGET_EXCEEDED', elapsed);
   if (state.investigation.hypotheses.length >= state.investigation.budget.maxHypotheses) return err('BUDGET_EXCEEDED', 'Maximum hypotheses for this investigation has been reached.');
   const key = operationKey(`${input.title}|${input.findingId ?? ''}|${[...input.evidenceRefs].sort().join('|')}`);
   if (state.investigation.execution.operations.includes(`hypothesis:${key}`)) return err('DUPLICATE_OPERATION', 'An identical hypothesis has already been recorded.');
   if (input.evidenceRefs.length === 0) return err('HYPOTHESIS_INVALID', 'A hypothesis must contain at least one evidence reference.');
-  const available = new Set(state.investigation.evidence.map((e) => e.reference));
+  const available = new Set(state.investigation.evidence.flatMap((e) => [e.id, e.reference]));
   const missing = input.evidenceRefs.filter((ref) => !available.has(ref));
   if (missing.length > 0) return err('HYPOTHESIS_INVALID', `Evidence references are not available: ${missing.join(', ')}.`);
-  if (input.findingId && !state.accessFindings.some((finding) => finding.id === input.findingId)) return err('HYPOTHESIS_INVALID', `Finding "${input.findingId}" is not part of this investigation.`);
+  if (input.findingId) {
+    if (!state.accessFindings.some((finding) => finding.id === input.findingId)) return err('HYPOTHESIS_INVALID', `Finding "${input.findingId}" is not part of this investigation.`);
+    const matchingEvidence = state.investigation.evidence.some(
+      (e) => (input.evidenceRefs.includes(e.id) && e.reference === `accessFinding:${input.findingId}`) || input.evidenceRefs.includes(`accessFinding:${input.findingId}`)
+    );
+    if (!matchingEvidence) return err('HYPOTHESIS_INVALID', 'A finding-backed hypothesis must reference the matching access-control evidence item.');
+  }
   const hypothesis: SecurityHypothesis = { id: id('hypothesis'), title: input.title, description: input.description, findingId: input.findingId ?? null, evidenceRefs: input.evidenceRefs, severity: input.severity ?? null, confidence: input.confidence ?? null, status: 'open', createdAt: now() };
   state.investigation.hypotheses.push(hypothesis);
   state.investigation.execution.operations.push(`hypothesis:${key}`);
@@ -177,33 +212,54 @@ export function recordHypothesis(config: AppConfig, input: { investigationId: st
 }
 
 export async function requestRuntimeVerification(config: AppConfig, input: VerifyFindingRequest & { investigationId: string; hypothesisId: string }): Promise<ToolOutcome<SecurityInvestigation>> {
-  const state = get(input.investigationId);
-  if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${input.investigationId}" was not found.`);
-  if (state.investigation.status !== 'awaiting_verification') return err('INVALID_TRANSITION', `Runtime verification cannot start from status "${state.investigation.status}".`);
-  const hypothesis = state.investigation.hypotheses.find((item) => item.id === input.hypothesisId);
-  if (!hypothesis) return err('HYPOTHESIS_NOT_FOUND', `Hypothesis "${input.hypothesisId}" was not found in this investigation.`);
-  if (!hypothesis.findingId || hypothesis.findingId !== input.findingId) return err('HYPOTHESIS_INVALID', 'Runtime verification must reference the static finding attached to the hypothesis.');
-  if (state.investigation.execution.runtimeVerifications >= state.investigation.budget.maxRuntimeVerifications) return err('BUDGET_EXCEEDED', 'Maximum runtime verifications for this investigation has been reached.');
-  const targetKey = operationKey(`${input.hypothesisId}|${input.findingId}|${input.target.allowedOrigin}`);
-  if (state.investigation.execution.operations.includes(`runtime:${targetKey}`)) return err('DUPLICATE_OPERATION', 'This hypothesis and target have already been verified.');
-  const elapsed = checkTime(state);
-  if (elapsed) return err('BUDGET_EXCEEDED', elapsed);
-  const result = await verifyFinding(config, input);
-  if (!result.ok) return err(result.error.code, result.error.message);
-  state.investigation.execution.runtimeVerifications += 1;
-  state.investigation.execution.operations.push(`runtime:${targetKey}`);
-  state.runtimeResults.set(input.hypothesisId, result.data.result);
-  const runtimeRef = addEvidence(state, { kind: 'runtime_verification', reference: `runtime:${input.hypothesisId}`, summary: result.data.result.summary });
-  addStep(state, 'runtime_verification', result.data.result.summary, [runtimeRef]);
-  hypothesis.status = result.data.result.status === 'verified' ? 'verified' : result.data.result.status === 'not_reproduced' ? 'not_reproduced' : result.data.result.status === 'blocked' ? 'blocked' : 'inconclusive';
-  const finding = state.investigation.findings.find((item) => item.findingId === input.findingId);
-  if (finding) {
-    finding.lifecycle = result.data.result.status === 'verified' ? 'runtime_verified' : result.data.result.status === 'not_reproduced' ? 'not_reproduced' : result.data.result.status === 'inconclusive' ? 'inconclusive' : 'investigated';
-    finding.runtimeVerificationStatus = result.data.result.status;
-  }
-  state.investigation.status = 'completed';
-  state.investigation.updatedAt = now();
-  return ok(state.investigation);
+  return withInvestigationLock(input.investigationId, async () => {
+    const state = get(input.investigationId);
+    if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${input.investigationId}" was not found.`);
+    if (state.investigation.status !== 'awaiting_verification') return err('INVALID_TRANSITION', `Runtime verification cannot start from status "${state.investigation.status}".`);
+    const hypothesis = state.investigation.hypotheses.find((item) => item.id === input.hypothesisId);
+    if (!hypothesis) return err('HYPOTHESIS_NOT_FOUND', `Hypothesis "${input.hypothesisId}" was not found in this investigation.`);
+    if (!hypothesis.findingId || hypothesis.findingId !== input.findingId || hypothesis.evidenceRefs.length === 0) return err('HYPOTHESIS_INVALID', 'Runtime verification must reference the evidence-backed static finding attached to the hypothesis.');
+    const finding = state.accessFindings.find((item) => item.id === input.findingId);
+    if (!finding) return err('HYPOTHESIS_INVALID', `Finding "${input.findingId}" is not part of this investigation.`);
+    const supported = new Set(['missing_authentication', 'missing_authorization', 'idor_candidate', 'user_resource_access', 'inconsistent_authorization']);
+    if (!supported.has(finding.candidateType)) return err('UNSUPPORTED_CANDIDATE_TYPE', `Finding candidateType "${finding.candidateType}" is not supported by Phase 6.`);
+    if (state.investigation.execution.runtimeVerifications >= state.investigation.budget.maxRuntimeVerifications) return err('BUDGET_EXCEEDED', 'Maximum runtime verifications for this investigation has been reached.');
+    const targetKey = operationKey(`${input.investigationId}|runtime|${input.hypothesisId}|${input.findingId}|${input.target.allowedOrigin}`);
+    if (state.investigation.execution.operations.includes(`runtime:${targetKey}`)) return err('DUPLICATE_OPERATION', 'This hypothesis and target have already been verified.');
+    const elapsed = checkTime(state);
+    if (elapsed) return err('BUDGET_EXCEEDED', elapsed);
+    let result;
+    try {
+      result = await verifyFinding(config, input);
+    } catch {
+      state.investigation.status = 'failed';
+      state.investigation.updatedAt = now();
+      return err('INTERNAL_ERROR', 'Runtime verification failed unexpectedly.');
+    }
+    if (!result.ok) return err(result.error.code, result.error.message);
+    state.investigation.execution.runtimeVerifications += 1;
+    state.investigation.execution.operations.push(`runtime:${targetKey}`);
+    state.runtimeResults.set(input.hypothesisId, result.data.result);
+    const runtimeRef = addEvidence(state, { kind: 'runtime_verification', reference: `runtime:${input.hypothesisId}`, summary: result.data.result.summary });
+    state.investigation.runtimeResults[input.hypothesisId] = {
+      status: result.data.result.status,
+      confidence: result.data.result.confidence,
+      summary: result.data.result.summary,
+      requestsIssued: result.data.result.requestsIssued,
+      blockedReason: result.data.result.blockedReason,
+      evidenceRef: runtimeRef,
+    };
+    addStep(state, 'runtime_verification', result.data.result.summary, [runtimeRef]);
+    hypothesis.status = result.data.result.status === 'verified' ? 'verified' : result.data.result.status === 'not_reproduced' ? 'not_reproduced' : result.data.result.status === 'blocked' ? 'blocked' : 'inconclusive';
+    const investigationFinding = state.investigation.findings.find((item) => item.findingId === input.findingId);
+    if (investigationFinding) {
+      investigationFinding.lifecycle = result.data.result.status === 'verified' ? 'runtime_verified' : result.data.result.status === 'not_reproduced' ? 'not_reproduced' : result.data.result.status === 'inconclusive' ? 'inconclusive' : result.data.result.status === 'blocked' ? 'blocked' : 'investigated';
+      investigationFinding.runtimeVerificationStatus = result.data.result.status;
+    }
+    state.investigation.status = 'completed';
+    state.investigation.updatedAt = now();
+    return ok(state.investigation);
+  });
 }
 
 const SECRET_KEY_RE = /authorization|cookie|set-cookie|api[_-]?key|token|password|secret|credential/i;
@@ -226,7 +282,9 @@ export function getInvestigation(investigationId: string): ToolOutcome<SecurityI
   return ok(sanitize(state.investigation) as SecurityInvestigation);
 }
 
-export const SECURITY_AGENT_INSTRUCTIONS = `CodeSentinel Phase 7 is a bounded security investigation toolkit for an external AI agent. Discover the project, inspect its structure, run deterministic static scanning, discover routes, analyze access control, record evidence-backed hypotheses, and request runtime verification only for a justified existing finding and explicitly authorized target. Never assume unrestricted penetration testing, never bypass path or target guards, never request credentials automatically, and avoid repeated operations. CodeSentinel does not contain an LLM API key or call a model; the external MCP client performs reasoning while CodeSentinel enforces filesystem boundaries, static analysis, runtime target safety, request limits, evidence collection, and redaction. Produce final reports from the returned evidence and keep static suspected status separate from runtime outcomes.`;
+export const SECURITY_AGENT_INSTRUCTIONS = `CodeSentinel Phase 7 is a bounded security investigation toolkit for an external AI agent. Call start_security_investigation first with the configured project path, a narrow scope, and a concrete question. Call run_security_analysis once, then inspect its project, route, scanner, and access-control evidence identifiers. Call record_security_hypothesis only when the hypothesis cites at least one returned evidence reference; static findings are candidates, not proof. Call request_runtime_verification only for an existing evidence-backed Phase 5 access-control finding when an operator has explicitly authorized the exact runtime target and supplied any required test sessions. Call get_investigation to collect the bounded final state and evidence.
+
+Runtime verification is optional. Never bypass path guards, target authorization, SSRF protection, session rules, request/redirect/timeout/response limits, or destructive-method controls. Do not repeat identical operations, do not discover credentials, do not send arbitrary HTTP, and stop when an investigation budget is exhausted. Report blocked, inconclusive, and uncertain outcomes as uncertainty; do not invent semantic proof or mark findings fixed. CodeSentinel does not contain an LLM API key or call a model; the external MCP client performs reasoning while CodeSentinel enforces filesystem boundaries, deterministic analysis, runtime safety, evidence collection, and redaction.`;
 
 export function resetInvestigationsForTests(): void {
   investigations.clear();
