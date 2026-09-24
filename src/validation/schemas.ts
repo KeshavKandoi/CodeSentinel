@@ -92,3 +92,12 @@ export type ScanProjectInput = z.infer<typeof scanProjectSchema>;
  */
 export const discoverRoutesSchema = z.object({}).strict();
 export type DiscoverRoutesInput = z.infer<typeof discoverRoutesSchema>;
+
+/**
+ * Phase 5: analyze_access_control takes no input beyond PROJECT_ROOT. It
+ * runs the Phase 4 route discovery engine internally and performs
+ * deterministic, read-only static access-control analysis over the
+ * resulting routes.
+ */
+export const analyzeAccessControlSchema = z.object({}).strict();
+export type AnalyzeAccessControlInput = z.infer<typeof analyzeAccessControlSchema>;
