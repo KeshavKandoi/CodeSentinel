@@ -204,32 +204,34 @@ export async function runSecurityAnalysis(config: AppConfig, investigationId: st
   });
 }
 
-export function recordHypothesis(config: AppConfig, input: { investigationId: string; title: string; description: string; findingId?: string; evidenceRefs: string[]; severity?: SecurityHypothesis['severity']; confidence?: SecurityHypothesis['confidence'] }): ToolOutcome<SecurityHypothesis> {
-  const state = get(input.investigationId);
-  if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${input.investigationId}" was not found.`);
-  if (state.investigation.status !== 'awaiting_verification') return err('INVALID_TRANSITION', `A hypothesis cannot be recorded from status "${state.investigation.status}".`);
-  const elapsed = checkTime(state);
-  if (elapsed) return err('BUDGET_EXCEEDED', elapsed);
-  if (state.investigation.hypotheses.length >= state.investigation.budget.maxHypotheses) return err('BUDGET_EXCEEDED', 'Maximum hypotheses for this investigation has been reached.');
-  const key = operationKey(`${input.title}|${input.findingId ?? ''}|${[...input.evidenceRefs].sort().join('|')}`);
-  if (state.investigation.execution.operations.includes(`hypothesis:${key}`)) return err('DUPLICATE_OPERATION', 'An identical hypothesis has already been recorded.');
-  if (input.evidenceRefs.length === 0) return err('HYPOTHESIS_INVALID', 'A hypothesis must contain at least one evidence reference.');
-  const available = new Set(state.investigation.evidence.flatMap((e) => [e.id, e.reference]));
-  const missing = input.evidenceRefs.filter((ref) => !available.has(ref));
-  if (missing.length > 0) return err('HYPOTHESIS_INVALID', `Evidence references are not available: ${missing.join(', ')}.`);
-  if (input.findingId) {
-    if (!state.accessFindings.some((finding) => finding.id === input.findingId)) return err('HYPOTHESIS_INVALID', `Finding "${input.findingId}" is not part of this investigation.`);
-    const matchingEvidence = state.investigation.evidence.some(
-      (e) => (input.evidenceRefs.includes(e.id) && e.reference === `accessFinding:${input.findingId}`) || input.evidenceRefs.includes(`accessFinding:${input.findingId}`)
-    );
-    if (!matchingEvidence) return err('HYPOTHESIS_INVALID', 'A finding-backed hypothesis must reference the matching access-control evidence item.');
-  }
-  const hypothesis: SecurityHypothesis = { id: id('hypothesis'), title: input.title, description: input.description, findingId: input.findingId ?? null, evidenceRefs: input.evidenceRefs, severity: input.severity ?? null, confidence: input.confidence ?? null, status: 'open', createdAt: now() };
-  state.investigation.hypotheses.push(hypothesis);
-  state.investigation.execution.operations.push(`hypothesis:${key}`);
-  addStep(state, 'hypothesis', hypothesis.title, input.evidenceRefs);
-  state.investigation.updatedAt = now();
-  return ok(hypothesis);
+export async function recordHypothesis(config: AppConfig, input: { investigationId: string; title: string; description: string; findingId?: string; evidenceRefs: string[]; severity?: SecurityHypothesis['severity']; confidence?: SecurityHypothesis['confidence'] }): Promise<ToolOutcome<SecurityHypothesis>> {
+  return withInvestigationLock(input.investigationId, async () => {
+    const state = get(input.investigationId);
+    if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${input.investigationId}" was not found.`);
+    if (state.investigation.status !== 'awaiting_verification') return err('INVALID_TRANSITION', `A hypothesis cannot be recorded from status "${state.investigation.status}".`);
+    const elapsed = checkTime(state);
+    if (elapsed) return err('BUDGET_EXCEEDED', elapsed);
+    if (state.investigation.hypotheses.length >= state.investigation.budget.maxHypotheses) return err('BUDGET_EXCEEDED', 'Maximum hypotheses for this investigation has been reached.');
+    const key = operationKey(`${input.investigationId}|hypothesis|${input.title}|${input.findingId ?? ''}|${[...input.evidenceRefs].sort().join('|')}`);
+    if (state.investigation.execution.operations.includes(`hypothesis:${key}`)) return err('DUPLICATE_OPERATION', 'An identical hypothesis has already been recorded.');
+    if (input.evidenceRefs.length === 0) return err('HYPOTHESIS_INVALID', 'A hypothesis must contain at least one evidence reference.');
+    const available = new Set(state.investigation.evidence.flatMap((e) => [e.id, e.reference]));
+    const missing = input.evidenceRefs.filter((ref) => !available.has(ref));
+    if (missing.length > 0) return err('HYPOTHESIS_INVALID', `Evidence references are not available: ${missing.join(', ')}.`);
+    if (input.findingId) {
+      if (!state.accessFindings.some((finding) => finding.id === input.findingId)) return err('HYPOTHESIS_INVALID', `Finding "${input.findingId}" is not part of this investigation.`);
+      const matchingEvidence = state.investigation.evidence.some(
+        (e) => (input.evidenceRefs.includes(e.id) && e.reference === `accessFinding:${input.findingId}`) || input.evidenceRefs.includes(`accessFinding:${input.findingId}`)
+      );
+      if (!matchingEvidence) return err('HYPOTHESIS_INVALID', 'A finding-backed hypothesis must reference the matching access-control evidence item.');
+    }
+    const hypothesis: SecurityHypothesis = { id: id('hypothesis'), title: input.title, description: input.description, findingId: input.findingId ?? null, evidenceRefs: [...input.evidenceRefs], severity: input.severity ?? null, confidence: input.confidence ?? null, status: 'open', createdAt: now() };
+    state.investigation.hypotheses.push(hypothesis);
+    state.investigation.execution.operations.push(`hypothesis:${key}`);
+    addStep(state, 'hypothesis', hypothesis.title, input.evidenceRefs);
+    state.investigation.updatedAt = now();
+    return ok(hypothesis);
+  });
 }
 
 export async function requestRuntimeVerification(config: AppConfig, input: VerifyFindingRequest & { investigationId: string; hypothesisId: string }): Promise<ToolOutcome<SecurityInvestigation>> {
@@ -278,7 +280,8 @@ export async function requestRuntimeVerification(config: AppConfig, input: Verif
       investigationFinding.lifecycle = result.data.result.status === 'verified' ? 'runtime_verified' : result.data.result.status === 'not_reproduced' ? 'not_reproduced' : result.data.result.status === 'inconclusive' ? 'inconclusive' : result.data.result.status === 'blocked' ? 'blocked' : 'investigated';
       investigationFinding.runtimeVerificationStatus = result.data.result.status;
     }
-    state.investigation.status = 'completed';
+    const pendingVerification = state.investigation.hypotheses.some((item) => item.findingId !== null && item.status === 'open');
+    state.investigation.status = pendingVerification ? 'awaiting_verification' : 'completed';
     state.investigation.updatedAt = now();
     return ok(state.investigation);
   });
@@ -301,7 +304,8 @@ function sanitize(value: unknown, depth = 0): unknown {
 export function getInvestigation(investigationId: string): ToolOutcome<SecurityInvestigation> {
   const state = get(investigationId);
   if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${investigationId}" was not found.`);
-  return ok(sanitize(state.investigation) as SecurityInvestigation);
+  const safe = sanitize(state.investigation);
+  return ok(JSON.parse(JSON.stringify(safe)) as SecurityInvestigation);
 }
 
 export const SECURITY_AGENT_INSTRUCTIONS = `CodeSentinel Phase 7 is a bounded security investigation toolkit for an external AI agent. Call start_security_investigation first with the configured project path, a narrow scope, and a concrete question. Call run_security_analysis once, then inspect its project, route, scanner, and access-control evidence identifiers. Call record_security_hypothesis only when the hypothesis cites at least one returned evidence reference; static findings are candidates, not proof. Call request_runtime_verification only for an existing evidence-backed Phase 5 access-control finding when an operator has explicitly authorized the exact runtime target and supplied any required test sessions. Call get_investigation to collect the bounded final state and evidence.
@@ -310,4 +314,5 @@ Runtime verification is optional. Never bypass path guards, target authorization
 
 export function resetInvestigationsForTests(): void {
   investigations.clear();
+  investigationLocks.clear();
 }

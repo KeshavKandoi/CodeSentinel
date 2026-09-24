@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { toolDefinitions } from '../../src/tools/registry.js';
-import { resetInvestigationsForTests } from '../../src/investigation/orchestrator.js';
+import { getInvestigation, recordHypothesis, requestRuntimeVerification, resetInvestigationsForTests, runSecurityAnalysis, startInvestigation } from '../../src/investigation/orchestrator.js';
 import type { AppConfig } from '../../src/config.js';
 
 const FIXTURE = fs.realpathSync(fileURLToPath(new URL('../fixtures/access-control-express', import.meta.url)));
@@ -146,6 +146,33 @@ describe('Phase 7 state machine and budgets', () => {
     expect(state.steps.filter((step: { operation: string }) => step.operation === 'access_control_analysis')).toHaveLength(1);
   });
 
+  it('allows exactly one concurrent hypothesis when one budget slot remains', async () => {
+    const started = payload(await tool('start_security_investigation').handler(config, {
+      projectPath: FIXTURE, scope: ['authorization'], hypothesis: 'hypothesis race', budget: { maxHypotheses: 1 },
+    }));
+    await tool('run_security_analysis').handler(config, { investigationId: started.id });
+    const input = { investigationId: started.id, title: 'same hypothesis', description: 'race', evidenceRefs: ['project'] };
+    const results = await Promise.all([
+      tool('record_security_hypothesis').handler(config, input),
+      tool('record_security_hypothesis').handler(config, input),
+    ]);
+    expect(results.filter((result) => !result.isError)).toHaveLength(1);
+    expect(results.filter((result) => result.isError && ['DUPLICATE_OPERATION', 'BUDGET_EXCEEDED'].includes(payload(result).error))).toHaveLength(1);
+  });
+
+  it('rejects concurrent analysis and hypothesis calls until lifecycle permits the hypothesis', async () => {
+    const started = payload(await tool('start_security_investigation').handler(config, {
+      projectPath: FIXTURE, scope: ['authorization'], hypothesis: 'lifecycle race',
+    }));
+    const [analysis, hypothesis] = await Promise.all([
+      tool('run_security_analysis').handler(config, { investigationId: started.id }),
+      tool('record_security_hypothesis').handler(config, { investigationId: started.id, title: 'race', description: 'race', evidenceRefs: ['missing'] }),
+    ]);
+    expect(analysis.isError).toBe(false);
+    expect(hypothesis.isError).toBe(true);
+    expect(['INVALID_TRANSITION', 'HYPOTHESIS_INVALID']).toContain(payload(hypothesis).error);
+  });
+
   it('blocks analysis when the elapsed-time budget is exceeded', async () => {
     vi.useFakeTimers();
     try {
@@ -187,6 +214,56 @@ describe('Phase 7 state machine and budgets', () => {
       projectPath: FIXTURE, scope: ['authentication'], hypothesis: 'replacement',
     });
     expect(replacement.isError).toBe(false);
+  });
+
+  it('returns detached snapshots even when nested objects are mutated by the caller', async () => {
+    const started = startInvestigation(config, { projectPath: FIXTURE, scope: ['authorization'], hypothesis: 'snapshot' });
+    if (!started.ok) throw new Error(started.error.message);
+    const id = started.data.id;
+    const analysis = await runSecurityAnalysis(config, id);
+    if (!analysis.ok) throw new Error(analysis.error.message);
+    const findingId = analysis.data.analysis?.accessControl.findingIds.find((value) => value.startsWith('CS-ACCESS-001'));
+    if (!findingId) throw new Error('test fixture did not produce an access finding');
+    const hypothesis = await recordHypothesis(config, { investigationId: id, title: 'snapshot hypothesis', description: 'snapshot', findingId, evidenceRefs: [`accessFinding:${findingId}`] });
+    if (!hypothesis.ok) throw new Error(hypothesis.error.message);
+    const runtime = await requestRuntimeVerification(config, { investigationId: id, hypothesisId: hypothesis.data.id, findingId, target: { allowedOrigin: 'http://10.0.0.4:3000' } });
+    if (!runtime.ok) throw new Error(runtime.error.message);
+    const snapshot = getInvestigation(id);
+    if (!snapshot.ok) throw new Error(snapshot.error.message);
+    snapshot.data.hypotheses[0]!.title = 'mutated';
+    snapshot.data.hypotheses[0]!.evidenceRefs.push('invented');
+    snapshot.data.evidence.pop();
+    snapshot.data.steps.pop();
+    snapshot.data.findings[0]!.title = 'mutated';
+    snapshot.data.execution.operations.push('invented');
+    snapshot.data.runtimeResults[hypothesis.data.id]!.summary = 'mutated';
+    const later = getInvestigation(id);
+    if (!later.ok) throw new Error(later.error.message);
+    expect(later.data.hypotheses[0]!.title).toBe('snapshot hypothesis');
+    expect(later.data.hypotheses[0]!.evidenceRefs).not.toContain('invented');
+    expect(later.data.evidence.length).toBeGreaterThan(0);
+    expect(later.data.steps.length).toBe(6);
+    expect(later.data.findings.find((finding) => finding.findingId === findingId)!.title).not.toBe('mutated');
+    expect(later.data.execution.operations).not.toContain('invented');
+    expect(later.data.runtimeResults[hypothesis.data.id]!.summary).not.toBe('mutated');
+  });
+
+  it('serializes concurrent runtime requests so only one verification executes', async () => {
+    const started = startInvestigation(config, { projectPath: FIXTURE, scope: ['authorization'], hypothesis: 'runtime race' });
+    if (!started.ok) throw new Error(started.error.message);
+    const analysis = await runSecurityAnalysis(config, started.data.id);
+    if (!analysis.ok) throw new Error(analysis.error.message);
+    const findingId = analysis.data.analysis?.accessControl.findingIds.find((value) => value.startsWith('CS-ACCESS-001'));
+    if (!findingId) throw new Error('test fixture did not produce an access finding');
+    const hypothesis = await recordHypothesis(config, { investigationId: started.data.id, title: 'runtime race', description: 'race', findingId, evidenceRefs: [`accessFinding:${findingId}`] });
+    if (!hypothesis.ok) throw new Error(hypothesis.error.message);
+    const input = { investigationId: started.data.id, hypothesisId: hypothesis.data.id, findingId, target: { allowedOrigin: 'http://10.0.0.4:3000' } };
+    const results = await Promise.all([requestRuntimeVerification(config, input), requestRuntimeVerification(config, input)]);
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(results.filter((result) => !result.ok && result.error.code === 'INVALID_TRANSITION')).toHaveLength(1);
+    const state = getInvestigation(started.data.id);
+    if (!state.ok) throw new Error(state.error.message);
+    expect(state.data.execution.runtimeVerifications).toBe(1);
   });
 });
 

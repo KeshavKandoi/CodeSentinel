@@ -326,7 +326,7 @@ export const toolDefinitions: ToolDefinition[] = [
     handler: async (config, rawInput) => {
       const validation = safeValidate(recordSecurityHypothesisSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
-      return toMcpResponse(recordHypothesis(config, validation.data));
+      return toMcpResponse(await recordHypothesis(config, validation.data));
     },
   },
   {
