@@ -2,7 +2,7 @@ import type { AccessControlFinding } from '../../access/types.js';
 import type { AttackSurfaceEntry } from '../../routes/types.js';
 import { issueRuntimeRequest, RuntimeClientState } from '../httpClient.js';
 import type { RuntimeTarget, TestSession, VerificationCase, VerificationResult } from '../types.js';
-import { blockedResult, buildResult, hasUnresolvedSegment, isAuthRejection } from './common.js';
+import { blockedResult, buildResult, hasUnresolvedSegment, isAuthRejection, isSuccessStatus } from './common.js';
 
 /**
  * Case 5: Public/private inconsistency.
@@ -79,7 +79,7 @@ export async function runPublicPrivateInconsistencyCase(
     anonStatus === authStatus &&
     anonEvidence.response.bodySnippet.length > 0 &&
     anonEvidence.response.bodySnippet === authEvidence.response.bodySnippet;
-  if (!isAuthRejection(anonEvidence.response) && equivalentResponse) {
+  if (!isAuthRejection(anonEvidence.response) && isSuccessStatus(authEvidence.response) && equivalentResponse) {
     return buildResult(
       vcase,
       'verified',
