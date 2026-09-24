@@ -45,7 +45,10 @@ export async function scanProject(config: AppConfig): Promise<ToolOutcome<Securi
     },
   };
 
-  const rules = getSecurityRules().filter((rule) => rule.languages.includes(profile.ecosystem) || rule.languages.includes('node'));
+  // Do not run a language-specific rule set against an unsupported ecosystem.
+  // In particular, Python projects must remain explicitly unsupported rather
+  // than receiving misleading Node regex findings.
+  const rules = getSecurityRules().filter((rule) => rule.languages.includes(profile.ecosystem));
   const allFindings: SecurityFinding[] = [];
   for (const rule of rules) {
     try {
