@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { analyzeAccessControl } from '../../src/access/engine.js';
 import { discoverRoutes } from '../../src/routes/engine.js';
-import { buildSecurityGraph, listSecurityProofCases, proveSecurityFinding } from '../../src/proof/engine.js';
+import { buildSecurityGraph, listSecurityProofAdapters, listSecurityProofCases, proveSecurityFinding } from '../../src/proof/engine.js';
 import { resetInvestigationsForTests } from '../../src/investigation/orchestrator.js';
 import { resetAuditSessionsForTests } from '../../src/orchestration/engine.js';
 import type { AppConfig } from '../../src/config.js';
@@ -14,6 +14,12 @@ const config: AppConfig = { projectRoot: root, commandTimeoutMs: 5000, maxOutput
 beforeEach(() => { resetInvestigationsForTests(); resetAuditSessionsForTests(); });
 
 describe('security proof engine', () => {
+  it('uses an explicit adapter registry for executable proof classes', () => {
+    const adapters = listSecurityProofAdapters();
+    expect(adapters.map((adapter) => adapter.type)).toEqual(expect.arrayContaining(['idor_bola', 'missing_authentication', 'missing_authorization', 'authorization_inconsistency']));
+    expect(adapters.some((adapter) => adapter.type === 'sql_injection')).toBe(false);
+  });
+
   it('lists only proof cases backed by the current route/access inventory', () => {
     const cases = listSecurityProofCases(config);
     expect(cases.length).toBeGreaterThan(0);
