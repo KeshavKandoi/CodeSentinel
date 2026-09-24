@@ -15,7 +15,7 @@ import type { SecurityFinding } from '../security/types.js';
 import type { AttackSurfaceEntry } from '../routes/types.js';
 import { detachedRedacted } from '../report/redaction.js';
 import { err, ok, type ToolOutcome } from '../types.js';
-import type { ProofCaseType, SecurityGraph, SecurityGraphEdge, SecurityGraphNode, SecurityProofCase, SecurityReceipt } from './types.js';
+import type { ProofCaseType, ProofReplayContract, SecurityGraph, SecurityGraphEdge, SecurityGraphNode, SecurityProofCase, SecurityReceipt } from './types.js';
 import { PROOF_CASE_TYPES } from './types.js';
 
 const hash = (value: string): string => crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
@@ -98,7 +98,7 @@ export function listSecurityProofCases(config: AppConfig): SecurityProofCase[] {
 }
 
 function receiptForBlocked(findingId: string, proofCase: SecurityProofCase, reason: string, sourceRefs: string[] = []): SecurityReceipt {
-  return { receiptId: `receipt-${hash(`${findingId}|${proofCase.id}|${reason}`)}`, findingId, proofCase, status: 'blocked', redactedRequest: null, responseFacts: [], oracle: 'blocked', whyProven: '', sourceRefs, evidenceRefs: [], remediationRef: null, reVerification: { status: null, receiptId: null }, limitation: reason };
+  return { receiptId: `receipt-${hash(`${findingId}|${proofCase.id}|${reason}`)}`, findingId, proofCase, status: 'blocked', redactedRequest: null, responseFacts: [], oracle: 'blocked', whyProven: '', sourceRefs, evidenceRefs: [], remediationRef: null, reVerification: { status: null, receiptId: null }, replayContract: null, replayOfReceiptId: null, beforeAfter: null, limitation: reason };
 }
 
 export function listSecurityReceiptsForFinding(findingId: string): SecurityReceipt[] {
@@ -122,36 +122,90 @@ async function findStaticCandidate(config: AppConfig, findingId: string): Promis
 
 function proofPath(entry: AttackSurfaceEntry, adapter: typeof SAFE_SOURCE_ADAPTERS[number]): string | null {
   if (hasUnresolvedSegment(entry.path) || entry.method !== 'GET' && entry.method !== 'ALL') return null;
-  const parameter = entry.queryParameters[0]?.name ?? entry.bodyParameters[0]?.name ?? adapter.parameter;
+  const parameter = proofParameter(entry, adapter);
   const value = encodeURIComponent(adapter.requestValue ?? adapter.marker);
   return `${entry.path}${entry.path.includes('?') ? '&' : '?'}${encodeURIComponent(parameter)}=${value}`;
+}
+
+function proofParameter(entry: AttackSurfaceEntry, adapter: typeof SAFE_SOURCE_ADAPTERS[number]): string {
+  return entry.queryParameters[0]?.name ?? entry.bodyParameters[0]?.name ?? adapter.parameter;
+}
+
+const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_MAX_RESPONSE_BYTES = 200_000;
+
+function replayContractFor(
+  proofCase: SecurityProofCase,
+  adapter: typeof SAFE_SOURCE_ADAPTERS[number],
+  target: RuntimeTarget,
+  parameterName: string,
+  inertProbeValue: string,
+): ProofReplayContract {
+  return {
+    proofType: proofCase.type,
+    method: proofCase.requestShape.method,
+    relativeRoute: proofCase.requestShape.path,
+    parameterName,
+    inertProbeValue,
+    targetConstraints: {
+      allowedOrigin: target.allowedOrigin,
+      loopbackOnly: true,
+      maxRequestsPerCase: Math.min(target.maxRequestsPerCase ?? 12, proofCase.maxRequests),
+      requestTimeoutMs: target.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+      maxResponseBytes: target.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+      maxRedirects: 0,
+    },
+    sessionLabelReferences: [],
+    oracleDefinition: {
+      kind: adapter.type === 'open_redirect' ? 'location_contains' : 'body_contains',
+      marker: adapter.marker,
+      safeResult: 'not_reproduced',
+    },
+  };
 }
 
 async function executeSafeSourceProof(config: AppConfig, request: VerifyFindingRequest, candidate: Awaited<ReturnType<typeof findStaticCandidate>>): Promise<{ status: SecurityReceipt['status']; proofCase: SecurityProofCase; evidence: VerificationEvidence[]; summary: string }> {
   if (!candidate) throw new Error('unsupported proof candidate');
   const { finding, entry, adapter } = candidate;
   const proofCase = metadata(adapter.type, finding.id, 'GET', entry.path, true, adapter.notes);
-  return executeSafeSourceProofCase(request, proofCase, adapter);
+  return executeSafeSourceProofCase(request, proofCase, adapter, replayContractFor(proofCase, adapter, request.target, proofParameter(entry, adapter), adapter.requestValue ?? adapter.marker));
 }
 
 async function executeSafeSourceProofCase(
   request: VerifyFindingRequest,
   proofCase: SecurityProofCase,
-  adapter: typeof SAFE_SOURCE_ADAPTERS[number]
+  adapter: typeof SAFE_SOURCE_ADAPTERS[number],
+  persistedContract?: ProofReplayContract,
 ): Promise<{ status: SecurityReceipt['status']; proofCase: SecurityProofCase; evidence: VerificationEvidence[]; summary: string }> {
   if (!isLocalProofTarget(request.target)) return { status: 'blocked', proofCase, evidence: [], summary: 'Proof adapters only execute against localhost or loopback targets.' };
-  const entry = { path: proofCase.requestShape.path, method: proofCase.requestShape.method, queryParameters: [], bodyParameters: [] } as unknown as AttackSurfaceEntry;
-  const path = proofPath(entry, adapter);
-  if (!path) return { status: 'blocked', proofCase, evidence: [], summary: 'The route is not a concrete safe GET proof target.' };
-  const evidence = [await issueRuntimeRequest(request.target, buildSessionMap(request.sessions ?? []), { method: 'GET', path, sessionId: null }, new RuntimeClientState(request.target))];
+  const contract = persistedContract ?? (() => {
+    const parameterName = adapter.parameter;
+    const inertProbeValue = adapter.requestValue ?? adapter.marker;
+    return replayContractFor(proofCase, adapter, request.target, parameterName, inertProbeValue);
+  })();
+  if (contract.proofType !== proofCase.type || contract.method !== proofCase.requestShape.method || contract.relativeRoute !== proofCase.requestShape.path || contract.parameterName.length === 0 || contract.inertProbeValue.length === 0) {
+    return { status: 'blocked', proofCase, evidence: [], summary: 'The persisted replay contract does not match the original proof case.' };
+  }
+  if (contract.method !== 'GET' || hasUnresolvedSegment(contract.relativeRoute) || !contract.relativeRoute.startsWith('/') || contract.relativeRoute.includes('://')) {
+    return { status: 'blocked', proofCase, evidence: [], summary: 'The persisted replay contract is not a concrete safe GET proof target.' };
+  }
+  const requestMaxRequests = Math.min(request.target.maxRequestsPerCase ?? 12, proofCase.maxRequests);
+  const requestTimeout = request.target.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const requestMaxResponse = request.target.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  if (contract.targetConstraints.allowedOrigin !== request.target.allowedOrigin || contract.targetConstraints.loopbackOnly !== isLocalProofTarget(request.target) || contract.targetConstraints.maxRequestsPerCase !== requestMaxRequests || contract.targetConstraints.requestTimeoutMs !== requestTimeout || contract.targetConstraints.maxResponseBytes !== requestMaxResponse) {
+    return { status: 'blocked', proofCase, evidence: [], summary: 'Replay target does not match the original proof target constraints.' };
+  }
+  const replayTarget: RuntimeTarget = { ...request.target, maxRequestsPerCase: contract.targetConstraints.maxRequestsPerCase, requestTimeoutMs: contract.targetConstraints.requestTimeoutMs, maxResponseBytes: contract.targetConstraints.maxResponseBytes, maxRedirects: 0 };
+  const path = `${contract.relativeRoute}${contract.relativeRoute.includes('?') ? '&' : '?'}${encodeURIComponent(contract.parameterName)}=${encodeURIComponent(contract.inertProbeValue)}`;
+  const evidence = [await issueRuntimeRequest(replayTarget, buildSessionMap(request.sessions ?? []), { method: contract.method as 'GET', path, sessionId: contract.sessionLabelReferences[0] ?? null }, new RuntimeClientState(replayTarget))];
   const response = evidence[0]!.response;
-  if (response.status === 0) return { status: 'blocked', proofCase, evidence, summary: evidence[0]!.note };
+  if (response.status === 0 || response.bodyTruncated || (adapter.type !== 'open_redirect' && /timed out|failed|blocked|redirect/i.test(evidence[0]!.note) && response.status >= 300)) return { status: 'blocked', proofCase, evidence, summary: evidence[0]!.note };
   const location = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'location')?.[1] ?? '';
   const proved = adapter.type === 'open_redirect'
     ? response.status >= 300 && response.status < 400 && location.includes(adapter.marker)
     : response.bodySnippet.includes(adapter.marker);
   if (proved) return { status: 'verified', proofCase, evidence, summary: `${adapter.title} semantic oracle matched the fixture proof marker; HTTP status alone was not used.` };
-  if (response.status >= 200 && response.status < 300) return { status: 'inconclusive', proofCase, evidence, summary: `${adapter.title} received a response without the required semantic oracle marker.` };
+  if (response.status >= 200 && response.status < 300) return { status: 'not_reproduced', proofCase, evidence, summary: `${adapter.title} received a response without the required semantic oracle marker.` };
   return { status: 'not_reproduced', proofCase, evidence, summary: `${adapter.title} did not produce the required semantic oracle.` };
 }
 
@@ -160,7 +214,10 @@ function sourceReceipt(
   execution: Awaited<ReturnType<typeof executeSafeSourceProofCase>>,
   sourceRefs: string[],
   evidenceRefs: string[],
-  remediationRef: string | null = null
+  remediationRef: string | null = null,
+  replayContract: ProofReplayContract | null = null,
+  replayOfReceiptId: string | null = null,
+  beforeAfter: SecurityReceipt['beforeAfter'] = null,
 ): SecurityReceipt {
   const responseFacts = execution.evidence.map((item) => ({ status: item.response.status, headers: item.response.headers, bodySnippet: item.response.bodySnippet, finalUrl: item.response.finalUrl }));
   return detachedRedacted({
@@ -176,6 +233,9 @@ function sourceReceipt(
     evidenceRefs,
     remediationRef,
     reVerification: { status: null, receiptId: null },
+    replayContract,
+    replayOfReceiptId,
+    beforeAfter,
     limitation: execution.status === 'verified' ? null : execution.summary,
   });
 }
@@ -191,10 +251,13 @@ export async function replaySecurityProof(
   remediationId: string
 ): Promise<ToolOutcome<SecurityReceipt>> {
   const adapter = safeSourceAdapter(originalReceipt.proofCase.type);
-  if (!adapter || originalReceipt.status !== 'verified') return err('UNSUPPORTED_CANDIDATE_TYPE', 'Only a previously verified source proof can be replayed by the proof engine.');
-  const execution = await executeSafeSourceProofCase(request, originalReceipt.proofCase, adapter);
-  const replay = sourceReceipt(request.findingId, execution, originalReceipt.sourceRefs, [...originalReceipt.evidenceRefs, `remediation:${remediationId}`], remediationId);
   const original = receipts.get(originalReceipt.receiptId);
+  if (!adapter || !original || original.status !== 'verified' || originalReceipt.status !== 'verified') return err('UNSUPPORTED_CANDIDATE_TYPE', 'Only a previously verified source proof receipt can be replayed by the proof engine.');
+  if (original.findingId !== originalReceipt.findingId || original.findingId !== request.findingId || original.remediationRef !== originalReceipt.remediationRef) return err('VERIFICATION_INCONCLUSIVE', 'The replay receipt identity or remediation reference does not match the persisted original receipt.');
+  if (original.remediationRef && original.remediationRef !== remediationId) return err('VERIFICATION_INCONCLUSIVE', 'The original proof receipt is already linked to a different remediation.');
+  if (!original.replayContract || JSON.stringify(original.replayContract) !== JSON.stringify(originalReceipt.replayContract)) return err('VERIFICATION_INCONCLUSIVE', 'The supplied original receipt replay contract does not match the persisted contract.');
+  const execution = await executeSafeSourceProofCase(request, original.proofCase, adapter, original.replayContract);
+  const replay = sourceReceipt(request.findingId, execution, original.sourceRefs, [...original.evidenceRefs, `remediation:${remediationId}`], remediationId, original.replayContract, original.receiptId, { beforeStatus: original.status, afterStatus: execution.status });
   if (original) {
     receipts.set(original.receiptId, detachedRedacted({ ...original, remediationRef: remediationId, reVerification: { status: replay.status, receiptId: replay.receiptId } }));
   }
@@ -213,10 +276,10 @@ export async function proveSecurityFinding(config: AppConfig, request: VerifyFin
       return ok(receipt);
     }
     const execution = await executeSafeSourceProof(config, request, candidate);
-    const safe = sourceReceipt(request.findingId, execution, [`${candidate.finding.file}:${candidate.finding.line ?? 0}`, `${candidate.entry.file}:${candidate.entry.line}`], [`static:${candidate.finding.id}`, `route:${candidate.entry.id}`]);
+    const safe = sourceReceipt(request.findingId, execution, [`${candidate.finding.file}:${candidate.finding.line ?? 0}`, `${candidate.entry.file}:${candidate.entry.line}`], [`static:${candidate.finding.id}`, `route:${candidate.entry.id}`], null, replayContractFor(execution.proofCase, candidate.adapter, request.target, proofParameter(candidate.entry, candidate.adapter), candidate.adapter.requestValue ?? candidate.adapter.marker));
     receipts.set(safe.receiptId, safe); return ok(safe);
   }
-  const adapter = proofCase.type === 'idor_bola' ? EXECUTABLE_ADAPTERS[0] : EXECUTABLE_ADAPTERS.find((item) => item.type === proofCase.type);
+  const adapter = EXECUTABLE_ADAPTERS.find((item) => item.type === proofCase.type);
   if (!adapter) {
     const receipt = receiptForBlocked(request.findingId, proofCase, `No executable adapter is registered for proof type "${proofCase.type}".`);
     receipts.set(receipt.receiptId, receipt);
@@ -227,7 +290,7 @@ export async function proveSecurityFinding(config: AppConfig, request: VerifyFin
   const verification = result.data.result;
   const status = verification.status === 'verified' || verification.status === 'not_reproduced' || verification.status === 'inconclusive' || verification.status === 'blocked' ? verification.status : 'inconclusive';
   const responseFacts = verification.evidence.map((item) => ({ status: item.response.status, headers: item.response.headers, bodySnippet: item.response.bodySnippet, finalUrl: item.response.finalUrl }));
-  const receipt: SecurityReceipt = { receiptId: `receipt-${hash(`${request.findingId}|${verification.status}|${JSON.stringify(responseFacts)}`)}`, findingId: request.findingId, proofCase, status, redactedRequest: verification.evidence[0] ? { ...verification.evidence[0].request } : null, responseFacts, oracle: verification.status, whyProven: verification.status === 'verified' ? verification.summary : '', sourceRefs: [result.data.finding.file, result.data.finding.path].filter(Boolean), evidenceRefs: verification.evidence.map((_, index) => `runtime:${request.findingId}:${index}`), remediationRef: null, reVerification: { status: null, receiptId: null }, limitation: verification.status === 'verified' ? null : verification.summary };
+  const receipt: SecurityReceipt = { receiptId: `receipt-${hash(`${request.findingId}|${verification.status}|${JSON.stringify(responseFacts)}`)}`, findingId: request.findingId, proofCase, status, redactedRequest: verification.evidence[0] ? { ...verification.evidence[0].request } : null, responseFacts, oracle: verification.status, whyProven: verification.status === 'verified' ? verification.summary : '', sourceRefs: [result.data.finding.file, result.data.finding.path].filter(Boolean), evidenceRefs: verification.evidence.map((_, index) => `runtime:${request.findingId}:${index}`), remediationRef: null, reVerification: { status: null, receiptId: null }, replayContract: null, replayOfReceiptId: null, beforeAfter: null, limitation: verification.status === 'verified' ? null : verification.summary };
   const safe = detachedRedacted(receipt);
   receipts.set(safe.receiptId, safe);
   return ok(safe);
