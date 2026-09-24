@@ -176,6 +176,12 @@ function boundSize(summary: AuditStateSummary): AuditStateSummary {
     () => { s.steps.length = 0; s.hypotheses.length = Math.min(s.hypotheses.length, 5); s.blockedOperations.length = Math.min(s.blockedOperations.length, 5); },
     () => { s.findings.length = 0; s.verificationResults.length = 0; s.hypotheses.length = 0; s.errors.length = Math.min(s.errors.length, 3); },
     () => { for (const capability of s.availableCapabilities) capability.purpose = ''; },
+    () => {
+      s.remainingWork = s.remainingWork.map((value) => value.slice(0, 160));
+      s.errors = s.errors.map((value) => value.slice(0, 160));
+      s.blockedOperations = s.blockedOperations.map((value) => ({ ...value, reason: value.reason.slice(0, 160) }));
+      s.hypotheses = s.hypotheses.map((value) => ({ ...value, description: value.description.slice(0, 160), reason: value.reason.slice(0, 160), affectedLocation: value.affectedLocation.slice(0, 160) }));
+    },
   ];
   for (const shrink of shrinkers) {
     if (size() <= max) break;
@@ -183,6 +189,19 @@ function boundSize(summary: AuditStateSummary): AuditStateSummary {
     s.outputTruncated = true;
   }
   s.evidenceRefs.truncated = s.evidenceRefs.listed.length < s.evidenceRefs.total;
+  // Keep the contract true even if future fields make the normal shrinkers insufficient.
+  if (size() > max) {
+    s.steps = [];
+    s.hypotheses = [];
+    s.findings = [];
+    s.verificationResults = [];
+    s.evidenceRefs.listed = [];
+    s.blockedOperations = [];
+    s.errors = [];
+    s.remainingWork = [];
+    s.availableCapabilities = s.availableCapabilities.map((capability) => ({ ...capability, purpose: '' }));
+    s.outputTruncated = true;
+  }
   return s;
 }
 
@@ -499,16 +518,28 @@ function traceFinding(session: AuditSession, inv: SecurityInvestigation, finding
   };
 }
 
-export function generateSecurityAuditReport(investigationId: string): ToolOutcome<{ report: SecurityReport; traceability: FindingTrace[] }> {
-  const session = sessions.get(investigationId);
-  if (!session) return notFound(investigationId);
-  const snapshot = getInvestigation(session.investigationId);
-  if (!snapshot.ok) return err('INVESTIGATION_NOT_FOUND', 'The underlying investigation record is no longer available.');
-  if (session.status !== 'completed') {
-    return err('INVESTIGATION_INCOMPLETE', `A report requires a completed audit. ${remainingWork(session, snapshot.data, session.completedCapabilities.includes('run_audit_analysis')).join(' ')}`.trim());
-  }
-  const report = generateSecurityReport(session.investigationId);
-  if (!report.ok) return err(report.error.code, report.error.message);
-  if (!session.completedCapabilities.includes('generate_security_audit_report')) session.completedCapabilities.push('generate_security_audit_report');
-  return ok({ report: report.data, traceability: detachedRedacted(report.data.findings.map((f) => traceFinding(session, snapshot.data, f))) });
+export async function generateSecurityAuditReport(investigationId: string): Promise<ToolOutcome<{ report: SecurityReport; traceability: FindingTrace[] }>> {
+  return withLock(investigationId, async () => {
+    const session = sessions.get(investigationId);
+    if (!session) return notFound(investigationId);
+    const snapshot = getInvestigation(session.investigationId);
+    if (!snapshot.ok) return err('INVESTIGATION_NOT_FOUND', 'The underlying investigation record is no longer available.');
+    if (session.status !== 'completed') {
+      return err('INVESTIGATION_INCOMPLETE', `A report requires a completed audit. ${remainingWork(session, snapshot.data, session.completedCapabilities.includes('run_audit_analysis')).join(' ')}`.trim());
+    }
+    if (!session.completedCapabilities.includes('generate_security_audit_report')) {
+      const pre = preflight(session, 'generate_security_audit_report');
+      if (!pre.ok) return pre;
+    }
+    const report = generateSecurityReport(session.investigationId);
+    if (!report.ok) {
+      pushError(session, `${report.error.code}: ${report.error.message}`);
+      return err(report.error.code, report.error.message);
+    }
+    if (!session.completedCapabilities.includes('generate_security_audit_report')) {
+      addStep(session, 'generate_security_audit_report', 'completed', `Security report generated for ${report.data.findings.length} finding(s).`, now(), { evidenceCount: report.data.evidenceSummary.totalItems });
+      session.completedCapabilities.push('generate_security_audit_report');
+    }
+    return ok({ report: report.data, traceability: detachedRedacted(report.data.findings.map((f) => traceFinding(session, snapshot.data, f))) });
+  });
 }

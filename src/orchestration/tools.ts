@@ -94,7 +94,7 @@ export const orchestrationToolDefinitions: ToolDefinition[] = [
     inputSchema: idProps,
     handler: async (_config, raw) => {
       const v = validate(auditInvestigationIdSchema, raw);
-      return v.ok ? respond(generateSecurityAuditReport(v.data.investigationId)) : invalid(v.message);
+      return v.ok ? respond(await generateSecurityAuditReport(v.data.investigationId)) : invalid(v.message);
     },
   },
 ];

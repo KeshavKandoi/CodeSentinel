@@ -47,6 +47,7 @@ export function buildCapabilityPlan(session: AuditSession): CapabilityPlanEntry[
   const analysisDone = done('run_audit_analysis');
   const active = status === 'planning' || status === 'investigating' || status === 'awaiting_verification';
   const notActive = status === 'created' ? 'Call plan_security_investigation first.' : `Not available while the audit is ${status}.`;
+  const stepsAvailable = session.steps.length < session.limits.maxSteps;
 
   const entry = (
     tool: string,
@@ -73,8 +74,8 @@ export function buildCapabilityPlan(session: AuditSession): CapabilityPlanEntry[
     entry('run_audit_analysis', 'orchestrated', 'Run the existing deterministic project discovery, static scan, route discovery and access-control analysis once.', true, analysisDone, analysisDone ? null : status === 'planning' ? null : notActive),
     entry('record_audit_hypothesis', 'orchestrated', 'Record an unverified hypothesis. Hypotheses are never evidence or findings.', false, false, active ? null : notActive),
     entry('request_audit_verification', 'orchestrated', 'Ask the existing Phase 6 runtime verifier to test one hypothesis against an operator-authorized local target. Existing safety controls decide whether it runs.', false, false, verificationReason),
-    entry('complete_security_audit', 'orchestrated', 'Mark the audit complete once all required deterministic work has finished.', true, status === 'completed', analysisDone && (status === 'investigating' || status === 'awaiting_verification') ? null : 'Requires finished analysis and an active audit.'),
-    entry('generate_security_audit_report', 'orchestrated', 'Generate the existing Phase 8 report for a completed audit with a traceability map.', false, false, status === 'completed' ? null : 'Requires a completed audit.'),
+    entry('complete_security_audit', 'orchestrated', 'Mark the audit complete once all required deterministic work has finished.', true, status === 'completed', analysisDone && (status === 'investigating' || status === 'awaiting_verification') && stepsAvailable ? null : status === 'completed' ? null : !stepsAvailable ? 'Maximum audit steps reached.' : 'Requires finished analysis and an active audit.'),
+    entry('generate_security_audit_report', 'orchestrated', 'Generate the existing Phase 8 report for a completed audit with a traceability map.', false, done('generate_security_audit_report'), status === 'completed' && (done('generate_security_audit_report') || stepsAvailable) ? null : status !== 'completed' ? 'Requires a completed audit.' : 'Maximum audit steps reached.'),
     entry('list_files, read_file, search_files, get_project_info, analyze_project, scan_project, discover_routes, analyze_access_control', 'read_only_inspection', 'Existing read-only tools. They run outside audit state and are not recorded as audit steps.', false, false, null),
     entry('propose_remediation, apply_remediation, verify_remediation, rollback_remediation', 'controlled_remediation', 'Existing Phase 9 controlled remediation. The orchestrator never edits source files itself.', false, false, status === 'completed' ? null : 'Requires a completed audit.'),
   ];
