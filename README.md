@@ -761,6 +761,14 @@ receipts rather than fabricated requests. Receipts contain redacted request
 metadata, response facts, oracle status, source references, evidence references,
 and re-verification state; available receipts are included in reports.
 
+The executable source-proof adapters currently cover path traversal, open
+redirects, SSRF, SQL injection, command injection, and reflected XSS in
+addition to the four access-control adapters. The proof tests run paired local
+vulnerable and secure Express fixtures, use bounded semantic markers, verify
+redirects without following external destinations, and assert receipt
+redaction. Secure fixtures without a static candidate remain explicitly
+blocked; a generic successful response is inconclusive rather than proof.
+
 `get_security_graph` returns bounded nodes and evidence-backed edges for files,
 routes, handlers, middleware, and access-control relationships. It reports
 parser and cross-file limitations instead of claiming a complete AST or taint
