@@ -20,6 +20,8 @@ import { runProjectDiscovery } from '../discovery/projectDiscovery.js';
 import { scanProject } from '../security/scanner.js';
 import { discoverRoutesSchema } from '../validation/schemas.js';
 import { discoverRoutes } from '../routes/engine.js';
+import { analyzeAccessControlSchema } from '../validation/schemas.js';
+import { analyzeAccessControl } from '../access/engine.js';
 
 
 export interface McpToolResponse {
@@ -199,6 +201,26 @@ export const toolDefinitions: ToolDefinition[] = [
       } catch (e) {
         logger.error('discover_routes_failed', { message: (e as Error).message });
         return toMcpResponse(err('INTERNAL_ERROR', 'Route discovery failed unexpectedly.'));
+      }
+    },
+  },
+  {
+    name: 'analyze_access_control',
+    description:
+      "Run Phase 5 static access-control analysis. Uses the Phase 4 attack-surface inventory (discover_routes) and the Phase 1-2 sandboxed source access to classify each route's authentication/authorization state (public, authenticated, role_protected, permission_protected, ownership_protected, mixed, unknown) and produce suspected findings for missing authentication, missing authorization, IDOR/BOLA candidates, and inconsistent authorization across methods on the same resource -- each with confidence and evidence. Read-only and static: never starts the application, sends HTTP requests, or executes project code.",
+    inputSchema: { type: 'object', properties: {} },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(analyzeAccessControlSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      logger.info('tool_execution', { tool: 'analyze_access_control' });
+      try {
+        const routesOutcome = discoverRoutes(config);
+        if (!routesOutcome.ok) return toMcpResponse(routesOutcome);
+        const result = analyzeAccessControl(config, routesOutcome.data.entries);
+        return toMcpResponse(ok(result));
+      } catch (e) {
+        logger.error('analyze_access_control_failed', { message: (e as Error).message });
+        return toMcpResponse(err('INTERNAL_ERROR', 'Access-control analysis failed unexpectedly.'));
       }
     },
   },
