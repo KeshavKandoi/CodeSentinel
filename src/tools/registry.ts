@@ -1,3 +1,4 @@
+import { orchestrationToolDefinitions } from "../orchestration/tools.js";
 import { z } from 'zod';
 import { logger } from '../logger.js';
 import type { AppConfig } from '../config.js';
@@ -86,7 +87,7 @@ export interface ToolDefinition {
   handler: (config: AppConfig, rawInput: unknown) => Promise<McpToolResponse>;
 }
 
-export const toolDefinitions: ToolDefinition[] = [
+const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'list_files',
     description:
@@ -454,3 +455,5 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
 ];
+
+export const toolDefinitions: ToolDefinition[] = [...coreToolDefinitions, ...orchestrationToolDefinitions];

@@ -240,3 +240,44 @@ export const verifyRemediationSchema = remediationIdSchema;
 export const rollbackRemediationSchema = remediationIdSchema;
 export type ProposeRemediationInput = z.infer<typeof proposeRemediationSchema>;
 export type RemediationIdInput = z.infer<typeof remediationIdSchema>;
+
+// ---------------------------------------------------------------------------
+// Phase 10: AI Security Orchestration
+// ---------------------------------------------------------------------------
+import { AUDIT_FOCUSES } from '../orchestration/types.js';
+
+export const auditLimitsSchema = z.object({
+  maxSteps: z.number().int().min(1).max(100).optional(),
+  maxHypotheses: z.number().int().min(1).max(25).optional(),
+  maxEvidenceRefs: z.number().int().min(1).max(100).optional(),
+  maxVerificationRequests: z.number().int().min(1).max(10).optional(),
+  maxOutputBytes: z.number().int().min(8_000).max(200_000).optional(),
+  maxElapsedMs: z.number().int().min(1_000).max(600_000).optional(),
+}).strict();
+
+export const startSecurityAuditSchema = z.object({
+  objective: z.string().trim().min(1).max(1_000),
+  focus: z.enum(AUDIT_FOCUSES).optional(),
+  target: z.string().trim().min(1).max(256).optional(),
+  limits: auditLimitsSchema.optional(),
+}).strict().superRefine((value, ctx) => {
+  const needsTarget = value.focus === 'route' || value.focus === 'finding';
+  if (needsTarget && !value.target) ctx.addIssue({ code: 'custom', path: ['target'], message: 'target is required when focus is "route" or "finding"' });
+  if (value.target && !needsTarget) ctx.addIssue({ code: 'custom', path: ['target'], message: 'target is only valid when focus is "route" or "finding"' });
+});
+
+export const auditInvestigationIdSchema = z.object({ investigationId: z.string().min(1).max(128) }).strict();
+
+export const recordAuditHypothesisSchema = z.object({
+  investigationId: z.string().min(1).max(128),
+  hypothesisId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_.:-]+$/, 'hypothesisId may contain letters, digits, and _ . : - only'),
+  category: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_. -]+$/, 'category may contain letters, digits, spaces, and _ . - only'),
+  description: z.string().trim().min(1).max(4_000),
+  affectedLocation: z.string().trim().min(1).max(512),
+  reason: z.string().trim().min(1).max(2_000),
+  findingId: z.string().min(1).max(256).optional(),
+}).strict();
+
+export type StartSecurityAuditInput = z.infer<typeof startSecurityAuditSchema>;
+export type AuditInvestigationIdInput = z.infer<typeof auditInvestigationIdSchema>;
+export type RecordAuditHypothesisInput = z.infer<typeof recordAuditHypothesisSchema>;
