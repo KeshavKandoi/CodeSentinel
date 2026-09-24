@@ -1,5 +1,6 @@
 import type { InvestigationRuntimeResult, SecurityInvestigation } from '../investigation/types.js';
 import type { RemediationRecord } from '../remediation/types.js';
+import type { SecurityReceipt } from '../proof/types.js';
 
 export type ReportFindingStatus = 'static_candidate' | 'runtime_verified' | 'not_reproduced' | 'inconclusive' | 'blocked';
 
@@ -53,4 +54,5 @@ export interface SecurityReport {
   runtimeVerificationSummary: { attempted: number; verified: number; notReproduced: number; inconclusive: number; blocked: number };
   limitations: string[];
   remediations?: RemediationRecord[];
+  securityReceipts?: SecurityReceipt[];
 }

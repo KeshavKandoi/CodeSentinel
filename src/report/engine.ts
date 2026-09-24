@@ -4,6 +4,7 @@ import { err, ok, type ToolOutcome } from '../types.js';
 import { detachedRedacted } from './redaction.js';
 import type { RemediationRecommendation, SecurityReport, SecurityReportFinding, ReportFindingStatus } from './types.js';
 import { listRemediationsForInvestigation } from '../remediation/engine.js';
+import { listSecurityReceiptsForFinding } from '../proof/engine.js';
 
 const SEVERITY_ORDER: Record<SecurityReportFinding['severity'], number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 const STATUS_ORDER: Record<ReportFindingStatus, number> = { runtime_verified: 0, static_candidate: 1, inconclusive: 2, blocked: 3, not_reproduced: 4 };
@@ -115,6 +116,7 @@ function buildReport(investigation: SecurityInvestigation): ToolOutcome<Security
     runtimeVerificationSummary: { attempted: runtime.length, verified: runtime.filter((item) => item.status === 'verified').length, notReproduced: runtime.filter((item) => item.status === 'not_reproduced').length, inconclusive: runtime.filter((item) => item.status === 'inconclusive').length, blocked: runtime.filter((item) => item.status === 'blocked').length },
     limitations: ['Static findings are candidates unless runtime evidence directly establishes the security condition.', 'Generic successful reads and unresolved dynamic resources remain inconclusive or blocked.', 'Remediation status is included only after controlled validation, re-analysis, and authorized runtime verification; source edits alone are not proof.'],
     remediations: listRemediationsForInvestigation(investigation.id),
+    securityReceipts: findings.flatMap((finding) => listSecurityReceiptsForFinding(finding.findingId)),
   };
   return ok(detachedRedacted(report));
 }

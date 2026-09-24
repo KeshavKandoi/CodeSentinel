@@ -25,6 +25,8 @@ import {
   rollbackRemediationSchema,
   safeValidate,
   deepSecurityAuditSchema,
+  proveSecurityFindingSchema,
+  securityGraphSchema,
 } from '../validation/schemas.js';
 import { listFiles, readFile, searchFiles } from '../fs/fsOperations.js';
 import { getProjectInfo } from './projectInfo.js';
@@ -50,6 +52,7 @@ import {
 import { generateSecurityReport, getSecurityFinding } from '../report/engine.js';
 import { applyRemediation, proposeRemediation, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
 import { runDeepSecurityAudit } from '../intelligence/engine.js';
+import { buildSecurityGraph, listSecurityProofCases, proveSecurityFinding } from '../proof/engine.js';
 
 
 export interface McpToolResponse {
@@ -90,6 +93,36 @@ export interface ToolDefinition {
 }
 
 const coreToolDefinitions: ToolDefinition[] = [
+  {
+    name: 'list_security_proof_cases',
+    description: 'List bounded proof cases derived from the existing local route and access-control inventory. This performs no runtime request.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(securityGraphSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(ok(listSecurityProofCases(config)));
+    },
+  },
+  {
+    name: 'prove_security_finding',
+    description: 'Execute one explicitly supported, minimal proof against an operator-authorized target using existing Phase 6 controls. Successful status alone never verifies a finding.',
+    inputSchema: { type: 'object', properties: { findingId: { type: 'string' }, target: { type: 'object' }, sessions: { type: 'array' }, sessionParams: { type: 'object' } }, required: ['findingId', 'target'] },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(proveSecurityFindingSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(await proveSecurityFinding(config, validation.data));
+    },
+  },
+  {
+    name: 'get_security_graph',
+    description: 'Build a bounded evidence-backed security graph from the existing local repository, route, middleware, and access-control models. It never executes project code or contacts targets.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(securityGraphSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(buildSecurityGraph(config));
+    },
+  },
   {
     name: 'run_deep_security_audit',
     description: 'Run a bounded, deterministic local repository intelligence audit over existing discovery, static analysis, route, access-control, evidence, and coverage engines. It never contacts external targets, executes project code, modifies source, or calls an LLM.',

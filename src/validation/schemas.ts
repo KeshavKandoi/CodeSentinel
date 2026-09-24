@@ -305,3 +305,7 @@ export const deepSecurityAuditSchema = z.object({
   maxFiles: z.number().int().positive().max(2_000).optional(),
 }).strict();
 export type DeepSecurityAuditInput = z.infer<typeof deepSecurityAuditSchema>;
+
+export const proveSecurityFindingSchema = verifyFindingSchema;
+export type ProveSecurityFindingInput = z.infer<typeof proveSecurityFindingSchema>;
+export const securityGraphSchema = z.object({}).strict();

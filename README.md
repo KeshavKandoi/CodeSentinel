@@ -750,6 +750,26 @@ changed-evidence findings. Baselines are local JSON only; no CVE database or
 external service is contacted. Reports redact sensitive values and fail closed
 if finding references, evidence references, or redaction checks are invalid.
 
+## Security proofs and graph
+
+`list_security_proof_cases` exposes only proof cases backed by the current
+route/access-control inventory. `prove_security_finding` executes one minimal
+case through the existing Phase 6 target guard, request caps, redirect checks,
+session controls, response limits, and semantic result classification. HTTP
+success alone is never proof. Unsupported static categories return a blocked
+or inconclusive receipt instead of inventing a request. Receipts contain only
+redacted request metadata, response facts, oracle status, source references,
+evidence references, and re-verification state; reports include receipts when
+available.
+
+`get_security_graph` returns bounded nodes and evidence-backed edges for files,
+routes, handlers, middleware, and access-control relationships. It explicitly
+reports parser and cross-file limitations and does not claim a complete taint
+or AST graph. The local benchmark exercises proof metadata, vulnerable/secure
+fixture comparison, false-positive safety, and functionality-preserving
+coverage. It does not publish vulnerability percentages or contact external
+targets.
+
 ## Running tests
 
     npm test
