@@ -57,6 +57,8 @@ describe('Phase 10 allowlisted action dispatcher', () => {
     expect((await call('dispatch_security_action', { investigationId: id, action: 'list_files', arguments: { path: '../../etc' } })).body.error).toBe('PATH_OUTSIDE_ROOT');
     const malformed = await dispatch(id, 'read_file', { path: 123 });
     expect(malformed.body.error).toBe('INVALID_INPUT');
+    expect((await dispatch(id, 'read_file', { path: '.env' })).body.error).toBe('INVALID_INPUT');
+    expect((await dispatch(id, 'search_files', { query: 'PASSWORD', path: '.env' })).body.error).toBe('INVALID_INPUT');
     const writeAttempt = await call('dispatch_security_action', { investigationId: id, action: 'write_file', arguments: { path: 'x', content: 'changed' } });
     expect(writeAttempt.body.error).toBe('INVALID_INPUT');
     const state = await call('get_security_audit_state', { investigationId: id });
