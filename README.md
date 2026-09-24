@@ -647,10 +647,12 @@ whether runtime re-verification is appropriate. No source files are changed.
 Phase 9 accepts a structured proposal from an external AI client and keeps the
 model outside CodeSentinel. `propose_remediation` validates the investigation,
 finding, project-relative paths, file hashes, size limits, protected paths, and
-content shape without modifying files. `apply_remediation` snapshots the
-original files and performs bounded hash-checked writes; its result is always
-`applied_pending_verification` until analysis and any explicitly authorized
-runtime checks finish.
+content shape without modifying files. Identical proposals are serialized and
+deduplicated. `apply_remediation` completes preflight validation for every
+file, snapshots every original, prepares and hash-verifies every temporary
+file, rechecks original hashes before commit, then verifies every resulting
+hash. Its result is always `applied_pending_verification` until analysis and
+any explicitly authorized runtime checks finish.
 
 The workflow is:
 
