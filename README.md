@@ -668,6 +668,48 @@ overwritten. Proposal, snapshot, diff, and report responses omit source
 contents and reuse Phase 8 redaction. No LLM/API dependency, unrestricted shell
 execution, credential discovery, or arbitrary filesystem mutation is added.
 
+## Phase 10 security analysis orchestration
+
+Phase 10 provides a bounded coordinator for an external AI agent such as Codex
+or Claude Code. The agent supplies an objective, hypotheses, and explicitly
+authorized runtime target details; CodeSentinel makes no model calls and
+chooses no security conclusions. The coordinator reuses the existing Phase 1-
+9 engines rather than duplicating discovery, scanning, access-control analysis,
+runtime verification, reporting, or remediation.
+
+The state machine is:
+
+    created -> planning -> investigating -> awaiting_verification -> completed
+                              |                 |
+                              +-> blocked      +-> blocked
+                              +-> failed       +-> failed
+
+`start_security_audit` creates the bounded session, and
+`plan_security_investigation` returns the deterministic capability plan.
+`run_audit_analysis` delegates to the existing project discovery, scanner,
+route, and access-control engines. The external agent may record an explicitly
+labeled hypothesis, request Phase 6 runtime verification, complete the audit
+when required work is finished, and generate the Phase 8 report with
+finding-to-evidence-to-step traceability. The capability plan exposes Phase 9
+remediation as a separate controlled handoff; the orchestrator never edits
+source files itself.
+
+Every state-changing orchestration operation is validated, bounded by steps,
+hypotheses, evidence references, verification requests, output bytes, and
+elapsed time, and recorded with timestamps, status, linked investigation steps,
+evidence counts, and object IDs. Completed operations are idempotent where
+appropriate. Invalid transitions, unsupported hypotheses, project-boundary
+violations, runtime blocks, analysis failures, report failures, and exhausted
+limits become structured errors or blocked/failed audit states. Hypotheses are
+never evidence, static findings remain candidates, and no result is promoted
+to a confirmed vulnerability without the underlying deterministic or
+authorized runtime evidence.
+
+The orchestration modules have no shell, network, filesystem mutation, or
+model API capability. Read-only tools remain guarded by the existing project
+path and command sandbox; runtime requests remain guarded by Phase 6; and
+remediation remains guarded by Phase 9 hashes, snapshots, and rollback checks.
+
 ## Running tests
 
     npm test

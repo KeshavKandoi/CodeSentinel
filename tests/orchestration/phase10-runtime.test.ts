@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -173,5 +174,19 @@ describe('Phase 10 end-to-end (local synthetic fixture only)', () => {
 
     const after = (await call('plan_security_investigation', { investigationId: id })).body;
     expect(after.capabilities.find((c: any) => c.kind === 'controlled_remediation').status).toBe('available');
+    const source = fs.readFileSync(`${FIXTURE}/${detail.body.affectedFile}`, 'utf8');
+    const proposal = await call('propose_remediation', {
+      investigationId: id,
+      findingId: finding.findingId,
+      description: 'Review the evidence-backed candidate.',
+      rationale: 'The external agent proposes a controlled review; this handoff test makes no source change.',
+      files: [{ path: detail.body.affectedFile, originalContentHash: crypto.createHash('sha256').update(source).digest('hex'), proposedContent: source, description: 'No-op orchestration handoff.' }],
+      expectedSecurityEffect: 'No fix is claimed without Phase 9 verification.',
+      requiresRuntimeVerification: false,
+    });
+    expect(proposal.isError, proposal.text).toBe(false);
+    const finalReport = await call('generate_security_audit_report', { investigationId: id });
+    expect(finalReport.isError, finalReport.text).toBe(false);
+    expect(finalReport.body.report.remediations.some((r: any) => r.proposal.findingId === finding.findingId)).toBe(true);
   });
 });
