@@ -41,6 +41,7 @@ export interface RemediationVerification {
   staticFindingPresent: boolean;
   relatedFindings: Array<{ findingId: string; title: string; category: string; path: string; file: string }>;
   runtimeStatus: string | null;
+  runtimeReceiptId: string | null;
   summary: string;
   verifiedAt: string;
 }
