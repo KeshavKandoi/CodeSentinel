@@ -530,6 +530,57 @@ its documented package script, then pass its exact origin (for example
 `http://127.0.0.1:3000`) to `verify_finding`. An absent server is represented as
 a structured blocked or inconclusive result.
 
+## Phase 7 security agent orchestration
+
+Phase 7 adds an agent-oriented investigation layer over the deterministic
+Phase 1-6 tools. The external MCP client (Codex, Claude Code, or another
+compatible agent) performs reasoning; CodeSentinel does not contain an LLM API
+key, call a model provider, modify source code, or perform unrestricted
+penetration testing.
+
+The workflow is bounded and stateful in the running MCP process:
+
+    External AI Agent
+            |
+            v
+    CodeSentinel MCP
+            |
+            v
+    Security Investigation Orchestrator
+       /       |        |          \
+      v        v        v           v
+    Discovery Scanner  Routes  Access Control
+            |
+            v
+       Runtime Verifier
+            |
+            v
+       Evidence / Findings
+
+Use `start_security_investigation` with the configured project path, a bounded
+scope, and an investigation hypothesis. Then call `run_security_analysis`,
+which reuses project discovery, the static scanner, route discovery, and
+access-control analysis. Record an evidence-backed hypothesis with
+`record_security_hypothesis`; evidence references must come from that analysis.
+Only then may `request_runtime_verification` delegate to the existing Phase 6
+`verify_finding` target guard and HTTP controls. `get_investigation` returns
+bounded, redacted state, steps, evidence, hypotheses, and finding lifecycle.
+`get_security_agent_instructions` exposes the same workflow guidance to an MCP
+client.
+
+Investigations enforce a four-step analysis budget, bounded hypothesis and
+runtime-verification counts, maximum elapsed time, maximum evidence bytes, and
+duplicate-operation prevention. Valid lifecycle transitions are:
+
+    created -> running -> awaiting_verification -> completed
+
+Failures and safety limits produce `failed` or `blocked` states. Static
+findings remain `static_candidate`/`suspected`; runtime outcomes become
+`runtime_verified`, `not_reproduced`, or `inconclusive` and are never marked
+fixed automatically. The agent layer cannot execute shell commands, read
+outside the configured project, obtain credentials, send arbitrary HTTP,
+disable SSRF/request limits, or perform destructive actions.
+
 ## Phase 5 architecture
 
     src/access/
@@ -546,7 +597,7 @@ a structured blocked or inconclusive result.
 
     npm test
 
-runs the complete suite (Phase 1 through Phase 6). Phase 5 tests cover public/authenticated/
+runs the complete suite (Phase 1 through Phase 7). Phase 5 and Phase 6 tests cover public/authenticated/
 role-protected/ownership-protected/unknown classification, IDOR and missing-
 authentication/authorization finding generation, inconsistent-authorization
 detection across sibling methods, false-positive resistance (comment/string
