@@ -177,6 +177,9 @@ async function performRequest(
         }));
     } catch (e) {
       clearTimeout(timer);
+      if ((e as Error).message === 'RUNTIME_REQUEST_LIMIT') {
+        return blockedEvidence(req, 'Per-case request limit reached while following redirects; no further requests issued.');
+      }
       return toEvidence(
         req,
         {

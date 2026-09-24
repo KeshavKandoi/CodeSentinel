@@ -30,5 +30,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(port, '127.0.0.1', () => {
-  process.stdout.write(`runtime fixture listening on http://127.0.0.1:${port}\n`);
+  const address = server.address();
+  const actualPort = typeof address === 'object' && address ? address.port : port;
+  process.stdout.write(`runtime fixture listening on http://127.0.0.1:${actualPort}\n`);
 });

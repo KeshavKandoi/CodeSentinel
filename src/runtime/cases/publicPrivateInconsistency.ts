@@ -75,12 +75,16 @@ export async function runPublicPrivateInconsistencyCase(
     );
   }
 
-  if (!isAuthRejection(anonEvidence.response) && anonStatus === authStatus) {
+  const equivalentResponse =
+    anonStatus === authStatus &&
+    anonEvidence.response.bodySnippet.length > 0 &&
+    anonEvidence.response.bodySnippet === authEvidence.response.bodySnippet;
+  if (!isAuthRejection(anonEvidence.response) && equivalentResponse) {
     return buildResult(
       vcase,
       'verified',
       'high',
-      `Unauthenticated and authenticated requests both received status ${anonStatus} for ${method} ${vcase.path}. The route does not distinguish between authenticated and unauthenticated callers, confirming the public/private inconsistency.`,
+      `Unauthenticated and authenticated requests received the same status ${anonStatus} and identical bounded response content for ${method} ${vcase.path}. The route does not distinguish between authenticated and unauthenticated callers, confirming the public/private inconsistency.`,
       evidence,
       startedAt
     );
@@ -90,7 +94,7 @@ export async function runPublicPrivateInconsistencyCase(
     vcase,
     'inconclusive',
     'medium',
-    `Unauthenticated request received ${anonStatus} and authenticated request received ${authStatus}. This difference does not clearly confirm or rule out an inconsistency.`,
+    `Unauthenticated request received ${anonStatus} and authenticated request received ${authStatus}; the bounded response content did not establish an equivalent protected operation. This is inconclusive.`,
     evidence,
     startedAt
   );

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { once } from 'node:events';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { verifyFinding, listVerificationCases } from '../../src/runtime/engine.js';
@@ -9,6 +11,7 @@ import type { AppConfig } from '../../src/config.js';
 import type { RuntimeTarget } from '../../src/runtime/types.js';
 
 const FIXTURE = fs.realpathSync(fileURLToPath(new URL('../fixtures/access-control-express', import.meta.url)));
+const RUNTIME_FIXTURE = fs.realpathSync(fileURLToPath(new URL('../fixtures/runtime-phase6', import.meta.url)));
 const config: AppConfig = {
   projectRoot: FIXTURE,
   commandTimeoutMs: 5000,
@@ -18,7 +21,10 @@ const config: AppConfig = {
 };
 const target: RuntimeTarget = { allowedOrigin: 'http://127.0.0.1:43127', minRequestIntervalMs: 0 };
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe('Phase 6 target boundary', () => {
   it('rejects malformed origins, credentials, paths, and unsafe request paths', async () => {
@@ -119,6 +125,51 @@ describe('Phase 6 orchestration and MCP-facing semantics', () => {
       expect(result.data.result.status).toBe('blocked');
       expect(result.data.finding.status).toBe('suspected');
       expect(result.data.finding.runtimeVerification.status).toBe('blocked');
+    }
+  });
+
+  it('runs the complete Phase 4 -> Phase 5 -> Phase 6 flow against the local fixture', async () => {
+    const child = spawn(process.execPath, ['server.mjs'], {
+      cwd: RUNTIME_FIXTURE,
+      env: { ...process.env, PORT: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      const startup = await new Promise<string>((resolve, reject) => {
+        child.stdout.once('data', (chunk) => resolve(String(chunk)));
+        child.once('error', reject);
+        child.once('exit', (code) => {
+          if (code !== 0) reject(new Error(`runtime fixture exited before startup (code ${code})`));
+        });
+      });
+      const portMatch = /127\.0\.0\.1:(\d+)/.exec(startup);
+      expect(portMatch).not.toBeNull();
+      const fixtureOrigin = `http://127.0.0.1:${portMatch![1]}`;
+      const cases = listVerificationCases(config);
+      const findingId = cases.find((vcase) => vcase.type === 'missing_authentication' && vcase.path === '/admin/reset')?.findingId;
+      expect(findingId).toBeDefined();
+      const result = await verifyFinding(config, {
+        findingId: findingId!,
+        target: {
+          allowedOrigin: fixtureOrigin,
+          allowDestructiveMethods: true,
+          vettedTestPaths: ['/admin/reset'],
+          minRequestIntervalMs: 0,
+        },
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.verificationCase.path).toBe('/admin/reset');
+        expect(result.data.result.status).toBe('inconclusive');
+        expect(result.data.result.evidence[0]?.response.status).toBeGreaterThanOrEqual(200);
+        expect(result.data.result.evidence[0]?.response.status).toBeLessThan(300);
+        expect(result.data.result.evidence[0]?.response.bodySnippet).toContain('reset');
+        expect(result.data.finding.status).toBe('suspected');
+        expect(result.data.finding.runtimeVerification.status).toBe('inconclusive');
+      }
+    } finally {
+      child.kill();
+      await once(child, 'exit').catch(() => undefined);
     }
   });
 });
