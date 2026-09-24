@@ -89,6 +89,10 @@ describe('proof to remediation lifecycle', () => {
       sessionLabelReferences: [], oracleDefinition: { kind: 'body_contains', safeResult: 'not_reproduced' },
     });
     expect(JSON.stringify(proof.data)).not.toContain('select ');
+    const callerContract = proof.data.replayContract!;
+    callerContract.relativeRoute = '/caller-tampered';
+    expect(listSecurityReceiptsForFinding(finding.findingId).find((receipt) => receipt.receiptId === proof.data.receiptId)?.replayContract?.relativeRoute).toBe('/search');
+    callerContract.relativeRoute = '/search';
 
     const targetPath = path.join(root, 'src/app.ts');
     const original = fs.readFileSync(targetPath, 'utf8');

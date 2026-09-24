@@ -9,6 +9,7 @@ import type { SecurityFinding } from '../../src/security/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = path.resolve(__dirname, '..', 'fixtures', 'security-cases');
+const pythonFixtureRoot = path.resolve(__dirname, '..', 'fixtures', 'fastapi-routes');
 const config: AppConfig = {
   projectRoot: fixtureRoot,
   commandTimeoutMs: 5000,
@@ -42,6 +43,15 @@ describe('Phase 3 security rule registry', () => {
 });
 
 describe('Phase 3 static security scanner', () => {
+  it('does not run Node rules against explicitly unsupported Python projects', async () => {
+    const result = await scanProject({ ...config, projectRoot: pythonFixtureRoot });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.project.ecosystem).toBe('python');
+    expect(result.data.rulesRun).toEqual([]);
+    expect(result.data.findings).toEqual([]);
+    expect(result.data.warnings.join(' ')).toMatch(/Python analysis is not yet implemented/i);
+  });
   it('returns normalized suspected findings with evidence and summary counts', async () => {
     const result = await scanProject(config);
     expect(result.ok).toBe(true);
@@ -56,6 +66,14 @@ describe('Phase 3 static security scanner', () => {
       expect(finding.evidence.length).toBeGreaterThan(0);
       expect(finding.evidence[0].reason.length).toBeGreaterThan(10);
     }
+  });
+
+  it('redacts literal credentials from scanner evidence returned through the MCP surface', async () => {
+    const findings = await runScan();
+    const serialized = JSON.stringify(findings);
+    expect(serialized).not.toContain('sk_live_abcdef1234567890');
+    expect(serialized).not.toContain('real-prod-password-12345');
+    expect(serialized).toContain('[REDACTED]');
   });
 
   it('detects one or more positive examples for every initial rule', async () => {

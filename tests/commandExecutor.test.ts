@@ -47,8 +47,13 @@ describe('validateCommand', () => {
     ['npm', ['test']],
     ['git', ['-C', '/tmp', 'status']],
     ['git', ['show', '--output=/tmp/codesentinel-audit-output']],
+    ['git', ['show', '--output', '/tmp/codesentinel-audit-output']],
+    ['git', ['diff', '--ext-diff']],
+    ['git', ['show', '--textconv']],
     ['cat', ['/etc/passwd']],
     ['find', ['.', '-exec', 'echo', '{}', ';']],
+    ['grep', ['--file=/etc/passwd', 'needle', '.']],
+    ['find', ['.', '-files0-from=/etc/passwd']],
   ])('rejects unsafe command boundary %s', (command, args) => {
     const result = validateCommand({ command, args });
     expect(result.ok).toBe(false);

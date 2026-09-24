@@ -7,6 +7,7 @@ import { verifyFinding, listVerificationCases } from '../../src/runtime/engine.j
 import { toolDefinitions } from '../../src/tools/registry.js';
 import { issueRuntimeRequest, RuntimeClientState } from '../../src/runtime/httpClient.js';
 import { validateRedirect, validateTarget, validateUrl } from '../../src/runtime/targetGuard.js';
+import { buildPublicPrivateInconsistencyCase, runPublicPrivateInconsistencyCase } from '../../src/runtime/cases/publicPrivateInconsistency.js';
 import type { AppConfig } from '../../src/config.js';
 import type { RuntimeTarget } from '../../src/runtime/types.js';
 
@@ -91,6 +92,23 @@ describe('Phase 6 request controls and evidence', () => {
 });
 
 describe('Phase 6 orchestration and MCP-facing semantics', () => {
+  it('does not treat identical 404 responses as proof of a public/private bypass', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+    const vcase = buildPublicPrivateInconsistencyCase({
+      id: 'finding-404',
+      routeId: 'route-404',
+      method: 'GET',
+      path: '/protected',
+      framework: 'express',
+    } as any, {
+      id: 'route-404', method: 'GET', path: '/protected', pathResolved: true, framework: 'express', language: 'typescript',
+      file: 'src/app.ts', line: 1, sourceRange: { startLine: 1, endLine: 5 }, handler: 'handler', controller: '', router: '',
+      middleware: [], dependencies: [], parameters: [], queryParameters: [], bodyParameters: [], authIndicators: [], authorizationIndicators: [],
+      uploadIndicators: [], responseIndicators: [], publicOrProtected: 'protected', confidence: 'high', evidence: [],
+    } as any, 'authenticated');
+    const result = await runPublicPrivateInconsistencyCase(vcase, 'authenticated', target, new Map([['authenticated', { id: 'authenticated', kind: 'authenticated' }]]), new RuntimeClientState(target));
+    expect(result.status).toBe('inconclusive');
+  });
   it('exposes both runtime operations through the MCP response envelope', async () => {
     const listTool = toolDefinitions.find((tool) => tool.name === 'list_verification_cases');
     const verifyTool = toolDefinitions.find((tool) => tool.name === 'verify_finding');
