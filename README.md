@@ -572,12 +572,16 @@ Investigations enforce a four-step analysis budget, bounded hypothesis and
 runtime-verification counts, maximum elapsed time, maximum evidence bytes, and
 duplicate-operation prevention. Valid lifecycle transitions are:
 
-    created -> running -> awaiting_verification -> completed
+ created -> running -> awaiting_verification -> completed
 
-Failures and safety limits produce `failed` or `blocked` states. Static
-findings remain `static_candidate`/`suspected`; runtime outcomes become
-`runtime_verified`, `not_reproduced`, or `inconclusive` and are never marked
-fixed automatically. The agent layer cannot execute shell commands, read
+Failures and safety limits produce `failed` or `blocked` states. The analysis
+budget is intentionally fixed at four operations: project discovery, static
+scan, route discovery, and access-control analysis. Static findings remain
+`static_candidate`/`suspected`; runtime outcomes become `runtime_verified`,
+`not_reproduced`, `inconclusive`, or `blocked` and are never marked fixed
+automatically. Runtime result summaries remain available through the
+investigation state while full request evidence stays bounded and redacted.
+The agent layer cannot execute shell commands, read
 outside the configured project, obtain credentials, send arbitrary HTTP,
 disable SSRF/request limits, or perform destructive actions.
 
