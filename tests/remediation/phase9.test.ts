@@ -2,11 +2,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../../src/config.js';
 import { toolDefinitions } from '../../src/tools/registry.js';
 import { resetInvestigationsForTests } from '../../src/investigation/orchestrator.js';
-import { resetRemediationsForTests } from '../../src/remediation/engine.js';
+import { listRemediationsForInvestigation, resetRemediationsForTests } from '../../src/remediation/engine.js';
 
 const roots: string[] = [];
 const configFor = (root: string): AppConfig => ({ projectRoot: root, commandTimeoutMs: 5000, maxOutputBytes: 1_000_000, maxReadFileBytes: 2_000_000, maxListResults: 2_000 });
@@ -65,6 +65,25 @@ describe('Phase 9 controlled remediation', () => {
     const responses = await Promise.all([tool('propose_remediation').handler(config, input), tool('propose_remediation').handler(config, input)]);
     expect(responses.filter((response) => !response.isError)).toHaveLength(1);
     expect(responses.filter((response) => body(response).error === 'DUPLICATE_OPERATION')).toHaveLength(1);
+    expect(listRemediationsForInvestigation(investigationId)).toHaveLength(1);
+  });
+
+  it('rejects a later invalid preflight file without changing an earlier file', async () => {
+    const { root, config } = makeProject();
+    const { investigationId, findingId } = await investigation(config, root);
+    const firstPath = path.join(root, 'src/vulnerable.ts');
+    const secondPath = path.join(root, 'src/safe.ts');
+    const first = fs.readFileSync(firstPath, 'utf8');
+    const second = fs.readFileSync(secondPath, 'utf8');
+    const proposal = body(await tool('propose_remediation').handler(config, { investigationId, findingId, description: 'Validate all targets.', rationale: 'Exercise later-file preflight failure.', files: [
+      { path: 'src/vulnerable.ts', originalContentHash: crypto.createHash('sha256').update(first).digest('hex'), proposedContent: 'export const safe = true;\n', description: 'Update first.' },
+      { path: 'src/safe.ts', originalContentHash: crypto.createHash('sha256').update(second).digest('hex'), proposedContent: `${second}\n// reviewed\n`, description: 'Update second.' },
+    ], expectedSecurityEffect: 'All targets pass preflight.', requiresRuntimeVerification: false }));
+    fs.rmSync(secondPath);
+    fs.mkdirSync(secondPath);
+    const result = await tool('apply_remediation').handler(config, { remediationId: proposal.proposalId });
+    expect(body(result).error).toBe('NOT_A_FILE');
+    expect(fs.readFileSync(firstPath, 'utf8')).toBe(first);
   });
 
   it('validates all files before changing any and preserves newer content on commit conflict', async () => {
@@ -119,6 +138,84 @@ describe('Phase 9 controlled remediation', () => {
     const rollback = await tool('rollback_remediation').handler(config, { remediationId: proposal.proposalId });
     expect(body(rollback).error).toBe('ROLLBACK_CONFLICT');
     expect(fs.readFileSync(target, 'utf8')).toContain('newerExternalChange');
+  });
+
+  it('aborts preparation with zero original-file modifications', async () => {
+    const { root, config } = makeProject();
+    const { investigationId, findingId } = await investigation(config, root);
+    const firstPath = path.join(root, 'src/vulnerable.ts');
+    const secondPath = path.join(root, 'src/safe.ts');
+    const first = fs.readFileSync(firstPath, 'utf8');
+    const second = fs.readFileSync(secondPath, 'utf8');
+    const proposal = body(await tool('propose_remediation').handler(config, { investigationId, findingId, description: 'Prepare two files.', rationale: 'Exercise preparation failure.', files: [
+      { path: 'src/vulnerable.ts', originalContentHash: crypto.createHash('sha256').update(first).digest('hex'), proposedContent: 'export const safe = true;\n', description: 'Update first.' },
+      { path: 'src/safe.ts', originalContentHash: crypto.createHash('sha256').update(second).digest('hex'), proposedContent: `${second}\n// reviewed\n`, description: 'Update second.' },
+    ], expectedSecurityEffect: 'Both files are prepared.', requiresRuntimeVerification: false }));
+    const originalWrite = fs.writeFileSync.bind(fs);
+    const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(((filePath: fs.PathLike, data: string | NodeJS.ArrayBufferView, ...args: any[]) => {
+      if (String(filePath).includes('.codesentinel-')) throw new Error('deterministic preparation failure');
+      return originalWrite(filePath, data, ...args);
+    }) as typeof fs.writeFileSync);
+    try {
+      const result = await tool('apply_remediation').handler(config, { remediationId: proposal.proposalId });
+      expect(body(result).error).toBe('INTERNAL_ERROR');
+      expect(fs.readFileSync(firstPath, 'utf8')).toBe(first);
+      expect(fs.readFileSync(secondPath, 'utf8')).toBe(second);
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
+
+  it('restores snapshots after post-commit integrity verification failure', async () => {
+    const { root, config } = makeProject();
+    const { investigationId, findingId } = await investigation(config, root);
+    const target = path.join(root, 'src/vulnerable.ts');
+    const original = fs.readFileSync(target, 'utf8');
+    const replacement = 'export const safe = true;\n';
+    const proposal = body(await tool('propose_remediation').handler(config, { investigationId, findingId, description: 'Verify commit integrity.', rationale: 'Exercise post-commit failure recovery.', files: [{ path: 'src/vulnerable.ts', originalContentHash: crypto.createHash('sha256').update(original).digest('hex'), proposedContent: replacement, description: 'Replace source.' }], expectedSecurityEffect: 'The finding is removed.', requiresRuntimeVerification: false }));
+    const originalRead = fs.readFileSync.bind(fs);
+    const originalRename = fs.renameSync.bind(fs);
+    let committed = false;
+    let corruptedOnce = false;
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      const result = originalRename(from, to);
+      if (String(to) === target) committed = true;
+      return result;
+    }) as typeof fs.renameSync);
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(((filePath: fs.PathLike, ...args: any[]) => {
+      if (committed && String(filePath) === target && !corruptedOnce) {
+        corruptedOnce = true;
+        return Buffer.from('tampered post-commit content');
+      }
+      return originalRead(filePath, ...args);
+    }) as typeof fs.readFileSync);
+    try {
+      const result = await tool('apply_remediation').handler(config, { remediationId: proposal.proposalId });
+      expect(body(result).error).toBe('INTERNAL_ERROR');
+      expect(fs.readFileSync(target, 'utf8')).toBe(original);
+      expect(body(await tool('apply_remediation').handler(config, { remediationId: proposal.proposalId })).error).toBe('INVALID_TRANSITION');
+    } finally {
+      readSpy.mockRestore();
+      renameSpy.mockRestore();
+    }
+  });
+
+  it('reports missing snapshots and preserves proposal metadata and hashes', async () => {
+    const { root, config } = makeProject();
+    const { investigationId, findingId } = await investigation(config, root);
+    const target = path.join(root, 'src/vulnerable.ts');
+    const original = fs.readFileSync(target, 'utf8');
+    const originalHash = crypto.createHash('sha256').update(original).digest('hex');
+    const proposal = body(await tool('propose_remediation').handler(config, { investigationId, findingId, description: 'Immutable proposal.', rationale: 'Exercise metadata preservation.', files: [{ path: 'src/vulnerable.ts', originalContentHash: originalHash, proposedContent: 'const command = \'rm -rf /; sudo sh -c "x" | cat $(whoami) `id` > /tmp/out\';\n', description: 'Keep command text as inert source content.' }], expectedSecurityEffect: 'No command is executed.', requiresRuntimeVerification: false }));
+    const proposalId = proposal.proposalId;
+    proposal.proposalId = 'mutated';
+    proposal.files[0].originalContentHash = '0'.repeat(64);
+    const missingSnapshot = await tool('rollback_remediation').handler(config, { remediationId: proposalId });
+    expect(body(missingSnapshot).error).toBe('REMEDIATION_INVALID');
+    const persisted = body(await tool('apply_remediation').handler(config, { remediationId: proposalId }));
+    expect(persisted.proposal.proposalId).toBe(proposalId);
+    expect(persisted.proposal.files[0].originalContentHash).toBe(originalHash);
+    expect(fs.readFileSync(target, 'utf8')).toContain('rm -rf /');
   });
 
   it('registers all four mutation tools and never exposes shell execution as a remediation input', () => {
