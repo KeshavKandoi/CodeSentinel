@@ -22,6 +22,13 @@ function makeProject(): { root: string; config: AppConfig } {
 afterEach(() => { resetInvestigationsForTests(); resetRemediationsForTests(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('Phase 9 controlled remediation', () => {
+  async function investigation(config: AppConfig, root: string) {
+    const started = body(await tool('start_security_investigation').handler(config, { projectPath: root, scope: ['input_validation'], hypothesis: 'Find unsafe input handling.' }));
+    const analysis = body(await tool('run_security_analysis').handler(config, { investigationId: started.id }));
+    const finding = analysis.findings.find((item: { origin: string; file: string }) => item.origin === 'security_scan' && item.file === 'src/vulnerable.ts');
+    return { investigationId: started.id, findingId: finding.findingId };
+  }
+
   it('validates, applies, re-analyzes, and rolls back without returning source contents', async () => {
     const { root, config } = makeProject();
     const started = body(await tool('start_security_investigation').handler(config, { projectPath: root, scope: ['input_validation'], hypothesis: 'Find unsafe input handling.' }));
@@ -48,6 +55,70 @@ describe('Phase 9 controlled remediation', () => {
     expect(body(bad).error).toBe('PATH_OUTSIDE_ROOT');
     const protectedResponse = await tool('propose_remediation').handler(config, { investigationId: started.id, findingId, description: 'bad', rationale: 'bad', files: [{ path: '.env', originalContentHash: '0'.repeat(64), proposedContent: 'SECRET=bad', description: 'bad' }], expectedSecurityEffect: 'none', requiresRuntimeVerification: false });
     expect(body(protectedResponse).error).toBe('REMEDIATION_INVALID');
+  });
+
+  it('serializes identical proposal creation deterministically', async () => {
+    const { root, config } = makeProject();
+    const { investigationId, findingId } = await investigation(config, root);
+    const original = fs.readFileSync(path.join(root, 'src/vulnerable.ts'), 'utf8');
+    const input = { investigationId, findingId, description: 'Remove unsafe sinks.', rationale: 'Reduce attack surface.', files: [{ path: 'src/vulnerable.ts', originalContentHash: crypto.createHash('sha256').update(original).digest('hex'), proposedContent: 'export const safe = true;\n', description: 'Remove unsafe sinks.' }], expectedSecurityEffect: 'Unsafe sinks are removed.', requiresRuntimeVerification: false };
+    const responses = await Promise.all([tool('propose_remediation').handler(config, input), tool('propose_remediation').handler(config, input)]);
+    expect(responses.filter((response) => !response.isError)).toHaveLength(1);
+    expect(responses.filter((response) => body(response).error === 'DUPLICATE_OPERATION')).toHaveLength(1);
+  });
+
+  it('validates all files before changing any and preserves newer content on commit conflict', async () => {
+    const { root, config } = makeProject();
+    const { investigationId, findingId } = await investigation(config, root);
+    const firstPath = path.join(root, 'src/vulnerable.ts');
+    const secondPath = path.join(root, 'src/safe.ts');
+    const first = fs.readFileSync(firstPath, 'utf8');
+    const second = fs.readFileSync(secondPath, 'utf8');
+    const proposal = body(await tool('propose_remediation').handler(config, { investigationId, findingId, description: 'Update two files.', rationale: 'Test transactional preflight.', files: [
+      { path: 'src/vulnerable.ts', originalContentHash: crypto.createHash('sha256').update(first).digest('hex'), proposedContent: 'export const safe = true;\n', description: 'Update first.' },
+      { path: 'src/safe.ts', originalContentHash: crypto.createHash('sha256').update(second).digest('hex'), proposedContent: `${second}\n// reviewed\n`, description: 'Update second.' },
+    ], expectedSecurityEffect: 'Both files are hardened.', requiresRuntimeVerification: false }));
+    fs.writeFileSync(secondPath, `${second}\n// changed externally\n`);
+    const conflict = await tool('apply_remediation').handler(config, { remediationId: proposal.proposalId });
+    expect(body(conflict).error).toBe('REMEDIATION_CONFLICT');
+    expect(fs.readFileSync(firstPath, 'utf8')).toBe(first);
+    expect(fs.readFileSync(secondPath, 'utf8')).toContain('changed externally');
+  });
+
+  it('applies multiple files with verified resulting hashes and rejects a second rollback', async () => {
+    const { root, config } = makeProject();
+    const { investigationId, findingId } = await investigation(config, root);
+    const firstPath = path.join(root, 'src/vulnerable.ts');
+    const secondPath = path.join(root, 'src/safe.ts');
+    const first = fs.readFileSync(firstPath, 'utf8');
+    const second = fs.readFileSync(secondPath, 'utf8');
+    const nextFirst = 'export const safe = true;\n';
+    const nextSecond = `${second}\n// reviewed\n`;
+    const proposal = body(await tool('propose_remediation').handler(config, { investigationId, findingId, description: 'Update two files.', rationale: 'Test multi-file commit.', files: [
+      { path: 'src/vulnerable.ts', originalContentHash: crypto.createHash('sha256').update(first).digest('hex'), proposedContent: nextFirst, description: 'Update first.' },
+      { path: 'src/safe.ts', originalContentHash: crypto.createHash('sha256').update(second).digest('hex'), proposedContent: nextSecond, description: 'Update second.' },
+    ], expectedSecurityEffect: 'Both files are hardened.', requiresRuntimeVerification: false }));
+    const applied = body(await tool('apply_remediation').handler(config, { remediationId: proposal.proposalId }));
+    expect(applied.status).toBe('applied_pending_verification');
+    expect(applied.appliedContentHashes['src/vulnerable.ts']).toBe(crypto.createHash('sha256').update(nextFirst).digest('hex'));
+    expect(applied.appliedContentHashes['src/safe.ts']).toBe(crypto.createHash('sha256').update(nextSecond).digest('hex'));
+    const rollback = body(await tool('rollback_remediation').handler(config, { remediationId: proposal.proposalId }));
+    expect(rollback.status).toBe('rolled_back');
+    const secondRollback = await tool('rollback_remediation').handler(config, { remediationId: proposal.proposalId });
+    expect(body(secondRollback).error).toBe('INVALID_TRANSITION');
+  });
+
+  it('refuses rollback when a file was externally modified after apply', async () => {
+    const { root, config } = makeProject();
+    const { investigationId, findingId } = await investigation(config, root);
+    const target = path.join(root, 'src/vulnerable.ts');
+    const original = fs.readFileSync(target, 'utf8');
+    const proposal = body(await tool('propose_remediation').handler(config, { investigationId, findingId, description: 'Controlled change.', rationale: 'Exercise rollback conflict handling.', files: [{ path: 'src/vulnerable.ts', originalContentHash: crypto.createHash('sha256').update(original).digest('hex'), proposedContent: 'export const safe = true;\n', description: 'Replace source.' }], expectedSecurityEffect: 'The finding is addressed.', requiresRuntimeVerification: false }));
+    await tool('apply_remediation').handler(config, { remediationId: proposal.proposalId });
+    fs.writeFileSync(target, 'const newerExternalChange = true;\n');
+    const rollback = await tool('rollback_remediation').handler(config, { remediationId: proposal.proposalId });
+    expect(body(rollback).error).toBe('ROLLBACK_CONFLICT');
+    expect(fs.readFileSync(target, 'utf8')).toContain('newerExternalChange');
   });
 
   it('registers all four mutation tools and never exposes shell execution as a remediation input', () => {

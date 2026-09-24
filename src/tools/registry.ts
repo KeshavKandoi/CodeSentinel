@@ -394,7 +394,7 @@ export const toolDefinitions: ToolDefinition[] = [
     handler: async (config, rawInput) => {
       const validation = safeValidate(proposeRemediationSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
-      return toMcpResponse(proposeRemediation(config, validation.data));
+      return toMcpResponse(await proposeRemediation(config, validation.data));
     },
   },
   {

@@ -1,7 +1,8 @@
 import type { VerifyFindingInput } from '../validation/schemas.js';
 
 export type RemediationLifecycle =
-  | 'proposed' | 'validated' | 'applied_pending_verification' | 'verifying'
+  | 'proposed' | 'validated' | 'preparing' | 'prepared' | 'committing'
+  | 'applied_pending_verification' | 'verifying'
   | 'verified_resolved' | 'still_vulnerable' | 'changed_finding'
   | 'verification_inconclusive' | 'verification_blocked' | 'rejected'
   | 'apply_failed' | 'rollback_required' | 'rolled_back';
@@ -52,4 +53,3 @@ export interface RemediationRecord {
   verification: RemediationVerification | null;
   updatedAt: string;
 }
-

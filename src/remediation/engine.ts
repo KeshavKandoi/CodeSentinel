@@ -22,6 +22,9 @@ function sha256(content: string | Buffer): string { return crypto.createHash('sh
 function now(): string { return new Date().toISOString(); }
 function newId(): string { return `remediation-${crypto.randomUUID()}`; }
 function lockKey(record: RemediationRecord): string { return `${record.proposal.investigationId}:${record.proposal.files.map((f) => f.path).sort().join('|')}`; }
+function proposalLockKey(input: ProposeRemediationInput): string {
+  return `proposal:${input.investigationId}:${input.findingId}:${input.files.map((file) => `${file.path}:${file.originalContentHash}:${sha256(file.proposedContent)}`).sort().join('|')}`;
+}
 async function withLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
   const previous = locks.get(key) ?? Promise.resolve();
   let release!: () => void;
@@ -61,29 +64,37 @@ function safeRecord(record: RemediationRecord): RemediationRecord {
 }
 function currentInvestigation(id: string): ToolOutcome<SecurityInvestigation> { return getInvestigation(id); }
 
-export function proposeRemediation(config: AppConfig, input: ProposeRemediationInput): ToolOutcome<RemediationProposal> {
-  const investigationResult = currentInvestigation(input.investigationId);
-  if (!investigationResult.ok) return investigationResult;
-  const investigation = investigationResult.data;
-  const finding = findingFor(investigation, input.findingId);
-  if (!finding) return err('REPORT_FINDING_NOT_FOUND', `Finding "${input.findingId}" was not found in investigation "${input.investigationId}".`);
-  if (investigation.status !== 'completed' && investigation.status !== 'awaiting_verification') return err('INVESTIGATION_INCOMPLETE', 'Remediation requires a completed or verification-ready investigation.');
-  if (input.files.some((file, index) => input.files.findIndex((other) => other.path === file.path) !== index)) return invalid('A remediation proposal cannot contain duplicate file paths.');
-  const total = input.files.reduce((sum, file) => sum + Buffer.byteLength(file.proposedContent, 'utf8'), 0);
-  if (total > MAX_TOTAL_BYTES) return invalid('The remediation proposal exceeds the total size bound.');
-  for (const file of input.files) {
-    const checked = validateFile(config, file);
-    if (!checked.ok) return checked;
-    if (sha256(checked.data.content) !== file.originalContentHash) return err('REMEDIATION_CONFLICT', `Original hash mismatch for "${file.path}"; the proposal is stale.`);
-  }
-  const duplicate = [...records.values()].find((record) => record.proposal.investigationId === input.investigationId && record.proposal.findingId === input.findingId && record.proposal.files.length === input.files.length && record.proposal.files.every((file, index) => file.path === input.files[index]?.path && file.originalContentHash === input.files[index]?.originalContentHash && file.proposedContent === input.files[index]?.proposedContent));
-  if (duplicate) return err('DUPLICATE_OPERATION', `An identical remediation proposal already exists as "${duplicate.proposal.proposalId}".`);
-  if (input.runtimeVerification && input.runtimeVerification.findingId !== input.findingId) return invalid('runtimeVerification.findingId must match findingId.');
-  const proposal: RemediationProposal = { proposalId: newId(), ...input, files: input.files.map((file) => ({ ...file })), createdAt: now() };
-  const record: RemediationRecord = { proposal, status: 'validated', snapshots: [], appliedContentHashes: {}, verification: null, updatedAt: now() };
-  if (records.size >= MAX_RECORDS) return err('BUDGET_EXCEEDED', 'The bounded remediation store is full.');
-  records.set(proposal.proposalId, record);
-  return ok(publicProposal(proposal));
+function freezeProposal(proposal: RemediationProposal): RemediationProposal {
+  for (const file of proposal.files) Object.freeze(file);
+  if (proposal.runtimeVerification) Object.freeze(proposal.runtimeVerification);
+  return Object.freeze(proposal);
+}
+
+export async function proposeRemediation(config: AppConfig, input: ProposeRemediationInput): Promise<ToolOutcome<RemediationProposal>> {
+  return withLock(proposalLockKey(input), async () => {
+    const investigationResult = currentInvestigation(input.investigationId);
+    if (!investigationResult.ok) return investigationResult;
+    const investigation = investigationResult.data;
+    const finding = findingFor(investigation, input.findingId);
+    if (!finding) return err('REPORT_FINDING_NOT_FOUND', `Finding "${input.findingId}" was not found in investigation "${input.investigationId}".`);
+    if (investigation.status !== 'completed' && investigation.status !== 'awaiting_verification') return err('INVESTIGATION_INCOMPLETE', 'Remediation requires a completed or verification-ready investigation.');
+    if (input.files.some((file, index) => input.files.findIndex((other) => other.path === file.path) !== index)) return invalid('A remediation proposal cannot contain duplicate file paths.');
+    const total = input.files.reduce((sum, file) => sum + Buffer.byteLength(file.proposedContent, 'utf8'), 0);
+    if (total > MAX_TOTAL_BYTES) return invalid('The remediation proposal exceeds the total size bound.');
+    for (const file of input.files) {
+      const checked = validateFile(config, file);
+      if (!checked.ok) return checked;
+      if (sha256(checked.data.content) !== file.originalContentHash) return err('REMEDIATION_CONFLICT', `Original hash mismatch for "${file.path}"; the proposal is stale.`);
+    }
+    const duplicate = [...records.values()].find((record) => proposalLockKey(record.proposal as ProposeRemediationInput) === proposalLockKey(input));
+    if (duplicate) return err('DUPLICATE_OPERATION', `An identical remediation proposal already exists as "${duplicate.proposal.proposalId}".`);
+    if (input.runtimeVerification && input.runtimeVerification.findingId !== input.findingId) return invalid('runtimeVerification.findingId must match findingId.');
+    const proposal = freezeProposal({ proposalId: newId(), ...input, files: input.files.map((file) => ({ ...file })), createdAt: now() });
+    const record: RemediationRecord = { proposal, status: 'validated', snapshots: [], appliedContentHashes: {}, verification: null, updatedAt: now() };
+    if (records.size >= MAX_RECORDS) return err('BUDGET_EXCEEDED', 'The bounded remediation store is full.');
+    records.set(proposal.proposalId, record);
+    return ok(publicProposal(proposal));
+  });
 }
 
 export function getRemediation(remediationId: string): ToolOutcome<RemediationRecord> {
@@ -100,25 +111,66 @@ export async function applyRemediation(config: AppConfig, remediationId: string)
   return withLock(lockKey(existing), async () => {
     const record = records.get(remediationId)!;
     if (record.status !== 'validated' && record.status !== 'proposed') return err('INVALID_TRANSITION', `Remediation cannot be applied from status "${record.status}".`);
-    const checked: Array<{ change: RemediationFileChange; absolute: string; content: string }> = [];
+    const investigation = currentInvestigation(record.proposal.investigationId);
+    if (!investigation.ok) return investigation;
+    if (!findingFor(investigation.data, record.proposal.findingId)) return err('REPORT_FINDING_NOT_FOUND', `Finding "${record.proposal.findingId}" is no longer present in the authorized investigation.`);
+    const checked: Array<{ change: RemediationFileChange; absolute: string; content: string; proposedHash: string; mode: number }> = [];
+    // Complete preflight: no mutation is allowed until every target passes.
     for (const change of record.proposal.files) {
       const result = validateFile(config, change); if (!result.ok) return result;
       if (sha256(result.data.content) !== change.originalContentHash) return err('REMEDIATION_CONFLICT', `Original hash mismatch for "${change.path}"; no files were changed.`);
-      checked.push({ change, absolute: result.data.absolute, content: result.data.content });
+      checked.push({ change, absolute: result.data.absolute, content: result.data.content, proposedHash: sha256(change.proposedContent), mode: fs.statSync(result.data.absolute).mode });
     }
-    record.status = 'applied_pending_verification';
-    record.snapshots = checked.map(({ change, content }) => ({ path: change.path, originalContentHash: change.originalContentHash, originalContent: content, capturedAt: now() }));
+    record.status = 'preparing';
+    try {
+      record.snapshots = checked.map(({ change, content }) => ({ path: change.path, originalContentHash: change.originalContentHash, originalContent: content, capturedAt: now() }));
+      if (record.snapshots.length !== checked.length || record.snapshots.some((snapshot) => sha256(snapshot.originalContent) !== snapshot.originalContentHash)) throw new Error('snapshot verification failed');
+    } catch {
+      record.status = 'apply_failed'; record.updatedAt = now();
+      return err('INTERNAL_ERROR', 'Remediation snapshots could not be created and no files were changed.');
+    }
+    const prepared: Array<{ target: string; temp: string; expectedHash: string }> = [];
     try {
       for (const item of checked) {
         const temp = `${item.absolute}.codesentinel-${crypto.randomUUID()}.tmp`;
-        fs.writeFileSync(temp, item.change.proposedContent, { encoding: 'utf8', mode: fs.statSync(item.absolute).mode });
-        fs.renameSync(temp, item.absolute);
-        record.appliedContentHashes[item.change.path] = sha256(item.change.proposedContent);
+        fs.writeFileSync(temp, item.change.proposedContent, { encoding: 'utf8', mode: item.mode, flag: 'wx' });
+        const preparedBytes = fs.readFileSync(temp);
+        if (sha256(preparedBytes) !== item.proposedHash) throw new Error('prepared content hash verification failed');
+        prepared.push({ target: item.absolute, temp, expectedHash: item.proposedHash });
       }
     } catch {
-      for (const snapshot of record.snapshots) { try { fs.writeFileSync(resolveWithinRoot(config.projectRoot, snapshot.path), snapshot.originalContent, 'utf8'); } catch { /* best-effort recovery; report apply failure */ } }
-      record.status = 'apply_failed'; record.updatedAt = now(); return err('INTERNAL_ERROR', 'Remediation application failed and the original snapshot was restored where possible.');
+      for (const item of prepared) { try { fs.rmSync(item.temp, { force: true }); } catch { /* cleanup is best effort */ } }
+      record.status = 'apply_failed'; record.updatedAt = now(); return err('INTERNAL_ERROR', 'Remediation preparation failed and no files were changed.');
     }
+    record.status = 'prepared'; record.updatedAt = now();
+    for (const item of checked) {
+      let current: Buffer;
+      try { current = fs.readFileSync(item.absolute); } catch { for (const preparedFile of prepared) { try { fs.rmSync(preparedFile.temp, { force: true }); } catch { /* ignore */ } } record.status = 'apply_failed'; record.updatedAt = now(); return err('REMEDIATION_CONFLICT', `Target file "${item.change.path}" changed before commit.`); }
+      if (sha256(current) !== item.change.originalContentHash) {
+        for (const preparedFile of prepared) { try { fs.rmSync(preparedFile.temp, { force: true }); } catch { /* ignore */ } }
+        record.status = 'apply_failed'; record.updatedAt = now(); return err('REMEDIATION_CONFLICT', `Target file "${item.change.path}" changed before commit.`);
+      }
+    }
+    record.status = 'committing'; record.appliedContentHashes = Object.fromEntries(checked.map((item) => [item.change.path, item.proposedHash]));
+    const committed: typeof prepared = [];
+    try {
+      for (const item of prepared) {
+        const change = record.proposal.files.find((candidate) => resolveWithinRoot(config.projectRoot, candidate.path) === item.target);
+        if (!change || resolveExistingWithinRoot(config.projectRoot, change.path) !== item.target || sha256(fs.readFileSync(item.target)) !== change.originalContentHash) throw new Error('target changed before commit');
+        fs.renameSync(item.temp, item.target); committed.push(item);
+      }
+      for (const item of committed) if (sha256(fs.readFileSync(item.target)) !== item.expectedHash) throw new Error('post-commit hash verification failed');
+    } catch {
+      for (const item of prepared) { try { fs.rmSync(item.temp, { force: true }); } catch { /* ignore */ } }
+      let canRestore = true;
+      for (const item of committed) { try { if (sha256(fs.readFileSync(item.target)) !== item.expectedHash) canRestore = false; } catch { canRestore = false; } }
+      if (canRestore) {
+        try { for (const snapshot of record.snapshots) fs.writeFileSync(resolveWithinRoot(config.projectRoot, snapshot.path), snapshot.originalContent, 'utf8'); } catch { canRestore = false; }
+      }
+      record.status = canRestore ? 'apply_failed' : 'rollback_required'; record.updatedAt = now();
+      return err('INTERNAL_ERROR', canRestore ? 'Post-commit integrity verification failed; the snapshot was restored.' : 'Post-commit integrity verification failed and rollback was blocked by an external change.');
+    }
+    record.status = 'applied_pending_verification'; record.updatedAt = now();
     record.updatedAt = now();
     return ok(safeRecord(record));
   });
@@ -161,6 +213,7 @@ export async function rollbackRemediation(config: AppConfig, remediationId: stri
   const existing = records.get(remediationId); if (!existing) return err('REMEDIATION_NOT_FOUND', `Remediation "${remediationId}" was not found.`);
   return withLock(lockKey(existing), async () => {
     const record = records.get(remediationId)!;
+    if (record.status === 'rolled_back') return err('INVALID_TRANSITION', 'This remediation has already been rolled back.');
     if (record.snapshots.length === 0 || Object.keys(record.appliedContentHashes).length !== record.snapshots.length) return err('REMEDIATION_INVALID', 'No complete remediation snapshot is available for rollback.');
     for (const snapshot of record.snapshots) {
       let absolute: string;
@@ -169,8 +222,8 @@ export async function rollbackRemediation(config: AppConfig, remediationId: stri
       try { if (fs.lstatSync(absolute).isSymbolicLink()) return err('ROLLBACK_CONFLICT', `Current file "${snapshot.path}" is now a symbolic link.`); current = fs.readFileSync(absolute); } catch { return err('ROLLBACK_CONFLICT', `Current file "${snapshot.path}" is unavailable for rollback.`); }
       if (sha256(current) !== record.appliedContentHashes[snapshot.path]) return err('ROLLBACK_CONFLICT', `Current file "${snapshot.path}" no longer matches the expected post-remediation hash.`);
     }
-    try { for (const snapshot of record.snapshots) fs.writeFileSync(resolveExistingWithinRoot(config.projectRoot, snapshot.path), snapshot.originalContent, 'utf8'); } catch { return err('INTERNAL_ERROR', 'Rollback failed while restoring the snapshot.'); }
-    for (const snapshot of record.snapshots) { const current = fs.readFileSync(resolveExistingWithinRoot(config.projectRoot, snapshot.path), 'utf8'); if (sha256(current) !== snapshot.originalContentHash) return err('ROLLBACK_CONFLICT', `Restored hash verification failed for "${snapshot.path}".`); }
+    try { for (const snapshot of record.snapshots) fs.writeFileSync(resolveExistingWithinRoot(config.projectRoot, snapshot.path), snapshot.originalContent, 'utf8'); } catch { record.status = 'rollback_required'; record.updatedAt = now(); return err('INTERNAL_ERROR', 'Rollback failed while restoring the snapshot.'); }
+    for (const snapshot of record.snapshots) { const current = fs.readFileSync(resolveExistingWithinRoot(config.projectRoot, snapshot.path), 'utf8'); if (sha256(current) !== snapshot.originalContentHash) { record.status = 'rollback_required'; record.updatedAt = now(); return err('ROLLBACK_CONFLICT', `Restored hash verification failed for "${snapshot.path}".`); } }
     record.status = 'rolled_back'; record.updatedAt = now(); return ok(safeRecord(record));
   });
 }
