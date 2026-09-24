@@ -22,6 +22,8 @@ export interface SecurityProofCase {
   evidenceCaptured: string[];
   blockedStates: string[];
   inconclusiveStates: string[];
+  executable: boolean;
+  adapterNotes: string;
 }
 
 export interface SecurityReceipt {
@@ -30,7 +32,7 @@ export interface SecurityReceipt {
   proofCase: SecurityProofCase;
   status: ProofStatus;
   redactedRequest: { method: string; path: string; sessionId: string | null } | null;
-  responseFacts: Array<{ status: number; bodySnippet: string; finalUrl: string }>;
+  responseFacts: Array<{ status: number; headers: Record<string, string>; bodySnippet: string; finalUrl: string }>;
   oracle: string;
   whyProven: string;
   sourceRefs: string[];
