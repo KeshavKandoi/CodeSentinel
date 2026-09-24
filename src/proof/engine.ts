@@ -13,7 +13,12 @@ import { PROOF_CASE_TYPES } from './types.js';
 
 const hash = (value: string): string => crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
 const receipts = new Map<string, import('./types.js').SecurityReceipt>();
-const accessType = (candidate: string): ProofCaseType | null => ({ idor_candidate: 'idor_bola', user_resource_access: 'idor_bola', missing_authentication: 'missing_authentication', missing_authorization: 'missing_authorization', inconsistent_authorization: 'authorization_inconsistency' } as Record<string, ProofCaseType>)[candidate] ?? null;
+export interface SecurityProofAdapter {
+  type: ProofCaseType;
+  candidateTypes: string[];
+  buildCase(findingId: string, method: string, path: string): SecurityProofCase;
+  execute(config: AppConfig, request: VerifyFindingRequest): ReturnType<typeof verifyFinding>;
+}
 
 const metadata = (type: ProofCaseType, findingId: string, method = 'GET', path = '/'): SecurityProofCase => ({
   id: `proof-case-${hash(`${type}|${findingId}`)}`, type, findingId,
@@ -29,6 +34,21 @@ const metadata = (type: ProofCaseType, findingId: string, method = 'GET', path =
   inconclusiveStates: ['Generic success without semantic proof', 'Static signal lacks an executable proof case', 'Ambiguous or incomplete fixture behavior'],
 });
 
+const EXECUTABLE_ADAPTERS: SecurityProofAdapter[] = [
+  { type: 'idor_bola', candidateTypes: ['idor_candidate', 'user_resource_access'], buildCase: (id, method, path) => metadata('idor_bola', id, method, path), execute: (config, request) => verifyFinding(config, request) },
+  { type: 'missing_authentication', candidateTypes: ['missing_authentication'], buildCase: (id, method, path) => metadata('missing_authentication', id, method, path), execute: (config, request) => verifyFinding(config, request) },
+  { type: 'missing_authorization', candidateTypes: ['missing_authorization'], buildCase: (id, method, path) => metadata('missing_authorization', id, method, path), execute: (config, request) => verifyFinding(config, request) },
+  { type: 'authorization_inconsistency', candidateTypes: ['inconsistent_authorization'], buildCase: (id, method, path) => metadata('authorization_inconsistency', id, method, path), execute: (config, request) => verifyFinding(config, request) },
+];
+
+function adapterForCandidate(candidateType: string): SecurityProofAdapter | null {
+  return EXECUTABLE_ADAPTERS.find((adapter) => adapter.candidateTypes.includes(candidateType)) ?? null;
+}
+
+export function listSecurityProofAdapters(): Array<Pick<SecurityProofAdapter, 'type' | 'candidateTypes'>> {
+  return EXECUTABLE_ADAPTERS.map(({ type, candidateTypes }) => ({ type, candidateTypes: [...candidateTypes] }));
+}
+
 export function buildSecurityProofCaseTemplate(type: ProofCaseType): SecurityProofCase {
   return metadata(type, 'benchmark-template');
 }
@@ -39,8 +59,8 @@ export function listSecurityProofCases(config: AppConfig): SecurityProofCase[] {
   const cases: SecurityProofCase[] = [];
   if (access && routes.ok) for (const finding of access.findings) {
     const entry = routes.data.entries.find((candidate) => candidate.id === finding.routeId);
-    const type = accessType(finding.candidateType);
-    if (entry && type) cases.push(metadata(type, finding.id, entry.method, entry.path));
+    const adapter = adapterForCandidate(finding.candidateType);
+    if (entry && adapter) cases.push(adapter.buildCase(finding.id, entry.method, entry.path));
   }
   return cases.sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -63,7 +83,13 @@ export async function proveSecurityFinding(config: AppConfig, request: VerifyFin
     receipts.set(receipt.receiptId, receipt);
     return ok(receipt);
   }
-  const result = await verifyFinding(config, request);
+  const adapter = proofCase.type === 'idor_bola' ? EXECUTABLE_ADAPTERS[0] : EXECUTABLE_ADAPTERS.find((item) => item.type === proofCase.type);
+  if (!adapter) {
+    const receipt = receiptForBlocked(request.findingId, proofCase, `No executable adapter is registered for proof type "${proofCase.type}".`);
+    receipts.set(receipt.receiptId, receipt);
+    return ok(receipt);
+  }
+  const result = await adapter.execute(config, request);
   if (!result.ok) { const receipt = receiptForBlocked(request.findingId, proofCase, result.error.message, [request.findingId]); receipts.set(receipt.receiptId, receipt); return ok(receipt); }
   const verification = result.data.result;
   const status = verification.status === 'verified' || verification.status === 'not_reproduced' || verification.status === 'inconclusive' || verification.status === 'blocked' ? verification.status : 'inconclusive';
