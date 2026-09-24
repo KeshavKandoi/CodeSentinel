@@ -642,6 +642,30 @@ or secret-rotation guidance when represented by the underlying finding model.
 Recommendations include affected location, reason, security principle, and
 whether runtime re-verification is appropriate. No source files are changed.
 
+## Phase 9 controlled remediation
+
+Phase 9 accepts a structured proposal from an external AI client and keeps the
+model outside CodeSentinel. `propose_remediation` validates the investigation,
+finding, project-relative paths, file hashes, size limits, protected paths, and
+content shape without modifying files. `apply_remediation` snapshots the
+original files and performs bounded hash-checked writes; its result is always
+`applied_pending_verification` until analysis and any explicitly authorized
+runtime checks finish.
+
+The workflow is:
+
+    External AI -> Finding -> Proposal -> Validation -> Snapshot -> Apply
+       -> Static re-analysis -> Runtime verification -> Final report
+
+`verify_remediation` reuses the Phase 7 deterministic analysis and Phase 6
+runtime controls. It detects the original finding, changed findings, and new
+related regressions instead of treating a source edit as proof. `rollback_remediation`
+restores a snapshot only when current hashes still match the expected
+post-remediation hashes; newer edits return `ROLLBACK_CONFLICT` and are not
+overwritten. Proposal, snapshot, diff, and report responses omit source
+contents and reuse Phase 8 redaction. No LLM/API dependency, unrestricted shell
+execution, credential discovery, or arbitrary filesystem mutation is added.
+
 ## Running tests
 
     npm test
