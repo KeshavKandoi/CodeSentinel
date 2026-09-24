@@ -752,6 +752,25 @@ if finding references, evidence references, or redaction checks are invalid.
 
 ## Security proofs and graph
 
+`list_security_proof_cases` exposes proof cases backed by the current route and
+access-control inventory. `prove_security_finding` runs one minimal case
+through the existing Phase 6 target guard, request caps, redirects, sessions,
+response limits, and semantic result classification. HTTP success alone is
+never proof. Unsupported static categories return blocked or inconclusive
+receipts rather than fabricated requests. Receipts contain redacted request
+metadata, response facts, oracle status, source references, evidence references,
+and re-verification state; available receipts are included in reports.
+
+`get_security_graph` returns bounded nodes and evidence-backed edges for files,
+routes, handlers, middleware, and access-control relationships. It reports
+parser and cross-file limitations instead of claiming a complete AST or taint
+graph. The local benchmark covers proof metadata, vulnerable/secure fixture
+comparison, false-positive safety, and functionality-preserving coverage. It
+does not publish unsupported vulnerability percentages or contact external
+targets.
+
+## Security proofs and graph
+
 `list_security_proof_cases` exposes only proof cases backed by the current
 route/access-control inventory. `prove_security_finding` executes one minimal
 case through the existing Phase 6 target guard, request caps, redirect checks,
