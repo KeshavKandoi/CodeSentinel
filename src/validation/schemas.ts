@@ -299,3 +299,9 @@ export const dispatchSecurityActionSchema = z.object({
   }),
 }).strict();
 export type DispatchSecurityActionInput = z.infer<typeof dispatchSecurityActionSchema>;
+
+export const deepSecurityAuditSchema = z.object({
+  baselinePath: relativePathSchema.optional(),
+  maxFiles: z.number().int().positive().max(2_000).optional(),
+}).strict();
+export type DeepSecurityAuditInput = z.infer<typeof deepSecurityAuditSchema>;

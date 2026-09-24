@@ -721,6 +721,35 @@ model API capability. Read-only tools remain guarded by the existing project
 path and command sandbox; runtime requests remain guarded by Phase 6; and
 remediation remains guarded by Phase 9 hashes, snapshots, and rollback checks.
 
+## Deep security intelligence
+
+`run_deep_security_audit` is a bounded, read-only intelligence layer over the
+existing Phase 1-10 engines. It builds a local repository index, reuses project
+discovery, static scanning, route discovery, and access-control analysis, and
+returns structured findings with stable content hashes, source locations,
+evidence references, deterministic ordering, and a Markdown rendering. It
+never starts the target, executes repository code, contacts external targets,
+reads credentials for transmission, modifies files, or calls an LLM/API.
+
+The domain matrix covers authentication, authorization, IDOR/BOLA, injection,
+command execution, path traversal, SSRF, XSS, CSRF, uploads, deserialization,
+prototype pollution, redirects, CORS, headers, cookies/sessions, JWT,
+cryptography, secrets/configuration, dependency and lifecycle risk, Docker,
+CI/CD, infrastructure, database/API boundaries, WebSocket, GraphQL, and
+AI/MCP trust boundaries. Domain states are `findings`, `passed`,
+`not_applicable`, `unsupported`, `blocked`, `skipped`, or `inconclusive`;
+`passed` means the bounded detector found no candidate, not that the repository
+is secure. Heuristic line detectors explicitly describe their limitation and
+do not replace AST/data-flow analysis.
+
+The result includes repository coverage, skipped files, indexed constructs,
+route/access-control/static-analysis counts, evidence totals, limitations,
+and integrity validation. An optional root-relative `baselinePath` compares
+stable finding and evidence IDs to report new, resolved, unchanged, and
+changed-evidence findings. Baselines are local JSON only; no CVE database or
+external service is contacted. Reports redact sensitive values and fail closed
+if finding references, evidence references, or redaction checks are invalid.
+
 ## Running tests
 
     npm test

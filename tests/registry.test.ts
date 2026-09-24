@@ -41,6 +41,7 @@ describe('tool registry shape', () => {
       'rollback_remediation',
       'run_audit_analysis',
       'run_command',
+      'run_deep_security_audit',
       'run_security_analysis',
       'scan_project',
       'search_files',

@@ -24,6 +24,7 @@ import {
   verifyRemediationSchema,
   rollbackRemediationSchema,
   safeValidate,
+  deepSecurityAuditSchema,
 } from '../validation/schemas.js';
 import { listFiles, readFile, searchFiles } from '../fs/fsOperations.js';
 import { getProjectInfo } from './projectInfo.js';
@@ -48,6 +49,7 @@ import {
 } from '../investigation/orchestrator.js';
 import { generateSecurityReport, getSecurityFinding } from '../report/engine.js';
 import { applyRemediation, proposeRemediation, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
+import { runDeepSecurityAudit } from '../intelligence/engine.js';
 
 
 export interface McpToolResponse {
@@ -88,6 +90,17 @@ export interface ToolDefinition {
 }
 
 const coreToolDefinitions: ToolDefinition[] = [
+  {
+    name: 'run_deep_security_audit',
+    description: 'Run a bounded, deterministic local repository intelligence audit over existing discovery, static analysis, route, access-control, evidence, and coverage engines. It never contacts external targets, executes project code, modifies source, or calls an LLM.',
+    inputSchema: { type: 'object', properties: { baselinePath: { type: 'string' }, maxFiles: { type: 'number', maximum: 2000 } } },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(deepSecurityAuditSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      try { return toMcpResponse(await runDeepSecurityAudit(config, validation.data)); }
+      catch (e) { logger.error('deep_security_audit_failed', { message: (e as Error).message }); return toMcpResponse(err('INTERNAL_ERROR', 'Deep security audit failed unexpectedly.')); }
+    },
+  },
   {
     name: 'list_files',
     description:
