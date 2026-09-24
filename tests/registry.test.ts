@@ -12,10 +12,10 @@ function getTool(name: string) {
 }
 
 describe('tool registry shape', () => {
-  it('exposes the Phase 1 tools plus Phase 2 through 6 tools', () => {
+  it('exposes the Phase 1 tools plus Phase 2 through 7 tools', () => {
     const names = toolDefinitions.map((t) => t.name).sort();
     expect(names).toEqual(
-      ['analyze_access_control', 'analyze_project', 'discover_routes', 'get_project_info', 'list_files', 'list_verification_cases', 'read_file', 'run_command', 'scan_project', 'search_files', 'verify_finding'].sort()
+      ['analyze_access_control', 'analyze_project', 'discover_routes', 'get_investigation', 'get_project_info', 'get_security_agent_instructions', 'list_files', 'list_verification_cases', 'read_file', 'record_security_hypothesis', 'request_runtime_verification', 'run_command', 'run_security_analysis', 'scan_project', 'search_files', 'start_security_investigation', 'verify_finding'].sort()
     );
   });
 

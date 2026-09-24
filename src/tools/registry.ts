@@ -10,6 +10,12 @@ import {
   scanProjectSchema,
   verifyFindingSchema,
   listVerificationCasesSchema,
+  startSecurityInvestigationSchema,
+  getInvestigationSchema,
+  runSecurityAnalysisSchema,
+  recordSecurityHypothesisSchema,
+  runtimeVerificationRequestSchema,
+  securityAgentInstructionsSchema,
   safeValidate,
 } from '../validation/schemas.js';
 import { listFiles, readFile, searchFiles } from '../fs/fsOperations.js';
@@ -25,6 +31,14 @@ import { discoverRoutes } from '../routes/engine.js';
 import { analyzeAccessControlSchema } from '../validation/schemas.js';
 import { analyzeAccessControl } from '../access/engine.js';
 import { listVerificationCases, verifyFinding } from '../runtime/engine.js';
+import {
+  SECURITY_AGENT_INSTRUCTIONS,
+  getInvestigation,
+  recordHypothesis,
+  requestRuntimeVerification,
+  runSecurityAnalysis,
+  startInvestigation,
+} from '../investigation/orchestrator.js';
 
 
 export interface McpToolResponse {
@@ -268,6 +282,71 @@ export const toolDefinitions: ToolDefinition[] = [
         logger.error('verify_finding_failed', { message: (e as Error).message });
         return toMcpResponse(err('INTERNAL_ERROR', 'Runtime verification failed unexpectedly.'));
       }
+    },
+  },
+  {
+    name: 'start_security_investigation',
+    description:
+      'Create a bounded Phase 7 security investigation for the configured project. The external AI agent supplies the reasoning; CodeSentinel enforces the project boundary, analysis budget, evidence cap, and later state transitions.',
+    inputSchema: {
+      type: 'object',
+      properties: { projectPath: { type: 'string' }, scope: { type: 'array' }, hypothesis: { type: 'string' }, budget: { type: 'object' } },
+      required: ['projectPath', 'scope', 'hypothesis'],
+    },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(startSecurityInvestigationSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(startInvestigation(config, validation.data));
+    },
+  },
+  {
+    name: 'get_investigation',
+    description: 'Return bounded, redacted state and evidence for one Phase 7 security investigation.',
+    inputSchema: { type: 'object', properties: { investigationId: { type: 'string' } }, required: ['investigationId'] },
+    handler: async (_config, rawInput) => {
+      const validation = safeValidate(getInvestigationSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(getInvestigation(validation.data.investigationId));
+    },
+  },
+  {
+    name: 'run_security_analysis',
+    description: 'Run the existing deterministic discovery, scanner, route, and access-control pipeline for an investigation exactly once.',
+    inputSchema: { type: 'object', properties: { investigationId: { type: 'string' } }, required: ['investigationId'] },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(runSecurityAnalysisSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(await runSecurityAnalysis(config, validation.data.investigationId));
+    },
+  },
+  {
+    name: 'record_security_hypothesis',
+    description: 'Record one evidence-backed security hypothesis. Evidence references must come from the investigation analysis; no unsupported hypothesis is accepted.',
+    inputSchema: { type: 'object', properties: { investigationId: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' }, findingId: { type: 'string' }, evidenceRefs: { type: 'array' }, severity: { type: 'string' }, confidence: { type: 'string' } }, required: ['investigationId', 'title', 'description', 'evidenceRefs'] },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(recordSecurityHypothesisSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(recordHypothesis(config, validation.data));
+    },
+  },
+  {
+    name: 'request_runtime_verification',
+    description: 'Delegate one evidence-backed hypothesis to the existing Phase 6 verify_finding implementation. It cannot issue arbitrary HTTP requests or bypass Phase 6 target/session safety controls.',
+    inputSchema: { type: 'object', properties: { investigationId: { type: 'string' }, hypothesisId: { type: 'string' }, findingId: { type: 'string' }, target: { type: 'object' }, sessions: { type: 'array' }, sessionParams: { type: 'object' } }, required: ['investigationId', 'hypothesisId', 'findingId', 'target'] },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(runtimeVerificationRequestSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(await requestRuntimeVerification(config, validation.data));
+    },
+  },
+  {
+    name: 'get_security_agent_instructions',
+    description: 'Return the bounded workflow instructions for an external MCP-compatible security agent. No model or provider API is called by CodeSentinel.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async (_config, rawInput) => {
+      const validation = safeValidate(securityAgentInstructionsSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(ok({ instructions: SECURITY_AGENT_INSTRUCTIONS }));
     },
   },
   {

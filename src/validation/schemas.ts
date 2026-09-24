@@ -153,3 +153,58 @@ export type VerifyFindingInput = z.infer<typeof verifyFindingSchema>;
 
 export const listVerificationCasesSchema = z.object({}).strict();
 export type ListVerificationCasesInput = z.infer<typeof listVerificationCasesSchema>;
+
+/** Phase 7: bounded, external-agent-driven investigation inputs. The agent
+ * supplies reasoning and evidence references; deterministic engines remain
+ * responsible for analysis and runtime safety. */
+export const investigationScopeSchema = z.enum([
+  'authentication',
+  'authorization',
+  'idor_bola',
+  'input_validation',
+  'secrets_exposure',
+  'route_security',
+  'general_application_security',
+]);
+
+export const investigationBudgetSchema = z.object({
+  maxAnalysisSteps: z.number().int().min(4).max(4).optional(),
+  maxHypotheses: z.number().int().positive().max(25).optional(),
+  maxRuntimeVerifications: z.number().int().positive().max(10).optional(),
+  maxElapsedMs: z.number().int().min(1_000).max(600_000).optional(),
+  maxEvidenceBytes: z.number().int().min(1_000).max(1_000_000).optional(),
+}).strict();
+
+export const startSecurityInvestigationSchema = z.object({
+  projectPath: z.string().min(1).max(4096),
+  scope: z.array(investigationScopeSchema).min(1).max(7),
+  hypothesis: z.string().min(1).max(2_000),
+  budget: investigationBudgetSchema.optional(),
+}).strict();
+
+export const getInvestigationSchema = z.object({ investigationId: z.string().min(1).max(128) }).strict();
+
+export const runSecurityAnalysisSchema = z.object({ investigationId: z.string().min(1).max(128) }).strict();
+
+export const recordSecurityHypothesisSchema = z.object({
+  investigationId: z.string().min(1).max(128),
+  title: z.string().min(1).max(256),
+  description: z.string().min(1).max(4_000),
+  findingId: z.string().min(1).max(256).optional(),
+  evidenceRefs: z.array(z.string().min(1).max(256)).min(1).max(20),
+  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+  confidence: z.enum(['high', 'medium', 'low']).optional(),
+}).strict();
+
+export const runtimeVerificationRequestSchema = verifyFindingSchema.extend({
+  investigationId: z.string().min(1).max(128),
+  hypothesisId: z.string().min(1).max(128),
+}).strict();
+
+export const securityAgentInstructionsSchema = z.object({}).strict();
+
+export type StartSecurityInvestigationInput = z.infer<typeof startSecurityInvestigationSchema>;
+export type GetInvestigationInput = z.infer<typeof getInvestigationSchema>;
+export type RunSecurityAnalysisInput = z.infer<typeof runSecurityAnalysisSchema>;
+export type RecordSecurityHypothesisInput = z.infer<typeof recordSecurityHypothesisSchema>;
+export type RuntimeVerificationRequestInput = z.infer<typeof runtimeVerificationRequestSchema>;
