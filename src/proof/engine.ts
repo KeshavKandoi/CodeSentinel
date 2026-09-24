@@ -131,7 +131,16 @@ async function executeSafeSourceProof(config: AppConfig, request: VerifyFindingR
   if (!candidate) throw new Error('unsupported proof candidate');
   const { finding, entry, adapter } = candidate;
   const proofCase = metadata(adapter.type, finding.id, 'GET', entry.path, true, adapter.notes);
+  return executeSafeSourceProofCase(request, proofCase, adapter);
+}
+
+async function executeSafeSourceProofCase(
+  request: VerifyFindingRequest,
+  proofCase: SecurityProofCase,
+  adapter: typeof SAFE_SOURCE_ADAPTERS[number]
+): Promise<{ status: SecurityReceipt['status']; proofCase: SecurityProofCase; evidence: VerificationEvidence[]; summary: string }> {
   if (!isLocalProofTarget(request.target)) return { status: 'blocked', proofCase, evidence: [], summary: 'Proof adapters only execute against localhost or loopback targets.' };
+  const entry = { path: proofCase.requestShape.path, method: proofCase.requestShape.method, queryParameters: [], bodyParameters: [] } as unknown as AttackSurfaceEntry;
   const path = proofPath(entry, adapter);
   if (!path) return { status: 'blocked', proofCase, evidence: [], summary: 'The route is not a concrete safe GET proof target.' };
   const evidence = [await issueRuntimeRequest(request.target, buildSessionMap(request.sessions ?? []), { method: 'GET', path, sessionId: null }, new RuntimeClientState(request.target))];
@@ -146,6 +155,53 @@ async function executeSafeSourceProof(config: AppConfig, request: VerifyFindingR
   return { status: 'not_reproduced', proofCase, evidence, summary: `${adapter.title} did not produce the required semantic oracle.` };
 }
 
+function sourceReceipt(
+  findingId: string,
+  execution: Awaited<ReturnType<typeof executeSafeSourceProofCase>>,
+  sourceRefs: string[],
+  evidenceRefs: string[],
+  remediationRef: string | null = null
+): SecurityReceipt {
+  const responseFacts = execution.evidence.map((item) => ({ status: item.response.status, headers: item.response.headers, bodySnippet: item.response.bodySnippet, finalUrl: item.response.finalUrl }));
+  return detachedRedacted({
+    receiptId: `receipt-${hash(`${findingId}|${execution.status}|${remediationRef ?? 'initial'}|${JSON.stringify(responseFacts)}`)}`,
+    findingId,
+    proofCase: execution.proofCase,
+    status: execution.status,
+    redactedRequest: execution.evidence[0] ? { ...execution.evidence[0].request } : null,
+    responseFacts,
+    oracle: execution.status,
+    whyProven: execution.status === 'verified' ? execution.summary : '',
+    sourceRefs,
+    evidenceRefs,
+    remediationRef,
+    reVerification: { status: null, receiptId: null },
+    limitation: execution.status === 'verified' ? null : execution.summary,
+  });
+}
+
+/** Replays a previously verified source proof after a controlled remediation.
+ * The original static finding is intentionally not re-read: a successful fix
+ * is expected to remove it. The stored proof case supplies only the original
+ * bounded route shape; Phase 6 still validates the target and request. */
+export async function replaySecurityProof(
+  config: AppConfig,
+  request: VerifyFindingRequest,
+  originalReceipt: SecurityReceipt,
+  remediationId: string
+): Promise<ToolOutcome<SecurityReceipt>> {
+  const adapter = safeSourceAdapter(originalReceipt.proofCase.type);
+  if (!adapter || originalReceipt.status !== 'verified') return err('UNSUPPORTED_CANDIDATE_TYPE', 'Only a previously verified source proof can be replayed by the proof engine.');
+  const execution = await executeSafeSourceProofCase(request, originalReceipt.proofCase, adapter);
+  const replay = sourceReceipt(request.findingId, execution, originalReceipt.sourceRefs, [...originalReceipt.evidenceRefs, `remediation:${remediationId}`], remediationId);
+  const original = receipts.get(originalReceipt.receiptId);
+  if (original) {
+    receipts.set(original.receiptId, detachedRedacted({ ...original, remediationRef: remediationId, reVerification: { status: replay.status, receiptId: replay.receiptId } }));
+  }
+  receipts.set(replay.receiptId, replay);
+  return ok(replay);
+}
+
 export async function proveSecurityFinding(config: AppConfig, request: VerifyFindingRequest): Promise<ToolOutcome<SecurityReceipt>> {
   const cases = listSecurityProofCases(config);
   const proofCase = cases.find((item) => item.findingId === request.findingId);
@@ -157,9 +213,8 @@ export async function proveSecurityFinding(config: AppConfig, request: VerifyFin
       return ok(receipt);
     }
     const execution = await executeSafeSourceProof(config, request, candidate);
-    const responseFacts = execution.evidence.map((item) => ({ status: item.response.status, headers: item.response.headers, bodySnippet: item.response.bodySnippet, finalUrl: item.response.finalUrl }));
-    const receipt: SecurityReceipt = { receiptId: `receipt-${hash(`${request.findingId}|${execution.status}|${JSON.stringify(responseFacts)}`)}`, findingId: request.findingId, proofCase: execution.proofCase, status: execution.status, redactedRequest: execution.evidence[0] ? { ...execution.evidence[0].request } : null, responseFacts, oracle: execution.status, whyProven: execution.status === 'verified' ? execution.summary : '', sourceRefs: [`${candidate.finding.file}:${candidate.finding.line ?? 0}`, `${candidate.entry.file}:${candidate.entry.line}`], evidenceRefs: [`static:${candidate.finding.id}`, `route:${candidate.entry.id}`], remediationRef: null, reVerification: { status: null, receiptId: null }, limitation: execution.status === 'verified' ? null : execution.summary };
-    const safe = detachedRedacted(receipt); receipts.set(safe.receiptId, safe); return ok(safe);
+    const safe = sourceReceipt(request.findingId, execution, [`${candidate.finding.file}:${candidate.finding.line ?? 0}`, `${candidate.entry.file}:${candidate.entry.line}`], [`static:${candidate.finding.id}`, `route:${candidate.entry.id}`]);
+    receipts.set(safe.receiptId, safe); return ok(safe);
   }
   const adapter = proofCase.type === 'idor_bola' ? EXECUTABLE_ADAPTERS[0] : EXECUTABLE_ADAPTERS.find((item) => item.type === proofCase.type);
   if (!adapter) {
