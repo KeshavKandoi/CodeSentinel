@@ -20,6 +20,11 @@ import { PROOF_CASE_TYPES } from './types.js';
 
 const hash = (value: string): string => crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
 const receipts = new Map<string, import('./types.js').SecurityReceipt>();
+function storeReceipt(receipt: SecurityReceipt): SecurityReceipt {
+  const stored = detachedRedacted(receipt);
+  receipts.set(stored.receiptId, stored);
+  return detachedRedacted(stored);
+}
 export interface SecurityProofAdapter {
   type: ProofCaseType;
   candidateTypes: string[];
@@ -261,8 +266,7 @@ export async function replaySecurityProof(
   if (original) {
     receipts.set(original.receiptId, detachedRedacted({ ...original, remediationRef: remediationId, reVerification: { status: replay.status, receiptId: replay.receiptId } }));
   }
-  receipts.set(replay.receiptId, replay);
-  return ok(replay);
+  return ok(storeReceipt(replay));
 }
 
 export async function proveSecurityFinding(config: AppConfig, request: VerifyFindingRequest): Promise<ToolOutcome<SecurityReceipt>> {
@@ -272,28 +276,25 @@ export async function proveSecurityFinding(config: AppConfig, request: VerifyFin
     const candidate = await findStaticCandidate(config, request.findingId);
     if (!candidate) {
       const receipt = receiptForBlocked(request.findingId, metadata('sql_injection', request.findingId), 'No executable proof adapter was established from the current route/static inventory.');
-      receipts.set(receipt.receiptId, receipt);
-      return ok(receipt);
+      return ok(storeReceipt(receipt));
     }
     const execution = await executeSafeSourceProof(config, request, candidate);
     const safe = sourceReceipt(request.findingId, execution, [`${candidate.finding.file}:${candidate.finding.line ?? 0}`, `${candidate.entry.file}:${candidate.entry.line}`], [`static:${candidate.finding.id}`, `route:${candidate.entry.id}`], null, replayContractFor(execution.proofCase, candidate.adapter, request.target, proofParameter(candidate.entry, candidate.adapter), candidate.adapter.requestValue ?? candidate.adapter.marker));
-    receipts.set(safe.receiptId, safe); return ok(safe);
+    return ok(storeReceipt(safe));
   }
   const adapter = EXECUTABLE_ADAPTERS.find((item) => item.type === proofCase.type);
   if (!adapter) {
     const receipt = receiptForBlocked(request.findingId, proofCase, `No executable adapter is registered for proof type "${proofCase.type}".`);
-    receipts.set(receipt.receiptId, receipt);
-    return ok(receipt);
+    return ok(storeReceipt(receipt));
   }
   const result = await adapter.execute(config, request);
-  if (!result.ok) { const receipt = receiptForBlocked(request.findingId, proofCase, result.error.message, [request.findingId]); receipts.set(receipt.receiptId, receipt); return ok(receipt); }
+  if (!result.ok) { const receipt = receiptForBlocked(request.findingId, proofCase, result.error.message, [request.findingId]); return ok(storeReceipt(receipt)); }
   const verification = result.data.result;
   const status = verification.status === 'verified' || verification.status === 'not_reproduced' || verification.status === 'inconclusive' || verification.status === 'blocked' ? verification.status : 'inconclusive';
   const responseFacts = verification.evidence.map((item) => ({ status: item.response.status, headers: item.response.headers, bodySnippet: item.response.bodySnippet, finalUrl: item.response.finalUrl }));
   const receipt: SecurityReceipt = { receiptId: `receipt-${hash(`${request.findingId}|${verification.status}|${JSON.stringify(responseFacts)}`)}`, findingId: request.findingId, proofCase, status, redactedRequest: verification.evidence[0] ? { ...verification.evidence[0].request } : null, responseFacts, oracle: verification.status, whyProven: verification.status === 'verified' ? verification.summary : '', sourceRefs: [result.data.finding.file, result.data.finding.path].filter(Boolean), evidenceRefs: verification.evidence.map((_, index) => `runtime:${request.findingId}:${index}`), remediationRef: null, reVerification: { status: null, receiptId: null }, replayContract: null, replayOfReceiptId: null, beforeAfter: null, limitation: verification.status === 'verified' ? null : verification.summary };
   const safe = detachedRedacted(receipt);
-  receipts.set(safe.receiptId, safe);
-  return ok(safe);
+  return ok(storeReceipt(safe));
 }
 
 export function buildSecurityGraph(config: AppConfig): ToolOutcome<SecurityGraph> {
