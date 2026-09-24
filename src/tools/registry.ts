@@ -18,6 +18,10 @@ import {
   securityAgentInstructionsSchema,
   generateSecurityReportSchema,
   getSecurityFindingSchema,
+  proposeRemediationSchema,
+  remediationIdSchema,
+  verifyRemediationSchema,
+  rollbackRemediationSchema,
   safeValidate,
 } from '../validation/schemas.js';
 import { listFiles, readFile, searchFiles } from '../fs/fsOperations.js';
@@ -42,6 +46,7 @@ import {
   startInvestigation,
 } from '../investigation/orchestrator.js';
 import { generateSecurityReport, getSecurityFinding } from '../report/engine.js';
+import { applyRemediation, proposeRemediation, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
 
 
 export interface McpToolResponse {
@@ -380,6 +385,46 @@ export const toolDefinitions: ToolDefinition[] = [
         logger.error('get_security_finding_failed', { message: (e as Error).message });
         return toMcpResponse(err('INTERNAL_ERROR', 'Security finding retrieval failed unexpectedly.'));
       }
+    },
+  },
+  {
+    name: 'propose_remediation',
+    description: 'Validate and store an external AI remediation proposal. It never modifies files, executes commands, or calls an AI provider.',
+    inputSchema: { type: 'object', properties: { investigationId: { type: 'string' }, findingId: { type: 'string' }, description: { type: 'string' }, rationale: { type: 'string' }, files: { type: 'array' }, expectedSecurityEffect: { type: 'string' }, requiresRuntimeVerification: { type: 'boolean' }, runtimeVerification: { type: 'object' } }, required: ['investigationId', 'findingId', 'description', 'rationale', 'files', 'expectedSecurityEffect', 'requiresRuntimeVerification'] },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(proposeRemediationSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(proposeRemediation(config, validation.data));
+    },
+  },
+  {
+    name: 'apply_remediation',
+    description: 'Apply one validated, hash-checked remediation proposal using bounded filesystem writes. The result remains pending verification.',
+    inputSchema: { type: 'object', properties: { remediationId: { type: 'string' } }, required: ['remediationId'] },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(remediationIdSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(await applyRemediation(config, validation.data.remediationId));
+    },
+  },
+  {
+    name: 'verify_remediation',
+    description: 'Rerun deterministic analysis and authorized runtime verification for an applied remediation, then classify the result and regressions.',
+    inputSchema: { type: 'object', properties: { remediationId: { type: 'string' } }, required: ['remediationId'] },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(verifyRemediationSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(await verifyRemediation(config, validation.data.remediationId));
+    },
+  },
+  {
+    name: 'rollback_remediation',
+    description: 'Restore a remediation snapshot only when every file still has its expected post-remediation hash.',
+    inputSchema: { type: 'object', properties: { remediationId: { type: 'string' } }, required: ['remediationId'] },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(rollbackRemediationSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(await rollbackRemediation(config, validation.data.remediationId));
     },
   },
   {

@@ -38,6 +38,10 @@ export type ToolErrorCode =
   | 'INVESTIGATION_INCOMPLETE'
   | 'REPORT_FINDING_NOT_FOUND'
   | 'REPORT_INVALID'
+  | 'REMEDIATION_NOT_FOUND'
+  | 'REMEDIATION_INVALID'
+  | 'REMEDIATION_CONFLICT'
+  | 'ROLLBACK_CONFLICT'
   | 'INTERNAL_ERROR';
 
 export function ok<T>(data: T): ToolOutcome<T> {

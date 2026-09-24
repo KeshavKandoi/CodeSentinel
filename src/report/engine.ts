@@ -3,6 +3,7 @@ import { getInvestigation } from '../investigation/orchestrator.js';
 import { err, ok, type ToolOutcome } from '../types.js';
 import { detachedRedacted } from './redaction.js';
 import type { RemediationRecommendation, SecurityReport, SecurityReportFinding, ReportFindingStatus } from './types.js';
+import { listRemediationsForInvestigation } from '../remediation/engine.js';
 
 const SEVERITY_ORDER: Record<SecurityReportFinding['severity'], number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 const STATUS_ORDER: Record<ReportFindingStatus, number> = { runtime_verified: 0, static_candidate: 1, inconclusive: 2, blocked: 3, not_reproduced: 4 };
@@ -112,7 +113,8 @@ function buildReport(investigation: SecurityInvestigation): ToolOutcome<Security
     evidenceSummary: { totalItems: investigation.evidence.length, evidenceBytes: investigation.execution.evidenceBytes, referencedItems: new Set(findings.flatMap((item) => item.evidenceRefs)).size },
     analysisCoverage: { analysisSteps: investigation.execution.analysisSteps, expectedAnalysisSteps: 4, scanFindings: investigation.analysis?.scan.total ?? 0, routes: investigation.analysis?.routes.total ?? 0, accessControlFindings: investigation.analysis?.accessControl.totalFindings ?? 0 },
     runtimeVerificationSummary: { attempted: runtime.length, verified: runtime.filter((item) => item.status === 'verified').length, notReproduced: runtime.filter((item) => item.status === 'not_reproduced').length, inconclusive: runtime.filter((item) => item.status === 'inconclusive').length, blocked: runtime.filter((item) => item.status === 'blocked').length },
-    limitations: ['Static findings are candidates unless runtime evidence directly establishes the security condition.', 'Generic successful reads and unresolved dynamic resources remain inconclusive or blocked.', 'Remediation is advisory; CodeSentinel does not modify source code or claim fixes.'],
+    limitations: ['Static findings are candidates unless runtime evidence directly establishes the security condition.', 'Generic successful reads and unresolved dynamic resources remain inconclusive or blocked.', 'Remediation status is included only after controlled validation, re-analysis, and authorized runtime verification; source edits alone are not proof.'],
+    remediations: listRemediationsForInvestigation(investigation.id),
   };
   return ok(detachedRedacted(report));
 }

@@ -213,3 +213,30 @@ export const generateSecurityReportSchema = z.object({ investigationId: z.string
 export const getSecurityFindingSchema = z.object({ investigationId: z.string().min(1).max(128), findingId: z.string().min(1).max(256) }).strict();
 export type GenerateSecurityReportInput = z.infer<typeof generateSecurityReportSchema>;
 export type GetSecurityFindingInput = z.infer<typeof getSecurityFindingSchema>;
+
+const remediationFileChangeSchema = z.object({
+  path: relativePathSchema,
+  originalContentHash: z.string().regex(/^[a-f0-9]{64}$/, 'originalContentHash must be a SHA-256 hex digest'),
+  proposedContent: z.string().max(1_000_000),
+  description: z.string().min(1).max(1_000),
+}).strict();
+
+export const proposeRemediationSchema = z.object({
+  investigationId: z.string().min(1).max(128),
+  findingId: z.string().min(1).max(256),
+  description: z.string().min(1).max(4_000),
+  rationale: z.string().min(1).max(4_000),
+  files: z.array(remediationFileChangeSchema).min(1).max(10),
+  expectedSecurityEffect: z.string().min(1).max(2_000),
+  requiresRuntimeVerification: z.boolean(),
+  runtimeVerification: verifyFindingSchema.optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.requiresRuntimeVerification && !value.runtimeVerification) {
+    ctx.addIssue({ code: 'custom', path: ['runtimeVerification'], message: 'runtimeVerification is required when requiresRuntimeVerification is true' });
+  }
+});
+export const remediationIdSchema = z.object({ remediationId: z.string().min(1).max(128) }).strict();
+export const verifyRemediationSchema = remediationIdSchema;
+export const rollbackRemediationSchema = remediationIdSchema;
+export type ProposeRemediationInput = z.infer<typeof proposeRemediationSchema>;
+export type RemediationIdInput = z.infer<typeof remediationIdSchema>;

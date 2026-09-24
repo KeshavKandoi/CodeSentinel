@@ -1,4 +1,5 @@
 import type { InvestigationRuntimeResult, SecurityInvestigation } from '../investigation/types.js';
+import type { RemediationRecord } from '../remediation/types.js';
 
 export type ReportFindingStatus = 'static_candidate' | 'runtime_verified' | 'not_reproduced' | 'inconclusive' | 'blocked';
 
@@ -51,4 +52,5 @@ export interface SecurityReport {
   analysisCoverage: { analysisSteps: number; expectedAnalysisSteps: number; scanFindings: number; routes: number; accessControlFindings: number };
   runtimeVerificationSummary: { attempted: number; verified: number; notReproduced: number; inconclusive: number; blocked: number };
   limitations: string[];
+  remediations?: RemediationRecord[];
 }
