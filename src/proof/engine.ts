@@ -50,9 +50,9 @@ const EXECUTABLE_ADAPTERS: SecurityProofAdapter[] = [
   { type: 'authorization_inconsistency', candidateTypes: ['inconsistent_authorization'], buildCase: (id, method, path) => metadata('authorization_inconsistency', id, method, path, true, 'Delegates to the existing Phase 6 cross-method proof.'), execute: (config, request) => verifyFinding(config, request) },
 ];
 
-const SAFE_SOURCE_ADAPTERS: Array<{ type: ProofCaseType; categories: string[]; marker: string; parameter: string; title: string; notes: string }> = [
+const SAFE_SOURCE_ADAPTERS: Array<{ type: ProofCaseType; categories: string[]; marker: string; requestValue?: string; parameter: string; title: string; notes: string }> = [
   { type: 'path_traversal', categories: ['path_traversal'], marker: 'CODESENTINEL_PROOF_OUTSIDE_ROOT', parameter: 'path', title: 'Path traversal proof', notes: 'Requires a local fixture to return the exact outside-root marker only when traversal succeeds.' },
-  { type: 'open_redirect', categories: ['open_redirect', 'insecure_redirects'], marker: 'https://codesentinel.invalid/proof', parameter: 'url', title: 'Open redirect proof', notes: 'Uses a non-routable documentation destination and never follows an external redirect.' },
+  { type: 'open_redirect', categories: ['open_redirect', 'insecure_redirects'], marker: 'https://codesentinel.invalid/proof', requestValue: 'codesentinel-proof-redirect', parameter: 'url', title: 'Open redirect proof', notes: 'Uses a harmless local probe token; a fixture-controlled Location header provides the non-routable oracle and is never followed.' },
   { type: 'ssrf', categories: ['ssrf'], marker: 'CODESENTINEL_PROOF_SSRF_SENTINEL', parameter: 'url', title: 'SSRF proof', notes: 'Requires a local fixture-controlled SSRF oracle; no external or metadata target is used.' },
   { type: 'sql_injection', categories: ['injection'], marker: 'CODESENTINEL_PROOF_SQLI_SENTINEL', parameter: 'query', title: 'SQL injection proof', notes: 'Requires a local fixture-controlled semantic marker, never a generic SQL error.' },
   { type: 'command_injection', categories: ['command_injection'], marker: 'CODESENTINEL_PROOF_COMMAND_SENTINEL', parameter: 'command', title: 'Command injection proof', notes: 'Requires a local fixture-controlled marker; CodeSentinel never executes the supplied value.' },
@@ -123,7 +123,7 @@ async function findStaticCandidate(config: AppConfig, findingId: string): Promis
 function proofPath(entry: AttackSurfaceEntry, adapter: typeof SAFE_SOURCE_ADAPTERS[number]): string | null {
   if (hasUnresolvedSegment(entry.path) || entry.method !== 'GET' && entry.method !== 'ALL') return null;
   const parameter = entry.queryParameters[0]?.name ?? entry.bodyParameters[0]?.name ?? adapter.parameter;
-  const value = encodeURIComponent(adapter.marker);
+  const value = encodeURIComponent(adapter.requestValue ?? adapter.marker);
   return `${entry.path}${entry.path.includes('?') ? '&' : '?'}${encodeURIComponent(parameter)}=${value}`;
 }
 
