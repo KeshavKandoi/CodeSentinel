@@ -127,49 +127,39 @@ export function readFile(config: AppConfig, opts: ReadFileOptions): ToolOutcome<
     return toPathError(e, opts.filePath);
   }
 
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(absPath);
-  } catch {
-    return err('NOT_FOUND', `File not found: ${opts.filePath}`);
-  }
-  if (!stat.isFile()) {
-    return err('NOT_A_FILE', `Not a regular file: ${opts.filePath}`);
-  }
-
   const limit = Math.min(opts.maxBytes ?? config.maxReadFileBytes, config.maxReadFileBytes);
-
-  if (stat.size > limit) {
-    // Read only up to the limit rather than loading the whole file then
-    // truncating, to avoid memory blowup on huge files.
-    const fd = fs.openSync(absPath, 'r');
-    try {
-      const buffer = Buffer.alloc(limit);
-      fs.readSync(fd, buffer, 0, limit, 0);
-      return ok({
-        path: opts.filePath,
-        content: buffer.toString('utf-8'),
-        sizeBytes: stat.size,
-        truncated: true,
-      });
-    } finally {
-      fs.closeSync(fd);
-    }
-  }
-
-  let content: string;
+  let fd: number;
   try {
-    content = fs.readFileSync(absPath, 'utf-8');
+    // Open the already-contained path without following a final-component
+    // symlink. This closes the resolve/stat/read race where a file could be
+    // swapped to an outside symlink between the containment check and read.
+    fd = fs.openSync(absPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return err(code === 'ENOENT' ? 'NOT_FOUND' : 'INTERNAL_ERROR', code === 'ENOENT' ? `File not found: ${opts.filePath}` : `Failed to open file: ${(e as Error).message}`);
+  }
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return err('NOT_A_FILE', `Not a regular file: ${opts.filePath}`);
+    const bytesToRead = Math.min(stat.size, limit);
+    const buffer = Buffer.alloc(bytesToRead);
+    let offset = 0;
+    while (offset < bytesToRead) {
+      const read = fs.readSync(fd, buffer, offset, bytesToRead - offset, offset);
+      if (read === 0) break;
+      offset += read;
+    }
+    return ok({
+      path: opts.filePath,
+      content: buffer.subarray(0, offset).toString('utf-8'),
+      sizeBytes: stat.size,
+      truncated: stat.size > limit,
+    });
   } catch (e) {
     return err('INTERNAL_ERROR', `Failed to read file: ${(e as Error).message}`);
+  } finally {
+    fs.closeSync(fd);
   }
-
-  return ok({
-    path: opts.filePath,
-    content,
-    sizeBytes: stat.size,
-    truncated: false,
-  });
 }
 
 export interface SearchFilesOptions {
