@@ -8,7 +8,7 @@ import { detachedRedacted } from '../report/redaction.js';
 import { getInvestigation, runSecurityAnalysis, startInvestigation } from '../investigation/orchestrator.js';
 import type { InvestigationFinding, SecurityInvestigation } from '../investigation/types.js';
 import type { ProposeRemediationInput } from '../validation/schemas.js';
-import type { RemediationFileChange, RemediationLifecycle, RemediationProposal, RemediationRecord, RemediationVerification } from './types.js';
+import type { RemediationFileChange, RemediationLifecycle, RemediationProposal, RemediationRecord, RemediationSnapshot, RemediationVerification } from './types.js';
 import { verifyFinding } from '../runtime/engine.js';
 import { listSecurityReceiptsForFinding, replaySecurityProof } from '../proof/engine.js';
 
@@ -238,8 +238,21 @@ export async function rollbackRemediation(config: AppConfig, remediationId: stri
       try { if (fs.lstatSync(absolute).isSymbolicLink()) return err('ROLLBACK_CONFLICT', `Current file "${snapshot.path}" is now a symbolic link.`); current = fs.readFileSync(absolute); } catch { return err('ROLLBACK_CONFLICT', `Current file "${snapshot.path}" is unavailable for rollback.`); }
       if (sha256(current) !== record.appliedContentHashes[snapshot.path]) return err('ROLLBACK_CONFLICT', `Current file "${snapshot.path}" no longer matches the expected post-remediation hash.`);
     }
-    try { for (const snapshot of record.snapshots) fs.writeFileSync(resolveExistingWithinRoot(config.projectRoot, snapshot.path), snapshot.originalContent, 'utf8'); } catch { record.status = 'rollback_required'; record.updatedAt = now(); return err('INTERNAL_ERROR', 'Rollback failed while restoring the snapshot.'); }
-    for (const snapshot of record.snapshots) { const current = fs.readFileSync(resolveExistingWithinRoot(config.projectRoot, snapshot.path), 'utf8'); if (sha256(current) !== snapshot.originalContentHash) { record.status = 'rollback_required'; record.updatedAt = now(); return err('ROLLBACK_CONFLICT', `Restored hash verification failed for "${snapshot.path}".`); } }
+    const restoreTargets: Array<{ snapshot: RemediationSnapshot; absolute: string; temp: string }> = [];
+    try {
+      for (const snapshot of record.snapshots) {
+        const absolute = resolveExistingWithinRoot(config.projectRoot, snapshot.path);
+        const temp = `${absolute}.codesentinel-rollback-${crypto.randomUUID()}.tmp`;
+        fs.writeFileSync(temp, snapshot.originalContent, { encoding: 'utf8', flag: 'wx' });
+        restoreTargets.push({ snapshot, absolute, temp });
+        if (sha256(fs.readFileSync(temp)) !== snapshot.originalContentHash) throw new Error('rollback preparation hash mismatch');
+      }
+      for (const item of restoreTargets) fs.renameSync(item.temp, item.absolute);
+    } catch {
+      for (const item of restoreTargets) { try { fs.rmSync(item.temp, { force: true }); } catch { /* cleanup is best effort */ } }
+      record.status = 'rollback_required'; record.updatedAt = now(); return err('INTERNAL_ERROR', 'Rollback failed while restoring the snapshot.');
+    }
+    for (const item of restoreTargets) { if (sha256(fs.readFileSync(item.absolute)) !== item.snapshot.originalContentHash) { record.status = 'rollback_required'; record.updatedAt = now(); return err('ROLLBACK_CONFLICT', `Restored hash verification failed for "${item.snapshot.path}".`); } }
     record.status = 'rolled_back'; record.updatedAt = now(); return ok(safeRecord(record));
   });
 }
