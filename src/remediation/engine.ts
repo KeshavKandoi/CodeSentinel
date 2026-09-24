@@ -10,6 +10,7 @@ import type { InvestigationFinding, SecurityInvestigation } from '../investigati
 import type { ProposeRemediationInput } from '../validation/schemas.js';
 import type { RemediationFileChange, RemediationLifecycle, RemediationProposal, RemediationRecord, RemediationVerification } from './types.js';
 import { verifyFinding } from '../runtime/engine.js';
+import { listSecurityReceiptsForFinding, replaySecurityProof } from '../proof/engine.js';
 
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_TOTAL_BYTES = 2_000_000;
@@ -198,13 +199,27 @@ export async function verifyRemediation(config: AppConfig, remediationId: string
     const related = after.data.findings.filter((finding) => relatedFinding(originalFinding, finding));
     const originalPresent = after.data.findings.some((finding) => finding.findingId === record.proposal.findingId);
     let runtimeStatus: string | null = null;
+    let runtimeReceiptId: string | null = null;
     if (record.proposal.requiresRuntimeVerification && record.proposal.runtimeVerification) {
-      const runtime = await verifyFinding(config, record.proposal.runtimeVerification);
-      if (!runtime.ok) { record.status = runtime.error.code === 'TARGET_BLOCKED' ? 'verification_blocked' : 'verification_inconclusive'; return err(runtime.error.code, runtime.error.message); }
-      runtimeStatus = runtime.data.result.status;
+      if (originalFinding.origin === 'security_scan') {
+        const priorReceipt = listSecurityReceiptsForFinding(record.proposal.findingId).find((receipt) => receipt.status === 'verified');
+        if (!priorReceipt) {
+          record.status = 'verification_inconclusive';
+          record.updatedAt = now();
+          return err('VERIFICATION_INCONCLUSIVE', 'A verified source proof receipt is required before remediation re-verification can replay the original proof.');
+        }
+        const replay = await replaySecurityProof(config, record.proposal.runtimeVerification, priorReceipt, remediationId);
+        if (!replay.ok) { record.status = 'verification_inconclusive'; record.updatedAt = now(); return err(replay.error.code, replay.error.message); }
+        runtimeStatus = replay.data.status;
+        runtimeReceiptId = replay.data.receiptId;
+      } else {
+        const runtime = await verifyFinding(config, record.proposal.runtimeVerification);
+        if (!runtime.ok) { record.status = runtime.error.code === 'TARGET_BLOCKED' ? 'verification_blocked' : 'verification_inconclusive'; return err(runtime.error.code, runtime.error.message); }
+        runtimeStatus = runtime.data.result.status;
+      }
     }
     const status: RemediationLifecycle = originalPresent ? 'still_vulnerable' : related.length > 0 ? 'changed_finding' : record.proposal.requiresRuntimeVerification && runtimeStatus !== 'verified' ? 'verification_inconclusive' : 'verified_resolved';
-    const verification: RemediationVerification = { status, beforeFindingId: record.proposal.findingId, afterInvestigationId: after.data.id, staticFindingPresent: originalPresent, relatedFindings: related.map((finding) => ({ findingId: finding.findingId, title: finding.title, category: finding.category, path: finding.path, file: finding.file })), runtimeStatus, summary: originalPresent ? 'The original finding remains after deterministic re-analysis.' : related.length > 0 ? 'The original finding changed or a related security finding was introduced.' : status === 'verified_resolved' ? 'The original finding was absent after deterministic re-analysis.' : 'Static re-analysis did not establish a verified resolution.', verifiedAt: now() };
+    const verification: RemediationVerification = { status, beforeFindingId: record.proposal.findingId, afterInvestigationId: after.data.id, staticFindingPresent: originalPresent, relatedFindings: related.map((finding) => ({ findingId: finding.findingId, title: finding.title, category: finding.category, path: finding.path, file: finding.file })), runtimeStatus, runtimeReceiptId, summary: originalPresent ? 'The original finding remains after deterministic re-analysis.' : related.length > 0 ? 'The original finding changed or a related security finding was introduced.' : status === 'verified_resolved' ? 'The original finding was absent after deterministic re-analysis and its verified proof no longer reproduced.' : 'Static re-analysis did not establish a verified resolution.', verifiedAt: now() };
     record.verification = verification; record.status = status; record.updatedAt = now(); return ok(safeRecord(record));
   });
 }
