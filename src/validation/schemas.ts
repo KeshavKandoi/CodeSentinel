@@ -101,3 +101,54 @@ export type DiscoverRoutesInput = z.infer<typeof discoverRoutesSchema>;
  */
 export const analyzeAccessControlSchema = z.object({}).strict();
 export type AnalyzeAccessControlInput = z.infer<typeof analyzeAccessControlSchema>;
+
+
+/**
+ * Phase 6: verify_finding requires an explicit findingId and an explicit
+ * RuntimeTarget -- there is no default target, and localhost is not
+ * automatically authorized. Test sessions/credentials are supplied only
+ * through this explicit input, never read from project files.
+ */
+const runtimeTargetSchema = z
+  .object({
+    allowedOrigin: z.string().min(1).max(512),
+    allowPrivateNetworkTarget: z.boolean().optional(),
+    allowDestructiveMethods: z.boolean().optional(),
+    maxRequestsPerCase: z.number().int().positive().max(50).optional(),
+    requestTimeoutMs: z.number().int().positive().max(30_000).optional(),
+    maxResponseBytes: z.number().int().positive().max(5_000_000).optional(),
+    maxRedirects: z.number().int().min(0).max(10).optional(),
+    minRequestIntervalMs: z.number().int().min(0).max(10_000).optional(),
+    maxConcurrency: z.number().int().positive().max(10).optional(),
+  })
+  .strict();
+
+const testSessionSchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    kind: z.enum(['unauthenticated', 'authenticated']),
+    headers: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
+
+const sessionParamsSchema = z
+  .object({
+    ownerSessionId: z.string().min(1).max(128).optional(),
+    otherSessionId: z.string().min(1).max(128).optional(),
+    lowPrivilegedSessionId: z.string().min(1).max(128).optional(),
+    authenticatedSessionId: z.string().min(1).max(128).optional(),
+  })
+  .strict();
+
+export const verifyFindingSchema = z
+  .object({
+    findingId: z.string().min(1).max(256),
+    target: runtimeTargetSchema,
+    sessions: z.array(testSessionSchema).max(10).default([]),
+    sessionParams: sessionParamsSchema.default({}),
+  })
+  .strict();
+export type VerifyFindingInput = z.infer<typeof verifyFindingSchema>;
+
+export const listVerificationCasesSchema = z.object({}).strict();
+export type ListVerificationCasesInput = z.infer<typeof listVerificationCasesSchema>;
