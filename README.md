@@ -480,9 +480,55 @@ identity sources, and resource-load/ownership comparisons in source text. It is
 **not** proof that a route is actually exploitable. `status: 'suspected'` and
 `verificationStatus: 'not_verified'` reflect this on every finding. Confirming or
 disproving a suspected finding against a real running instance of the target
-application -- with explicit target-authorization boundaries -- is out of scope
-for Phase 5 and belongs exclusively to the not-yet-implemented Phase 6 runtime
-verification engine.
+application -- with explicit target-authorization boundaries -- is handled by
+the separate Phase 6 runtime verification engine. Phase 6 never changes the
+static `status` field: the original finding remains `suspected`. A successful
+runtime hypothesis is recorded as `runtimeVerification.status: 'verified'` and
+sets the compatible `verificationStatus` to `manually_verified` on the returned
+copy. Blocked, inconclusive, and not-reproduced results are retained as runtime
+metadata without promoting the static finding.
+
+## Phase 6 runtime verification
+
+Phase 6 re-runs the existing Phase 4 route discovery and Phase 5
+`analyzeAccessControl()` engines for every call because CodeSentinel does not
+persist a finding database. `list_verification_cases` previews current cases
+without making requests. `verify_finding` accepts one explicit finding ID, one
+explicit `RuntimeTarget`, and optional explicitly configured test sessions. It
+executes only the case for that finding.
+
+Implemented cases cover missing authentication, missing authorization, IDOR/BOLA,
+ownership, public/private inconsistency, and method authorization. They use
+deterministic response conditions: 401/403 (and 404 where ownership permits it)
+establish `not_reproduced`; safety checks produce `blocked`; ambiguous reads
+and generic 2xx responses produce `inconclusive`; `verified` requires a direct
+controlled proof such as a low-privilege state change, a cross-user state
+change, or an authenticated/unauthenticated comparison. HTTP 200 alone never
+verifies a finding.
+
+Every target must provide an exact `http` or `https` origin with no credentials,
+path, query, or fragment. Requests are relative paths only. DNS resolution,
+private-network and metadata-address checks, exact-origin redirect checks,
+timeouts, response-size caps, per-case request caps, redirect caps, rate limits,
+and concurrency limits are enforced centrally. Unsafe methods are blocked unless
+the operator explicitly enables them and lists the exact path in
+`vettedTestPaths`; this does not make arbitrary discovered routes safe.
+
+Sessions are caller-supplied labels and headers only. CodeSentinel never reads
+credentials from `.env`, source files, configuration, shell history, or other
+files. Evidence is bounded and redacts authorization, cookies, API keys,
+tokens, passwords, and secret-shaped body fields. Connection failures and
+missing sessions return structured blocked results rather than verification.
+Dynamic route parameters must already be concrete fixture/test values; the
+runtime never guesses, enumerates, or scrapes resource IDs. Destructive
+operations, brute force, persistence, unrestricted scanning, and credential
+modification are unsupported. Generic public resources and successful read-only
+responses remain inconclusive without deterministic semantic proof.
+
+The runtime does not start applications. Start a disposable local fixture using
+its documented package script, then pass its exact origin (for example
+`http://127.0.0.1:3000`) to `verify_finding`. An absent server is represented as
+a structured blocked or inconclusive result.
 
 ## Phase 5 architecture
 
@@ -500,8 +546,7 @@ verification engine.
 
     npm test
 
-runs the complete suite (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5
-together): 241 tests across 11 files. Phase 5 tests cover public/authenticated/
+runs the complete suite (Phase 1 through Phase 6). Phase 5 tests cover public/authenticated/
 role-protected/ownership-protected/unknown classification, IDOR and missing-
 authentication/authorization finding generation, inconsistent-authorization
 detection across sibling methods, false-positive resistance (comment/string
@@ -524,6 +569,5 @@ end-to-end MCP tool-handler tests including the `discover_routes` ->
   heuristic (`/admin`, `/internal`, `/manage`, `/moderation`, or a role
   requirement matching admin/staff/superuser); other privileged-path
   conventions are not yet recognized.
-- As with Phase 3, all findings are `suspected`, never `confirmed`; runtime
-  verification against a real, explicitly authorized target is deferred to
-  Phase 6.
+- Static findings remain `suspected`; runtime verification is explicit, bounded,
+  and attached separately as described above.

@@ -1,0 +1,8 @@
+{
+  "name": "codesentinel-runtime-phase6-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

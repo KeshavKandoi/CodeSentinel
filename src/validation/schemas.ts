@@ -109,11 +109,12 @@ export type AnalyzeAccessControlInput = z.infer<typeof analyzeAccessControlSchem
  * automatically authorized. Test sessions/credentials are supplied only
  * through this explicit input, never read from project files.
  */
-const runtimeTargetSchema = z
+export const runtimeTargetSchema = z
   .object({
     allowedOrigin: z.string().min(1).max(512),
     allowPrivateNetworkTarget: z.boolean().optional(),
     allowDestructiveMethods: z.boolean().optional(),
+    vettedTestPaths: z.array(z.string().min(1).max(4096)).max(20).optional(),
     maxRequestsPerCase: z.number().int().positive().max(50).optional(),
     requestTimeoutMs: z.number().int().positive().max(30_000).optional(),
     maxResponseBytes: z.number().int().positive().max(5_000_000).optional(),
