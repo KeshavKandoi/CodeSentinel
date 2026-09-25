@@ -7,7 +7,7 @@ import { afterEach, beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import type { AppConfig } from '../../src/config.js';
 import { toolDefinitions } from '../../src/tools/registry.js';
-import { listSecurityReceiptsForFinding, proveSecurityFinding, replaySecurityProof, resetSecurityProofsForTests } from '../../src/proof/engine.js';
+import { linkSecurityReceiptToRemediation, listSecurityReceiptsForFinding, proveSecurityFinding, replaySecurityProof, resetSecurityProofsForTests } from '../../src/proof/engine.js';
 import { resetInvestigationsForTests } from '../../src/investigation/orchestrator.js';
 import { resetRemediationsForTests } from '../../src/remediation/engine.js';
 
@@ -161,13 +161,13 @@ describe('proof to remediation lifecycle', () => {
     expect(proof.ok).toBe(true);
     if (!proof.ok) return;
     const base = { findingId: finding.id, target: { allowedOrigin: origin, minRequestIntervalMs: 0 }, sessions: [], sessionParams: {} };
+    expect(linkSecurityReceiptToRemediation(finding.id, proof.data.receiptId, 'remediation-contract-test').ok).toBe(true);
     const altered = (change: (receipt: any) => any) => replaySecurityProof(config, base, change({ ...proof.data, replayContract: { ...(proof.data.replayContract ?? {}) } }), 'remediation-contract-test');
     expect((await altered((receipt) => ({ ...receipt, replayContract: { ...receipt.replayContract, relativeRoute: '/changed' } }))).ok).toBe(false);
     expect((await altered((receipt) => ({ ...receipt, replayContract: { ...receipt.replayContract, method: 'POST' } }))).ok).toBe(false);
     expect((await altered((receipt) => ({ ...receipt, replayContract: { ...receipt.replayContract, inertProbeValue: 'changed-probe' } }))).ok).toBe(false);
     const mismatch = await replaySecurityProof(config, { ...base, target: { allowedOrigin: `${origin}-different`, minRequestIntervalMs: 0 } }, proof.data, 'remediation-target-test');
-    expect(mismatch.ok).toBe(true);
-    if (mismatch.ok) expect(mismatch.data.status).toBe('blocked');
+    expect(mismatch.ok).toBe(false);
     const secure = await proveSecurityFinding(config, { findingId: finding.id, target: { allowedOrigin: origin, maxResponseBytes: 1, minRequestIntervalMs: 0 } });
     expect(secure.ok).toBe(true);
     expect((await replaySecurityProof(config, base, { ...proof.data, receiptId: 'missing-receipt' }, 'remediation-missing-receipt')).ok).toBe(false);
@@ -193,8 +193,11 @@ describe('proof to remediation lifecycle', () => {
       const proof = await proveSecurityFinding(config, { findingId: finding.id, target: item.target });
       expect(proof.ok).toBe(true);
       if (!proof.ok) return;
+      const linked = linkSecurityReceiptToRemediation(finding.id, proof.data.receiptId, `remediation-${item.mode}`);
+      expect(linked.ok).toBe(true);
+      if (!linked.ok) return;
       replayMode = item.mode;
-      const replay = await replaySecurityProof(config, { findingId: finding.id, target: item.target, sessions: [], sessionParams: {} }, proof.data, `remediation-${item.mode}`);
+      const replay = await replaySecurityProof(config, { findingId: finding.id, target: item.target, sessions: [], sessionParams: {} }, linked.data, `remediation-${item.mode}`);
       expect(replay.ok).toBe(true);
       if (replay.ok) expect(replay.data.status).toBe('blocked');
       resetSecurityProofsForTests();
