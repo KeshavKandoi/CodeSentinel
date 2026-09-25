@@ -14,7 +14,13 @@ function tool(name: string) { const item = toolDefinitions.find((entry) => entry
 function body(response: { content: Array<{ text: string }> }) { return JSON.parse(response.content[0]!.text) as any; }
 function makeProject(): { root: string; config: AppConfig } {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codesentinel-phase9-'))); roots.push(root);
-  fs.cpSync(path.resolve(process.cwd(), 'tests/fixtures/security-cases'), root, { recursive: true });
+  // The intelligence suite creates a temporary baseline in the shared
+  // fixture directory. Do not copy that transient test artifact while Vitest
+  // runs files concurrently.
+  fs.cpSync(path.resolve(process.cwd(), 'tests/fixtures/security-cases'), root, {
+    recursive: true,
+    filter: (source) => !source.endsWith(`${path.sep}deep-baseline.json`),
+  });
   fs.writeFileSync(path.join(root, 'src', 'remediation.ts'), 'const value = eval(req.query.value);\nexport default value;\n');
   return { root, config: configFor(root) };
 }

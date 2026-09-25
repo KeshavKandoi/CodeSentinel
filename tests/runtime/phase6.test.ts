@@ -68,6 +68,17 @@ describe('Phase 6 request controls and evidence', () => {
     expect(result.response.bodyTruncated).toBe(true);
   });
 
+  it('retains only cookie security attributes, never cookie names or values', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', {
+      status: 200,
+      headers: { 'Set-Cookie': 'session=super-secret; Secure; HttpOnly; SameSite=Lax' },
+    })));
+    const result = await issueRuntimeRequest(target, new Map(), { method: 'GET', path: '/cookie', sessionId: null }, new RuntimeClientState(target));
+    expect(result.response.headers['set-cookie']).toBe('cookie-attributes:httponly,samesite,secure');
+    expect(JSON.stringify(result)).not.toContain('super-secret');
+    expect(JSON.stringify(result)).not.toContain('super-secret');
+  });
+
   it('blocks unsafe methods unless the exact path is explicitly vetted', async () => {
     const result = await issueRuntimeRequest(
       { ...target, allowDestructiveMethods: true },

@@ -79,7 +79,7 @@ describe('security proof engine', () => {
     const adapters = listSecurityProofAdapters();
     expect(adapters.map((adapter) => adapter.type)).toEqual(expect.arrayContaining(['idor_bola', 'missing_authentication', 'missing_authorization', 'authorization_inconsistency']));
     expect(adapters.map((adapter) => adapter.type)).toEqual(expect.arrayContaining(['path_traversal', 'open_redirect', 'ssrf', 'sql_injection', 'command_injection', 'xss_reflected']));
-    expect(adapters.some((adapter) => adapter.type === 'jwt_verification')).toBe(false);
+    expect(adapters.map((adapter) => adapter.type)).toEqual(expect.arrayContaining(['jwt_verification', 'session_cookie_flags', 'permissive_cors', 'insecure_deserialization']));
   });
 
   it('lists only proof cases backed by the current route/access inventory', () => {
