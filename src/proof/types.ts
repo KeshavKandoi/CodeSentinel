@@ -24,7 +24,7 @@ export interface ProofReplayContract {
   };
   sessionLabelReferences: string[];
   oracleDefinition: {
-    kind: 'body_contains' | 'location_contains';
+    kind: 'body_contains' | 'location_contains' | 'header_contains';
     marker: string;
     safeResult: string;
   };

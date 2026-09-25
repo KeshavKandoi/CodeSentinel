@@ -31,7 +31,12 @@ const SENSITIVE_BODY_FIELD_RE = /("?(?:authorization|cookie|set-cookie|api[_-]?k
 function redactHeaders(headers: Headers): Record<string, string> {
   const out: Record<string, string> = {};
   headers.forEach((value, key) => {
-    out[key] = SENSITIVE_HEADER_RE.test(key) ? '[REDACTED]' : value.replace(SENSITIVE_VALUE_RE, '[REDACTED]');
+    if (key.toLowerCase() === 'set-cookie') {
+      const attributes = value.split(';').slice(1).map((part) => part.trim().split('=')[0].toLowerCase()).filter(Boolean);
+      out[key] = `cookie-attributes:${[...new Set(attributes)].sort().join(',')}`;
+    } else {
+      out[key] = SENSITIVE_HEADER_RE.test(key) ? '[REDACTED]' : value.replace(SENSITIVE_VALUE_RE, '[REDACTED]');
+    }
   });
   return out;
 }

@@ -62,4 +62,14 @@ app.get('/jwt', (req, res) => {
   res.send('ok');
 });
 
+app.get('/jwt-unsafe', (req, res) => {
+  const claims = jwt.decode(req.query.token);
+  res.json(claims);
+});
+
+app.get('/session-cookie', (req, res) => {
+  res.cookie('session', 'fixture-secret', { secure: false, httpOnly: false, sameSite: 'none' });
+  res.send('ok');
+});
+
 app.listen(3000);

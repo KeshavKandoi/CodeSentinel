@@ -32,6 +32,18 @@ export interface SecurityProofAdapter {
   execute(config: AppConfig, request: VerifyFindingRequest): ReturnType<typeof verifyFinding>;
 }
 
+interface SourceProofAdapter {
+  type: ProofCaseType;
+  categories: string[];
+  marker: string;
+  requestValue?: string;
+  parameter: string;
+  title: string;
+  notes: string;
+  oracleKind?: 'body_contains' | 'location_contains' | 'header_contains';
+  matchesFinding?: (finding: SecurityFinding) => boolean;
+}
+
 const metadata = (type: ProofCaseType, findingId: string, method = 'GET', path = '/', executable = false, adapterNotes = 'No executable adapter is registered for this proof class.'): SecurityProofCase => ({
   id: `proof-case-${hash(`${type}|${findingId}`)}`, type, findingId,
   prerequisites: ['An evidence-backed static candidate or route relation exists.', 'The operator supplies an explicitly authorized target when execution is requested.'],
@@ -55,17 +67,28 @@ const EXECUTABLE_ADAPTERS: SecurityProofAdapter[] = [
   { type: 'authorization_inconsistency', candidateTypes: ['inconsistent_authorization'], buildCase: (id, method, path) => metadata('authorization_inconsistency', id, method, path, true, 'Delegates to the existing Phase 6 cross-method proof.'), execute: (config, request) => verifyFinding(config, request) },
 ];
 
-const SAFE_SOURCE_ADAPTERS: Array<{ type: ProofCaseType; categories: string[]; marker: string; requestValue?: string; parameter: string; title: string; notes: string }> = [
+const SAFE_SOURCE_ADAPTERS: SourceProofAdapter[] = [
   { type: 'path_traversal', categories: ['path_traversal'], marker: 'CODESENTINEL_PROOF_OUTSIDE_ROOT', parameter: 'path', title: 'Path traversal proof', notes: 'Requires a local fixture to return the exact outside-root marker only when traversal succeeds.' },
   { type: 'open_redirect', categories: ['open_redirect', 'insecure_redirects'], marker: 'https://codesentinel.invalid/proof', requestValue: 'codesentinel-proof-redirect', parameter: 'url', title: 'Open redirect proof', notes: 'Uses a harmless local probe token; a fixture-controlled Location header provides the non-routable oracle and is never followed.' },
   { type: 'ssrf', categories: ['ssrf'], marker: 'CODESENTINEL_PROOF_SSRF_SENTINEL', parameter: 'url', title: 'SSRF proof', notes: 'Requires a local fixture-controlled SSRF oracle; no external or metadata target is used.' },
   { type: 'sql_injection', categories: ['injection'], marker: 'CODESENTINEL_PROOF_SQLI_SENTINEL', parameter: 'query', title: 'SQL injection proof', notes: 'Requires a local fixture-controlled semantic marker, never a generic SQL error.' },
   { type: 'command_injection', categories: ['command_injection'], marker: 'CODESENTINEL_PROOF_COMMAND_SENTINEL', parameter: 'command', title: 'Command injection proof', notes: 'Requires a local fixture-controlled marker; CodeSentinel never executes the supplied value.' },
   { type: 'xss_reflected', categories: ['xss'], marker: 'CODESENTINEL_PROOF_XSS_SENTINEL', parameter: 'q', title: 'Reflected XSS proof', notes: 'Verifies exact unencoded reflection of a unique inert marker, not script execution.' },
+  { type: 'jwt_verification', categories: ['authentication'], marker: 'CODESENTINEL_PROOF_JWT_ACCEPTED', requestValue: 'codesentinel-invalid-jwt', parameter: 'token', title: 'JWT verification proof', notes: 'Uses a deterministic invalid token and only accepts an explicit fixture oracle; it never treats a generic 2xx as proof.', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-016' },
+  { type: 'session_cookie_flags', categories: ['security_configuration'], marker: 'secure,httponly,samesite', parameter: 'probe', title: 'Session cookie flags proof', notes: 'Inspects only a redacted cookie-attribute summary; cookie names and values are never retained.', oracleKind: 'header_contains', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-017' },
+  { type: 'permissive_cors', categories: ['cors'], marker: 'access-control-allow-origin:*', parameter: 'origin', title: 'Permissive CORS proof', notes: 'Requires the actual response header to allow every origin; status alone is insufficient.', oracleKind: 'header_contains' },
+  { type: 'insecure_deserialization', categories: ['deserialization'], marker: 'CODESENTINEL_PROOF_DESERIALIZED', parameter: 'payload', title: 'Insecure deserialization proof', notes: 'Requires an explicit local semantic marker and never executes the supplied payload in CodeSentinel.', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-011' },
 ];
 
 function safeSourceAdapter(type: ProofCaseType): typeof SAFE_SOURCE_ADAPTERS[number] | null {
   return SAFE_SOURCE_ADAPTERS.find((adapter) => adapter.type === type) ?? null;
+}
+
+type RegisteredProofAdapter = SecurityProofAdapter | SourceProofAdapter;
+const proofAdapterRegistry = (): RegisteredProofAdapter[] => [...EXECUTABLE_ADAPTERS, ...SAFE_SOURCE_ADAPTERS];
+
+function registeredAdapter(type: ProofCaseType): RegisteredProofAdapter | null {
+  return proofAdapterRegistry().find((adapter) => adapter.type === type) ?? null;
 }
 
 function isLocalProofTarget(target: RuntimeTarget): boolean {
@@ -76,7 +99,8 @@ function isLocalProofTarget(target: RuntimeTarget): boolean {
 }
 
 function adapterForCandidate(candidateType: string): SecurityProofAdapter | null {
-  return EXECUTABLE_ADAPTERS.find((adapter) => adapter.candidateTypes.includes(candidateType)) ?? null;
+  const adapter = proofAdapterRegistry().find((item) => 'candidateTypes' in item && item.candidateTypes.includes(candidateType));
+  return adapter && 'execute' in adapter ? adapter : null;
 }
 
 export function listSecurityProofAdapters(): Array<Pick<SecurityProofAdapter, 'type' | 'candidateTypes'>> {
@@ -112,7 +136,7 @@ export function listSecurityReceiptsForFinding(findingId: string): SecurityRecei
 
 export function resetSecurityProofsForTests(): void { receipts.clear(); }
 
-async function findStaticCandidate(config: AppConfig, findingId: string): Promise<{ finding: SecurityFinding; entry: AttackSurfaceEntry; adapter: typeof SAFE_SOURCE_ADAPTERS[number] } | null> {
+async function findStaticCandidate(config: AppConfig, findingId: string): Promise<{ finding: SecurityFinding; entry: AttackSurfaceEntry; adapter: SourceProofAdapter } | null> {
   const scan = await scanProject(config);
   if (!scan.ok) return null;
   const finding = scan.data.findings.find((item) => item.id === findingId);
@@ -121,18 +145,18 @@ async function findStaticCandidate(config: AppConfig, findingId: string): Promis
   if (!routes.ok) return null;
   const entry = routes.data.entries.find((item) => item.file === finding.file && finding.line !== undefined && finding.line >= item.sourceRange.startLine && finding.line <= item.sourceRange.endLine);
   if (!entry) return null;
-  const adapter = SAFE_SOURCE_ADAPTERS.find((item) => item.categories.includes(finding.category)) ?? null;
+  const adapter = SAFE_SOURCE_ADAPTERS.find((item) => item.categories.includes(finding.category) && (!item.matchesFinding || item.matchesFinding(finding))) ?? null;
   return adapter ? { finding, entry, adapter } : null;
 }
 
-function proofPath(entry: AttackSurfaceEntry, adapter: typeof SAFE_SOURCE_ADAPTERS[number]): string | null {
+function proofPath(entry: AttackSurfaceEntry, adapter: SourceProofAdapter): string | null {
   if (hasUnresolvedSegment(entry.path) || entry.method !== 'GET' && entry.method !== 'ALL') return null;
   const parameter = proofParameter(entry, adapter);
   const value = encodeURIComponent(adapter.requestValue ?? adapter.marker);
   return `${entry.path}${entry.path.includes('?') ? '&' : '?'}${encodeURIComponent(parameter)}=${value}`;
 }
 
-function proofParameter(entry: AttackSurfaceEntry, adapter: typeof SAFE_SOURCE_ADAPTERS[number]): string {
+function proofParameter(entry: AttackSurfaceEntry, adapter: SourceProofAdapter): string {
   return entry.queryParameters[0]?.name ?? entry.bodyParameters[0]?.name ?? adapter.parameter;
 }
 
@@ -141,7 +165,7 @@ const DEFAULT_MAX_RESPONSE_BYTES = 200_000;
 
 function replayContractFor(
   proofCase: SecurityProofCase,
-  adapter: typeof SAFE_SOURCE_ADAPTERS[number],
+  adapter: SourceProofAdapter,
   target: RuntimeTarget,
   parameterName: string,
   inertProbeValue: string,
@@ -162,7 +186,7 @@ function replayContractFor(
     },
     sessionLabelReferences: [],
     oracleDefinition: {
-      kind: adapter.type === 'open_redirect' ? 'location_contains' : 'body_contains',
+      kind: adapter.oracleKind ?? (adapter.type === 'open_redirect' ? 'location_contains' : 'body_contains'),
       marker: adapter.marker,
       safeResult: 'not_reproduced',
     },
@@ -179,7 +203,7 @@ async function executeSafeSourceProof(config: AppConfig, request: VerifyFindingR
 async function executeSafeSourceProofCase(
   request: VerifyFindingRequest,
   proofCase: SecurityProofCase,
-  adapter: typeof SAFE_SOURCE_ADAPTERS[number],
+  adapter: SourceProofAdapter,
   persistedContract?: ProofReplayContract,
 ): Promise<{ status: SecurityReceipt['status']; proofCase: SecurityProofCase; evidence: VerificationEvidence[]; summary: string }> {
   if (!isLocalProofTarget(request.target)) return { status: 'blocked', proofCase, evidence: [], summary: 'Proof adapters only execute against localhost or loopback targets.' };
@@ -206,9 +230,12 @@ async function executeSafeSourceProofCase(
   const response = evidence[0]!.response;
   if (response.status === 0 || response.bodyTruncated || (adapter.type !== 'open_redirect' && /timed out|failed|blocked|redirect/i.test(evidence[0]!.note) && response.status >= 300)) return { status: 'blocked', proofCase, evidence, summary: evidence[0]!.note };
   const location = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'location')?.[1] ?? '';
-  const proved = adapter.type === 'open_redirect'
-    ? response.status >= 300 && response.status < 400 && location.includes(adapter.marker)
-    : response.bodySnippet.includes(adapter.marker);
+  const headerText = Object.entries(response.headers).map(([key, value]) => `${key.toLowerCase()}:${value.toLowerCase()}`).join('\n');
+  const proved = adapter.oracleKind === 'header_contains'
+    ? headerText.includes(adapter.marker.toLowerCase())
+    : adapter.type === 'open_redirect'
+      ? response.status >= 300 && response.status < 400 && location.includes(adapter.marker)
+      : response.bodySnippet.includes(adapter.marker);
   if (proved) return { status: 'verified', proofCase, evidence, summary: `${adapter.title} semantic oracle matched the fixture proof marker; HTTP status alone was not used.` };
   if (response.status >= 200 && response.status < 300) return { status: 'not_reproduced', proofCase, evidence, summary: `${adapter.title} received a response without the required semantic oracle marker.` };
   return { status: 'not_reproduced', proofCase, evidence, summary: `${adapter.title} did not produce the required semantic oracle.` };
@@ -255,7 +282,8 @@ export async function replaySecurityProof(
   originalReceipt: SecurityReceipt,
   remediationId: string
 ): Promise<ToolOutcome<SecurityReceipt>> {
-  const adapter = safeSourceAdapter(originalReceipt.proofCase.type);
+  const registered = registeredAdapter(originalReceipt.proofCase.type);
+  const adapter = registered && !('execute' in registered) ? registered : null;
   const original = receipts.get(originalReceipt.receiptId);
   if (!adapter || !original || original.status !== 'verified' || originalReceipt.status !== 'verified') return err('UNSUPPORTED_CANDIDATE_TYPE', 'Only a previously verified source proof receipt can be replayed by the proof engine.');
   if (original.findingId !== originalReceipt.findingId || original.findingId !== request.findingId || original.remediationRef !== originalReceipt.remediationRef) return err('VERIFICATION_INCONCLUSIVE', 'The replay receipt identity or remediation reference does not match the persisted original receipt.');
@@ -282,8 +310,8 @@ export async function proveSecurityFinding(config: AppConfig, request: VerifyFin
     const safe = sourceReceipt(request.findingId, execution, [`${candidate.finding.file}:${candidate.finding.line ?? 0}`, `${candidate.entry.file}:${candidate.entry.line}`], [`static:${candidate.finding.id}`, `route:${candidate.entry.id}`], null, replayContractFor(execution.proofCase, candidate.adapter, request.target, proofParameter(candidate.entry, candidate.adapter), candidate.adapter.requestValue ?? candidate.adapter.marker));
     return ok(storeReceipt(safe));
   }
-  const adapter = EXECUTABLE_ADAPTERS.find((item) => item.type === proofCase.type);
-  if (!adapter) {
+  const adapter = registeredAdapter(proofCase.type);
+  if (!adapter || !('execute' in adapter)) {
     const receipt = receiptForBlocked(request.findingId, proofCase, `No executable adapter is registered for proof type "${proofCase.type}".`);
     return ok(storeReceipt(receipt));
   }

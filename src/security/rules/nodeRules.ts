@@ -372,6 +372,40 @@ const dangerousDependencies: SecurityRule = {
   },
 };
 
+const jwtVerification = makeSearchRule(
+  ruleBase({
+    id: 'CS-NODE-016',
+    category: 'authentication',
+    title: 'JWT decoded without signature verification',
+    description: 'A request-derived token is decoded without a cryptographic verification step.',
+    severity: 'high',
+    confidence: 'medium',
+    evidenceRequirements: 'jwt.decode or equivalent is reached with request-derived token data and no visible verify call.',
+    remediation: 'Verify the signature, algorithm, issuer, audience, and expiry before trusting JWT claims.',
+    falsePositiveGuidance: 'The finding is not proof that a token is accepted; runtime proof requires the explicit invalid-token oracle.',
+    languages: ['node'],
+  }),
+  String.raw`\b(jwt\.)?decode\s*\(`,
+  (line) => hasTaintedInput(line) && !/\.verify\s*\(/.test(line)
+);
+
+const sessionCookieFlags = makeSearchRule(
+  ruleBase({
+    id: 'CS-NODE-017',
+    category: 'security_configuration',
+    title: 'Session cookie missing security flags',
+    description: 'A session cookie is configured with an explicitly unsafe flag value.',
+    severity: 'high',
+    confidence: 'high',
+    evidenceRequirements: 'Cookie configuration explicitly disables secure, httpOnly, or an equivalent same-site protection.',
+    remediation: 'Set Secure, HttpOnly, and an appropriate SameSite policy on session cookies.',
+    falsePositiveGuidance: 'Development-only cookies may be intentionally different, but production behavior requires runtime confirmation.',
+    languages: ['node'],
+  }),
+  String.raw`(cookie\s*\(|setHeader\s*\(|secure\s*:|httpOnly\s*:|sameSite\s*:)`,
+  (line) => /(secure|httpOnly|sameSite)\s*:\s*(false|['"`]?(none|lax|strict)['"`]?)|set-cookie/i.test(line) && /(secure\s*:\s*false|httpOnly\s*:\s*false|sameSite\s*:\s*['"`]?none)/i.test(line)
+);
+
 export const nodeSecurityRules: SecurityRule[] = [
   hardcodedSecrets,
   sqlNoSqlInjection,
@@ -388,4 +422,6 @@ export const nodeSecurityRules: SecurityRule[] = [
   insecureConfiguration,
   exposedConfigSecrets,
   dangerousDependencies,
+  jwtVerification,
+  sessionCookieFlags,
 ];

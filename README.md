@@ -762,12 +762,18 @@ metadata, response facts, oracle status, source references, evidence references,
 and re-verification state; available receipts are included in reports.
 
 The executable source-proof adapters currently cover path traversal, open
-redirects, SSRF, SQL injection, command injection, and reflected XSS in
-addition to the four access-control adapters. The proof tests run paired local
+redirects, SSRF, SQL injection, command injection, reflected XSS, invalid JWT
+acceptance, session-cookie attribute semantics, permissive CORS headers, and
+unsafe-deserialization fixture markers in addition to the four access-control
+adapters. All adapters are resolved from the proof registry, including IDOR;
+there is no proof-type special case. Existing proof tests run paired local
 vulnerable and secure Express fixtures, use bounded semantic markers, verify
 redirects without following external destinations, and assert receipt
 redaction. Secure fixtures without a static candidate remain explicitly
 blocked; a generic successful response is inconclusive rather than proof.
+CSRF state changes, webhook signatures, mass assignment, unrestricted uploads,
+weak password storage, and general JWT/session variants remain metadata-only
+until they have safe persisted request contracts and paired semantic fixtures.
 
 `get_security_graph` returns bounded nodes and evidence-backed edges for files,
 routes, handlers, middleware, and access-control relationships. It reports
@@ -781,7 +787,7 @@ targets.
 
     npm test
 
-runs the complete Phase 1 through Phase 10 suite. Phase 5 and Phase 6 tests cover public/authenticated/
+runs the complete Phase 1 through Phase 11 suite. Phase 5 and Phase 6 tests cover public/authenticated/
 role-protected/ownership-protected/unknown classification, IDOR and missing-
 authentication/authorization finding generation, inconsistent-authorization
 detection across sibling methods, false-positive resistance (comment/string
