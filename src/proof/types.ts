@@ -28,9 +28,11 @@ export interface ProofReplayContract {
   requestHeaders?: Record<string, string>;
   requestBody?: string | null;
   oracleDefinition: {
-    kind: 'body_contains' | 'location_contains' | 'header_contains' | 'cookie_flags_incomplete';
+    kind: 'body_contains' | 'location_contains' | 'header_contains' | 'cookie_flags_incomplete' | 'state_transition' | 'authorization_behavior';
     marker: string;
     safeResult: string;
+    statePath?: string;
+    stateField?: string;
   };
 }
 
