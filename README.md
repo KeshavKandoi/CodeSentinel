@@ -761,19 +761,20 @@ receipts rather than fabricated requests. Receipts contain redacted request
 metadata, response facts, oracle status, source references, evidence references,
 and re-verification state; available receipts are included in reports.
 
-The executable source-proof adapters currently cover path traversal, open
-redirects, SSRF, SQL injection, command injection, reflected XSS, invalid JWT
-acceptance, session-cookie attribute semantics, permissive CORS headers, and
-unsafe-deserialization fixture markers in addition to the four access-control
-adapters. All adapters are resolved from the proof registry, including IDOR;
-there is no proof-type special case. Existing proof tests run paired local
-vulnerable and secure Express fixtures, use bounded semantic markers, verify
-redirects without following external destinations, and assert receipt
-redaction. Secure fixtures without a static candidate remain explicitly
-blocked; a generic successful response is inconclusive rather than proof.
-CSRF state changes, webhook signatures, mass assignment, unrestricted uploads,
-weak password storage, and general JWT/session variants remain metadata-only
-until they have safe persisted request contracts and paired semantic fixtures.
+The executable source-proof adapters cover path traversal, open redirects, SSRF,
+SQL injection, command injection, reflected XSS, invalid JWT acceptance,
+session-cookie attributes, permissive CORS, unsafe deserialization, CSRF,
+webhook signatures, mass assignment, and bounded uploads, in addition to the
+four access-control adapters. All adapters are resolved from the proof registry,
+including IDOR; there is no proof-type special case. Phase 11 uses real paired
+local vulnerable/secure servers, fixed request contracts, deterministic semantic
+oracles, redacted receipts, and replay through the Phase 6 controls. A verified
+source receipt must be explicitly bound to the remediation before replay; a
+generic successful response is never proof.
+
+Weak password storage remains metadata-only. Static analysis cannot safely
+prove database persistence or password-hash work factor with the current
+bounded request architecture, so no runtime adapter is registered for it.
 
 `get_security_graph` returns bounded nodes and evidence-backed edges for files,
 routes, handlers, middleware, and access-control relationships. It reports
