@@ -44,7 +44,9 @@ interface SourceProofAdapter {
   requestBody?: string;
   requestHeaders?: Record<string, string>;
   sessionLabelReferences?: string[];
-  oracleKind?: 'body_contains' | 'location_contains' | 'header_contains' | 'cookie_flags_incomplete';
+  oracleKind?: 'body_contains' | 'location_contains' | 'header_contains' | 'cookie_flags_incomplete' | 'state_transition' | 'authorization_behavior';
+  statePath?: string;
+  stateField?: string;
   matchesFinding?: (finding: SecurityFinding) => boolean;
 }
 
@@ -54,7 +56,7 @@ const metadata = (type: ProofCaseType, findingId: string, method = 'GET', path =
   requestShape: { method, path, body: null, headers: [] },
   vulnerableOracle: type === 'idor_bola' ? 'A non-owner identity successfully performs a state-changing or semantically owner-specific operation.' : type === 'missing_authentication' ? 'An unauthenticated request reaches a protected resource with deterministic semantic evidence.' : type === 'missing_authorization' || type === 'authorization_inconsistency' ? 'A lower-privilege identity successfully performs the protected state-changing operation.' : 'A deterministic response/body oracle demonstrates the security property failure; status alone is insufficient.',
   safeOracle: 'An authentication/authorization rejection or an explicit safe semantic response demonstrates the control, subject to the case-specific evidence.',
-  maxRequests: type === 'idor_bola' ? 2 : 1,
+  maxRequests: ['csrf', 'webhook_signature', 'mass_assignment', 'unrestricted_upload'].includes(type) ? 3 : type === 'idor_bola' ? 2 : 1,
   allowedMethods: type === 'idor_bola' || type === 'missing_authorization' ? ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] : ['GET', 'HEAD', 'OPTIONS'],
   requiredFixtureData: ['A disposable local fixture with known routes and deterministic expected behavior.'],
   evidenceCaptured: ['Bounded request metadata', 'Redacted response facts', 'Deterministic oracle result', 'Source and route references'],
@@ -78,14 +80,14 @@ const SAFE_SOURCE_ADAPTERS: SourceProofAdapter[] = [
   { type: 'sql_injection', categories: ['injection'], marker: 'CODESENTINEL_PROOF_SQLI_SENTINEL', parameter: 'query', title: 'SQL injection proof', notes: 'Requires a local fixture-controlled semantic marker, never a generic SQL error.' },
   { type: 'command_injection', categories: ['command_injection'], marker: 'CODESENTINEL_PROOF_COMMAND_SENTINEL', parameter: 'command', title: 'Command injection proof', notes: 'Requires a local fixture-controlled marker; CodeSentinel never executes the supplied value.' },
   { type: 'xss_reflected', categories: ['xss'], marker: 'CODESENTINEL_PROOF_XSS_SENTINEL', parameter: 'q', title: 'Reflected XSS proof', notes: 'Verifies exact unencoded reflection of a unique inert marker, not script execution.' },
-  { type: 'jwt_verification', categories: ['authentication'], marker: 'CODESENTINEL_PROOF_JWT_ACCEPTED', requestValue: 'codesentinel-invalid-jwt', parameter: 'token', title: 'JWT verification proof', notes: 'Uses a deterministic invalid token and only accepts an explicit fixture oracle; it never treats a generic 2xx as proof.', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-016' },
+  { type: 'jwt_verification', categories: ['authentication'], marker: 'invalid-signature-authorization', requestValue: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjb2Rlc2VudGluZWwifQ.invalid-signature', parameter: 'token', title: 'JWT verification proof', notes: 'Uses a deterministic invalid signature token and verifies the protected authorization behavior; decoded claims and markers are never treated as proof.', oracleKind: 'authorization_behavior', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-016' },
   { type: 'session_cookie_flags', categories: ['security_configuration'], marker: 'httponly,samesite,secure', parameter: 'probe', title: 'Session cookie flags proof', notes: 'Inspects only a redacted cookie-attribute summary; cookie names and values are never retained.', oracleKind: 'cookie_flags_incomplete', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-017' },
   { type: 'permissive_cors', categories: ['cors'], marker: 'access-control-allow-origin:*', parameter: 'origin', title: 'Permissive CORS proof', notes: 'Requires the actual response header to allow every origin; status alone is insufficient.', oracleKind: 'header_contains' },
   { type: 'insecure_deserialization', categories: ['deserialization'], marker: 'CODESENTINEL_PROOF_DESERIALIZED', parameter: 'payload', title: 'Insecure deserialization proof', notes: 'Requires an explicit local semantic marker and never executes the supplied payload in CodeSentinel.', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-011' },
-  { type: 'csrf', categories: ['csrf'], marker: 'CODESENTINEL_PROOF_CSRF_ACCEPTED', parameter: 'probe', title: 'CSRF proof', notes: 'Sends one inert state-changing request to an explicitly vetted local fixture endpoint; the response must prove the state change.', method: 'POST', requestBody: 'amount=1&destination=codesentinel-inert', requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' }, matchesFinding: (finding) => finding.ruleId === 'CS-NODE-018' },
-  { type: 'webhook_signature', categories: ['webhook_signature'], marker: 'CODESENTINEL_PROOF_WEBHOOK_ACCEPTED', parameter: 'probe', title: 'Webhook signature proof', notes: 'Sends a fixed invalid signature and bounded body; only explicit acceptance proves the missing-signature control.', method: 'POST', requestBody: '{"event":"codesentinel-inert"}', requestHeaders: { 'content-type': 'application/json', 'x-codesentinel-signature': 'invalid-codesentinel-signature' }, matchesFinding: (finding) => finding.ruleId === 'CS-NODE-019' },
-  { type: 'mass_assignment', categories: ['mass_assignment'], marker: 'CODESENTINEL_PROOF_ADMIN_ASSIGNED', parameter: 'probe', title: 'Mass-assignment proof', notes: 'Submits one inert profile update containing a forbidden role field; the oracle requires the server to report that role was applied.', method: 'POST', requestBody: 'displayName=CodeSentinel&role=admin', requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' }, matchesFinding: (finding) => finding.ruleId === 'CS-NODE-020' },
-  { type: 'unrestricted_upload', categories: ['file_upload'], marker: 'CODESENTINEL_PROOF_UPLOAD_ACCEPTED', parameter: 'probe', title: 'Unrestricted upload proof', notes: 'Uploads a bounded inert text payload to a vetted local endpoint; no executable content or persistent external target is used.', method: 'POST', requestBody: 'codesentinel-inert-upload', requestHeaders: { 'content-type': 'text/plain', 'x-codesentinel-filename': 'codesentinel.txt' }, matchesFinding: (finding) => finding.ruleId === 'CS-NODE-010' },
+  { type: 'csrf', categories: ['csrf'], marker: 'state-change', parameter: 'probe', title: 'CSRF proof', notes: 'Compares bounded authenticated fixture state before and after a cross-site-style state-changing request.', method: 'POST', requestBody: 'amount=1&destination=codesentinel-inert', requestHeaders: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://cross-site.invalid', 'x-codesentinel-auth': 'fixture-user' }, oracleKind: 'state_transition', statePath: '/transfer-state', stateField: 'transfers', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-018' },
+  { type: 'webhook_signature', categories: ['webhook_signature'], marker: 'event-counter', parameter: 'probe', title: 'Webhook signature proof', notes: 'Compares the bounded processed-event counter before and after an invalid-signature event.', method: 'POST', requestBody: '{"event":"codesentinel-inert"}', requestHeaders: { 'content-type': 'application/json', 'x-codesentinel-signature': 'invalid-codesentinel-signature' }, oracleKind: 'state_transition', statePath: '/webhook-state', stateField: 'processed', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-019' },
+  { type: 'mass_assignment', categories: ['mass_assignment'], marker: 'protected-role', parameter: 'probe', title: 'Mass-assignment proof', notes: 'Reads bounded profile state and verifies whether an attacker-controlled role actually changes.', method: 'POST', requestBody: 'displayName=CodeSentinel&role=admin', requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' }, oracleKind: 'state_transition', statePath: '/profile-state', stateField: 'role', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-020' },
+  { type: 'unrestricted_upload', categories: ['file_upload'], marker: 'stored-file-metadata', parameter: 'probe', title: 'Unrestricted upload proof', notes: 'Performs a bounded multipart upload of inert text named with a disallowed HTML extension and inspects safe stored metadata only.', method: 'POST', requestBody: '--codesentinel-boundary\r\nContent-Disposition: form-data; name="file"; filename="codesentinel.html"\r\nContent-Type: text/plain\r\n\r\ncodesentinel inert upload\r\n--codesentinel-boundary--\r\n', requestHeaders: { 'content-type': 'multipart/form-data; boundary=codesentinel-boundary' }, oracleKind: 'state_transition', statePath: '/upload-state', stateField: 'files', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-010' },
 ];
 
 function safeSourceAdapter(type: ProofCaseType): typeof SAFE_SOURCE_ADAPTERS[number] | null {
@@ -210,6 +212,8 @@ function replayContractFor(
       kind: adapter.oracleKind ?? (adapter.type === 'open_redirect' ? 'location_contains' : 'body_contains'),
       marker: adapter.marker,
       safeResult: 'not_reproduced',
+      ...(adapter.statePath ? { statePath: adapter.statePath } : {}),
+      ...(adapter.stateField ? { stateField: adapter.stateField } : {}),
     },
   };
 }
@@ -253,20 +257,47 @@ async function executeSafeSourceProofCase(
   const path = contract.method === 'GET'
     ? `${contract.relativeRoute}${contract.relativeRoute.includes('?') ? '&' : '?'}${encodeURIComponent(contract.parameterName)}=${encodeURIComponent(contract.inertProbeValue)}`
     : contract.relativeRoute;
-  const evidence = [await issueRuntimeRequest(replayTarget, buildSessionMap(request.sessions ?? []), { method: contract.method as 'GET' | 'POST', path, headers: contract.requestHeaders, body: contract.requestBody ?? undefined, sessionId: contract.sessionLabelReferences[0] ?? null }, new RuntimeClientState(replayTarget))];
-  const response = evidence[0]!.response;
-  if (response.status === 0 || response.bodyTruncated || (adapter.type !== 'open_redirect' && /timed out|failed|blocked|redirect/i.test(evidence[0]!.note) && response.status >= 300)) return { status: 'blocked', proofCase, evidence, summary: evidence[0]!.note };
+  const sessions = buildSessionMap(request.sessions ?? []);
+  const state = new RuntimeClientState(replayTarget);
+  const evidence: VerificationEvidence[] = [];
+  const boundedState = async (statePath: string): Promise<Record<string, unknown> | null> => {
+    const item = await issueRuntimeRequest(replayTarget, sessions, { method: 'GET', path: statePath, sessionId: null }, state);
+    evidence.push(item);
+    if (item.response.status !== 200 || item.response.bodyTruncated) return null;
+    try {
+      const parsed = JSON.parse(item.response.bodySnippet) as Record<string, unknown>;
+      return Object.fromEntries(Object.entries(parsed).slice(0, 8));
+    } catch { return null; }
+  };
+  const before = adapter.oracleKind === 'state_transition' && adapter.statePath ? await boundedState(adapter.statePath) : null;
+  const mutation = await issueRuntimeRequest(replayTarget, sessions, { method: contract.method as 'GET' | 'POST', path, headers: contract.requestHeaders, body: contract.requestBody ?? undefined, sessionId: contract.sessionLabelReferences[0] ?? null }, state);
+  evidence.push(mutation);
+  const response = mutation.response;
+  if (response.status === 0 || response.bodyTruncated || /timed out|failed|blocked|redirect/i.test(mutation.note) && response.status >= 300) return { status: 'blocked', proofCase, evidence, summary: mutation.note };
+  const after = adapter.oracleKind === 'state_transition' && adapter.statePath ? await boundedState(adapter.statePath) : null;
+  if (adapter.oracleKind === 'state_transition' && (!before || !after || !adapter.stateField)) return { status: 'blocked', proofCase, evidence, summary: 'The bounded fixture state oracle could not be read safely before and after the mutation.' };
   const location = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'location')?.[1] ?? '';
   const headerText = Object.entries(response.headers).map(([key, value]) => `${key.toLowerCase()}:${value.toLowerCase()}`).join('\n');
   const cookieSummary = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'set-cookie')?.[1].toLowerCase() ?? '';
-  const proved = adapter.oracleKind === 'cookie_flags_incomplete'
+  const fieldBefore = adapter.stateField && before ? before[adapter.stateField] : undefined;
+  const fieldAfter = adapter.stateField && after ? after[adapter.stateField] : undefined;
+  const stateChanged = adapter.type === 'mass_assignment'
+    ? fieldBefore === 'user' && fieldAfter === 'admin'
+    : adapter.type === 'unrestricted_upload'
+      ? Array.isArray(fieldBefore) && Array.isArray(fieldAfter) && fieldAfter.length === fieldBefore.length + 1 && JSON.stringify(fieldAfter).includes('codesentinel.html')
+      : typeof fieldBefore === 'number' && typeof fieldAfter === 'number' && fieldAfter === fieldBefore + 1;
+  const proved = adapter.oracleKind === 'state_transition'
+    ? stateChanged
+    : adapter.oracleKind === 'authorization_behavior'
+      ? response.status >= 200 && response.status < 300
+      : adapter.oracleKind === 'cookie_flags_incomplete'
     ? cookieSummary.length > 0 && !['httponly', 'samesite', 'secure'].every((flag) => cookieSummary.includes(flag))
     : adapter.oracleKind === 'header_contains'
     ? headerText.includes(adapter.marker.toLowerCase())
     : adapter.type === 'open_redirect'
       ? response.status >= 300 && response.status < 400 && location.includes(adapter.marker)
       : response.bodySnippet.includes(adapter.marker);
-  if (proved) return { status: 'verified', proofCase, evidence, summary: `${adapter.title} semantic oracle matched the fixture proof marker; HTTP status alone was not used.` };
+  if (proved) return { status: 'verified', proofCase, evidence, summary: `${adapter.title} genuine local behavioral/state oracle demonstrated the vulnerable behavior.` };
   if (response.status >= 200 && response.status < 300) return { status: 'not_reproduced', proofCase, evidence, summary: `${adapter.title} received a response without the required semantic oracle marker.` };
   return { status: 'not_reproduced', proofCase, evidence, summary: `${adapter.title} did not produce the required semantic oracle.` };
 }
