@@ -21,10 +21,14 @@ export interface ProofReplayContract {
     requestTimeoutMs: number;
     maxResponseBytes: number;
     maxRedirects: 0;
+    allowDestructiveMethods: boolean;
+    vettedTestPath: string | null;
   };
   sessionLabelReferences: string[];
+  requestHeaders?: Record<string, string>;
+  requestBody?: string | null;
   oracleDefinition: {
-    kind: 'body_contains' | 'location_contains' | 'header_contains';
+    kind: 'body_contains' | 'location_contains' | 'header_contains' | 'cookie_flags_incomplete';
     marker: string;
     safeResult: string;
   };

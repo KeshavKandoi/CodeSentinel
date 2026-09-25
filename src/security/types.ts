@@ -19,7 +19,11 @@ export type SecurityCategory =
   | 'deserialization'
   | 'security_configuration'
   | 'configuration_secrets'
-  | 'dependency_risk';
+  | 'dependency_risk'
+  | 'csrf'
+  | 'webhook_signature'
+  | 'mass_assignment'
+  | 'weak_password_storage';
 export type SecurityFindingStatus = 'suspected' | 'confirmed' | 'false_positive' | 'verified';
 export type VerificationStatus = 'not_verified' | 'statically_verified' | 'manually_verified' | 'not_applicable';
 

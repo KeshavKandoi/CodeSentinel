@@ -40,7 +40,11 @@ interface SourceProofAdapter {
   parameter: string;
   title: string;
   notes: string;
-  oracleKind?: 'body_contains' | 'location_contains' | 'header_contains';
+  method?: 'GET' | 'POST';
+  requestBody?: string;
+  requestHeaders?: Record<string, string>;
+  sessionLabelReferences?: string[];
+  oracleKind?: 'body_contains' | 'location_contains' | 'header_contains' | 'cookie_flags_incomplete';
   matchesFinding?: (finding: SecurityFinding) => boolean;
 }
 
@@ -75,9 +79,13 @@ const SAFE_SOURCE_ADAPTERS: SourceProofAdapter[] = [
   { type: 'command_injection', categories: ['command_injection'], marker: 'CODESENTINEL_PROOF_COMMAND_SENTINEL', parameter: 'command', title: 'Command injection proof', notes: 'Requires a local fixture-controlled marker; CodeSentinel never executes the supplied value.' },
   { type: 'xss_reflected', categories: ['xss'], marker: 'CODESENTINEL_PROOF_XSS_SENTINEL', parameter: 'q', title: 'Reflected XSS proof', notes: 'Verifies exact unencoded reflection of a unique inert marker, not script execution.' },
   { type: 'jwt_verification', categories: ['authentication'], marker: 'CODESENTINEL_PROOF_JWT_ACCEPTED', requestValue: 'codesentinel-invalid-jwt', parameter: 'token', title: 'JWT verification proof', notes: 'Uses a deterministic invalid token and only accepts an explicit fixture oracle; it never treats a generic 2xx as proof.', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-016' },
-  { type: 'session_cookie_flags', categories: ['security_configuration'], marker: 'secure,httponly,samesite', parameter: 'probe', title: 'Session cookie flags proof', notes: 'Inspects only a redacted cookie-attribute summary; cookie names and values are never retained.', oracleKind: 'header_contains', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-017' },
+  { type: 'session_cookie_flags', categories: ['security_configuration'], marker: 'httponly,samesite,secure', parameter: 'probe', title: 'Session cookie flags proof', notes: 'Inspects only a redacted cookie-attribute summary; cookie names and values are never retained.', oracleKind: 'cookie_flags_incomplete', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-017' },
   { type: 'permissive_cors', categories: ['cors'], marker: 'access-control-allow-origin:*', parameter: 'origin', title: 'Permissive CORS proof', notes: 'Requires the actual response header to allow every origin; status alone is insufficient.', oracleKind: 'header_contains' },
   { type: 'insecure_deserialization', categories: ['deserialization'], marker: 'CODESENTINEL_PROOF_DESERIALIZED', parameter: 'payload', title: 'Insecure deserialization proof', notes: 'Requires an explicit local semantic marker and never executes the supplied payload in CodeSentinel.', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-011' },
+  { type: 'csrf', categories: ['csrf'], marker: 'CODESENTINEL_PROOF_CSRF_ACCEPTED', parameter: 'probe', title: 'CSRF proof', notes: 'Sends one inert state-changing request to an explicitly vetted local fixture endpoint; the response must prove the state change.', method: 'POST', requestBody: 'amount=1&destination=codesentinel-inert', requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' }, matchesFinding: (finding) => finding.ruleId === 'CS-NODE-018' },
+  { type: 'webhook_signature', categories: ['webhook_signature'], marker: 'CODESENTINEL_PROOF_WEBHOOK_ACCEPTED', parameter: 'probe', title: 'Webhook signature proof', notes: 'Sends a fixed invalid signature and bounded body; only explicit acceptance proves the missing-signature control.', method: 'POST', requestBody: '{"event":"codesentinel-inert"}', requestHeaders: { 'content-type': 'application/json', 'x-codesentinel-signature': 'invalid-codesentinel-signature' }, matchesFinding: (finding) => finding.ruleId === 'CS-NODE-019' },
+  { type: 'mass_assignment', categories: ['mass_assignment'], marker: 'CODESENTINEL_PROOF_ADMIN_ASSIGNED', parameter: 'probe', title: 'Mass-assignment proof', notes: 'Submits one inert profile update containing a forbidden role field; the oracle requires the server to report that role was applied.', method: 'POST', requestBody: 'displayName=CodeSentinel&role=admin', requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' }, matchesFinding: (finding) => finding.ruleId === 'CS-NODE-020' },
+  { type: 'unrestricted_upload', categories: ['file_upload'], marker: 'CODESENTINEL_PROOF_UPLOAD_ACCEPTED', parameter: 'probe', title: 'Unrestricted upload proof', notes: 'Uploads a bounded inert text payload to a vetted local endpoint; no executable content or persistent external target is used.', method: 'POST', requestBody: 'codesentinel-inert-upload', requestHeaders: { 'content-type': 'text/plain', 'x-codesentinel-filename': 'codesentinel.txt' }, matchesFinding: (finding) => finding.ruleId === 'CS-NODE-010' },
 ];
 
 function safeSourceAdapter(type: ProofCaseType): typeof SAFE_SOURCE_ADAPTERS[number] | null {
@@ -134,6 +142,15 @@ export function listSecurityReceiptsForFinding(findingId: string): SecurityRecei
   return [...receipts.values()].filter((receipt) => receipt.findingId === findingId).map((receipt) => detachedRedacted(receipt));
 }
 
+export function linkSecurityReceiptToRemediation(findingId: string, receiptId: string, remediationId: string): ToolOutcome<SecurityReceipt> {
+  const receipt = receipts.get(receiptId);
+  if (!receipt || receipt.findingId !== findingId || receipt.status !== 'verified') return err('VERIFICATION_INCONCLUSIVE', 'A verified original receipt is required before it can be bound to remediation.');
+  if (receipt.remediationRef && receipt.remediationRef !== remediationId) return err('VERIFICATION_INCONCLUSIVE', 'The original receipt is already bound to a different remediation.');
+  const linked = detachedRedacted({ ...receipt, remediationRef: remediationId });
+  receipts.set(receiptId, linked);
+  return ok(detachedRedacted(linked));
+}
+
 export function resetSecurityProofsForTests(): void { receipts.clear(); }
 
 async function findStaticCandidate(config: AppConfig, findingId: string): Promise<{ finding: SecurityFinding; entry: AttackSurfaceEntry; adapter: SourceProofAdapter } | null> {
@@ -183,8 +200,12 @@ function replayContractFor(
       requestTimeoutMs: target.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS,
       maxResponseBytes: target.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
       maxRedirects: 0,
+      allowDestructiveMethods: target.allowDestructiveMethods === true,
+      vettedTestPath: target.vettedTestPaths?.includes(proofCase.requestShape.path) ? proofCase.requestShape.path : null,
     },
     sessionLabelReferences: [],
+    requestHeaders: adapter.requestHeaders,
+    requestBody: adapter.requestBody ?? null,
     oracleDefinition: {
       kind: adapter.oracleKind ?? (adapter.type === 'open_redirect' ? 'location_contains' : 'body_contains'),
       marker: adapter.marker,
@@ -196,7 +217,10 @@ function replayContractFor(
 async function executeSafeSourceProof(config: AppConfig, request: VerifyFindingRequest, candidate: Awaited<ReturnType<typeof findStaticCandidate>>): Promise<{ status: SecurityReceipt['status']; proofCase: SecurityProofCase; evidence: VerificationEvidence[]; summary: string }> {
   if (!candidate) throw new Error('unsupported proof candidate');
   const { finding, entry, adapter } = candidate;
-  const proofCase = metadata(adapter.type, finding.id, 'GET', entry.path, true, adapter.notes);
+  const method = adapter.method ?? 'GET';
+  const proofCase = metadata(adapter.type, finding.id, method, entry.path, true, adapter.notes);
+  proofCase.requestShape.body = adapter.requestBody ?? null;
+  proofCase.requestShape.headers = Object.keys(adapter.requestHeaders ?? {});
   return executeSafeSourceProofCase(request, proofCase, adapter, replayContractFor(proofCase, adapter, request.target, proofParameter(entry, adapter), adapter.requestValue ?? adapter.marker));
 }
 
@@ -215,23 +239,29 @@ async function executeSafeSourceProofCase(
   if (contract.proofType !== proofCase.type || contract.method !== proofCase.requestShape.method || contract.relativeRoute !== proofCase.requestShape.path || contract.parameterName.length === 0 || contract.inertProbeValue.length === 0) {
     return { status: 'blocked', proofCase, evidence: [], summary: 'The persisted replay contract does not match the original proof case.' };
   }
-  if (contract.method !== 'GET' || hasUnresolvedSegment(contract.relativeRoute) || !contract.relativeRoute.startsWith('/') || contract.relativeRoute.includes('://')) {
-    return { status: 'blocked', proofCase, evidence: [], summary: 'The persisted replay contract is not a concrete safe GET proof target.' };
+  if (!['GET', 'POST'].includes(contract.method) || hasUnresolvedSegment(contract.relativeRoute) || !contract.relativeRoute.startsWith('/') || contract.relativeRoute.includes('://')) {
+    return { status: 'blocked', proofCase, evidence: [], summary: 'The persisted replay contract is not a concrete bounded proof target.' };
   }
   const requestMaxRequests = Math.min(request.target.maxRequestsPerCase ?? 12, proofCase.maxRequests);
   const requestTimeout = request.target.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const requestMaxResponse = request.target.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
-  if (contract.targetConstraints.allowedOrigin !== request.target.allowedOrigin || contract.targetConstraints.loopbackOnly !== isLocalProofTarget(request.target) || contract.targetConstraints.maxRequestsPerCase !== requestMaxRequests || contract.targetConstraints.requestTimeoutMs !== requestTimeout || contract.targetConstraints.maxResponseBytes !== requestMaxResponse) {
+  const requestedVettedPath = request.target.vettedTestPaths?.includes(contract.relativeRoute) ? contract.relativeRoute : null;
+  if (contract.targetConstraints.allowedOrigin !== request.target.allowedOrigin || contract.targetConstraints.loopbackOnly !== isLocalProofTarget(request.target) || contract.targetConstraints.maxRequestsPerCase !== requestMaxRequests || contract.targetConstraints.requestTimeoutMs !== requestTimeout || contract.targetConstraints.maxResponseBytes !== requestMaxResponse || contract.targetConstraints.allowDestructiveMethods !== (request.target.allowDestructiveMethods === true) || contract.targetConstraints.vettedTestPath !== requestedVettedPath) {
     return { status: 'blocked', proofCase, evidence: [], summary: 'Replay target does not match the original proof target constraints.' };
   }
   const replayTarget: RuntimeTarget = { ...request.target, maxRequestsPerCase: contract.targetConstraints.maxRequestsPerCase, requestTimeoutMs: contract.targetConstraints.requestTimeoutMs, maxResponseBytes: contract.targetConstraints.maxResponseBytes, maxRedirects: 0 };
-  const path = `${contract.relativeRoute}${contract.relativeRoute.includes('?') ? '&' : '?'}${encodeURIComponent(contract.parameterName)}=${encodeURIComponent(contract.inertProbeValue)}`;
-  const evidence = [await issueRuntimeRequest(replayTarget, buildSessionMap(request.sessions ?? []), { method: contract.method as 'GET', path, sessionId: contract.sessionLabelReferences[0] ?? null }, new RuntimeClientState(replayTarget))];
+  const path = contract.method === 'GET'
+    ? `${contract.relativeRoute}${contract.relativeRoute.includes('?') ? '&' : '?'}${encodeURIComponent(contract.parameterName)}=${encodeURIComponent(contract.inertProbeValue)}`
+    : contract.relativeRoute;
+  const evidence = [await issueRuntimeRequest(replayTarget, buildSessionMap(request.sessions ?? []), { method: contract.method as 'GET' | 'POST', path, headers: contract.requestHeaders, body: contract.requestBody ?? undefined, sessionId: contract.sessionLabelReferences[0] ?? null }, new RuntimeClientState(replayTarget))];
   const response = evidence[0]!.response;
   if (response.status === 0 || response.bodyTruncated || (adapter.type !== 'open_redirect' && /timed out|failed|blocked|redirect/i.test(evidence[0]!.note) && response.status >= 300)) return { status: 'blocked', proofCase, evidence, summary: evidence[0]!.note };
   const location = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'location')?.[1] ?? '';
   const headerText = Object.entries(response.headers).map(([key, value]) => `${key.toLowerCase()}:${value.toLowerCase()}`).join('\n');
-  const proved = adapter.oracleKind === 'header_contains'
+  const cookieSummary = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'set-cookie')?.[1].toLowerCase() ?? '';
+  const proved = adapter.oracleKind === 'cookie_flags_incomplete'
+    ? cookieSummary.length > 0 && !['httponly', 'samesite', 'secure'].every((flag) => cookieSummary.includes(flag))
+    : adapter.oracleKind === 'header_contains'
     ? headerText.includes(adapter.marker.toLowerCase())
     : adapter.type === 'open_redirect'
       ? response.status >= 300 && response.status < 400 && location.includes(adapter.marker)
@@ -286,8 +316,7 @@ export async function replaySecurityProof(
   const adapter = registered && !('execute' in registered) ? registered : null;
   const original = receipts.get(originalReceipt.receiptId);
   if (!adapter || !original || original.status !== 'verified' || originalReceipt.status !== 'verified') return err('UNSUPPORTED_CANDIDATE_TYPE', 'Only a previously verified source proof receipt can be replayed by the proof engine.');
-  if (original.findingId !== originalReceipt.findingId || original.findingId !== request.findingId || original.remediationRef !== originalReceipt.remediationRef) return err('VERIFICATION_INCONCLUSIVE', 'The replay receipt identity or remediation reference does not match the persisted original receipt.');
-  if (original.remediationRef && original.remediationRef !== remediationId) return err('VERIFICATION_INCONCLUSIVE', 'The original proof receipt is already linked to a different remediation.');
+  if (original.findingId !== originalReceipt.findingId || original.findingId !== request.findingId || original.remediationRef !== originalReceipt.remediationRef || original.remediationRef !== remediationId) return err('VERIFICATION_INCONCLUSIVE', 'The replay requires a verified original receipt already bound to this remediation.');
   if (!original.replayContract || JSON.stringify(original.replayContract) !== JSON.stringify(originalReceipt.replayContract)) return err('VERIFICATION_INCONCLUSIVE', 'The supplied original receipt replay contract does not match the persisted contract.');
   const execution = await executeSafeSourceProofCase(request, original.proofCase, adapter, original.replayContract);
   const replay = sourceReceipt(request.findingId, execution, original.sourceRefs, [...original.evidenceRefs, `remediation:${remediationId}`], remediationId, original.replayContract, original.receiptId, { beforeStatus: original.status, afterStatus: execution.status });

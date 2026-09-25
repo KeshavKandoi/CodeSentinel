@@ -406,6 +406,54 @@ const sessionCookieFlags = makeSearchRule(
   (line) => /(secure|httpOnly|sameSite)\s*:\s*(false|['"`]?(none|lax|strict)['"`]?)|set-cookie/i.test(line) && /(secure\s*:\s*false|httpOnly\s*:\s*false|sameSite\s*:\s*['"`]?none)/i.test(line)
 );
 
+const csrf = makeSearchRule(
+  ruleBase({
+    id: 'CS-NODE-018', category: 'csrf', title: 'State-changing route lacks CSRF protection',
+    description: 'A state-changing route consumes request data without a visible CSRF token or middleware.', severity: 'high', confidence: 'low',
+    evidenceRequirements: 'POST/PUT/PATCH route uses request data and has no visible CSRF token or protection middleware.',
+    remediation: 'Require a server-validated CSRF token or equivalent same-site request integrity control.',
+    falsePositiveGuidance: 'Token validation in global middleware or a signed API-only authentication scheme may not be visible to this heuristic.', languages: ['node'],
+  }),
+  String.raw`\b(?:app|router)\.(post|put|patch)\s*\(`,
+  (line) => /req\.(body|query|params)/.test(line) && !/(webhook|upload|profile|xsrf|sameSite|origin|referer)/i.test(line),
+);
+
+const webhookSignature = makeSearchRule(
+  ruleBase({
+    id: 'CS-NODE-019', category: 'webhook_signature', title: 'Webhook handler lacks signature validation',
+    description: 'A webhook-shaped route consumes a request body without a visible signature check.', severity: 'high', confidence: 'medium',
+    evidenceRequirements: 'Webhook route reads request body without a visible signature header or verification call.',
+    remediation: 'Verify the provider signature over the raw body before processing the event.',
+    falsePositiveGuidance: 'Verification performed by upstream middleware or a framework adapter may not appear on the route line.', languages: ['node'],
+  }),
+  String.raw`\b(?:app|router)\.post\s*\(`,
+  (line) => /webhook/i.test(line) && /req\.body/.test(line) && !/(signature|hmac|x-signature|webhooksecret)/i.test(line),
+);
+
+const massAssignment = makeSearchRule(
+  ruleBase({
+    id: 'CS-NODE-020', category: 'mass_assignment', title: 'Mass assignment from request object',
+    description: 'A model mutation appears to accept the request body wholesale, including fields that may control privilege.', severity: 'high', confidence: 'medium',
+    evidenceRequirements: 'Create/update/assign sink receives req.body without an explicit field allowlist.',
+    remediation: 'Copy only explicitly permitted fields and reject role/ownership fields from untrusted input.',
+    falsePositiveGuidance: 'A schema or DTO allowlist outside the matched line may make this heuristic a false positive.', languages: ['node'],
+  }),
+  String.raw`(Object\.assign|\.create\s*\(|\.update\s*\(|\.save\s*\()`,
+  (line) => /req\.body/.test(line) && /(Object\.assign|\.create\s*\(|\.update\s*\(|\.save\s*\()/i.test(line),
+);
+
+const weakPasswordStorage = makeSearchRule(
+  ruleBase({
+    id: 'CS-NODE-021', category: 'weak_password_storage', title: 'Weak password storage indicator',
+    description: 'A password appears to be stored or transformed with plaintext, reversible, or obsolete hashing behavior.', severity: 'critical', confidence: 'low',
+    evidenceRequirements: 'Password value is assigned directly or passed to a weak digest primitive.',
+    remediation: 'Use a memory-hard password hashing scheme such as Argon2id or a carefully configured bcrypt implementation.',
+    falsePositiveGuidance: 'Static matching cannot establish database persistence or effective work factor; runtime proof is intentionally unsupported.', languages: ['node'],
+  }),
+  String.raw`(password\s*[:=]|md5\s*\(|sha1\s*\(|createHash\s*\(['"]md5)`,
+  (line) => /password\s*[:=]\s*(?:req\.|['"`])|\b(?:md5|sha1)\s*\(/i.test(line),
+);
+
 export const nodeSecurityRules: SecurityRule[] = [
   hardcodedSecrets,
   sqlNoSqlInjection,
@@ -424,4 +472,8 @@ export const nodeSecurityRules: SecurityRule[] = [
   dangerousDependencies,
   jwtVerification,
   sessionCookieFlags,
+  csrf,
+  webhookSignature,
+  massAssignment,
+  weakPasswordStorage,
 ];

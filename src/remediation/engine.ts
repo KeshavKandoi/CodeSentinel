@@ -10,7 +10,7 @@ import type { InvestigationFinding, SecurityInvestigation } from '../investigati
 import type { ProposeRemediationInput } from '../validation/schemas.js';
 import type { RemediationFileChange, RemediationLifecycle, RemediationProposal, RemediationRecord, RemediationSnapshot, RemediationVerification } from './types.js';
 import { verifyFinding } from '../runtime/engine.js';
-import { listSecurityReceiptsForFinding, replaySecurityProof } from '../proof/engine.js';
+import { linkSecurityReceiptToRemediation, listSecurityReceiptsForFinding, replaySecurityProof } from '../proof/engine.js';
 
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_TOTAL_BYTES = 2_000_000;
@@ -172,6 +172,11 @@ export async function applyRemediation(config: AppConfig, remediationId: string)
       return err('INTERNAL_ERROR', canRestore ? 'Post-commit integrity verification failed; the snapshot was restored.' : 'Post-commit integrity verification failed and rollback was blocked by an external change.');
     }
     record.status = 'applied_pending_verification'; record.updatedAt = now();
+    const appliedFinding = findingFor(investigation.data, record.proposal.findingId);
+    if (record.proposal.requiresRuntimeVerification && appliedFinding?.origin === 'security_scan') {
+      const originalReceipt = listSecurityReceiptsForFinding(record.proposal.findingId).find((receipt) => receipt.status === 'verified');
+      if (originalReceipt) linkSecurityReceiptToRemediation(record.proposal.findingId, originalReceipt.receiptId, remediationId);
+    }
     record.updatedAt = now();
     return ok(safeRecord(record));
   });
