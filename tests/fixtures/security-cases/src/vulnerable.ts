@@ -62,6 +62,13 @@ app.get('/jwt', (req, res) => {
   res.send('ok');
 });
 
+app.post('/transfer', (req, res) => { const amount = req.body.amount; res.send(String(amount)); });
+app.post('/webhook', (req, res) => { const event = req.body; res.json(event); });
+app.post('/profile-update', (req, res) => User.update(req.body).then(() => res.send('ok')));
+app.get('/decoded-token', (req, res) => res.json(jwt.decode(req.query.token)));
+app.get('/session-cookie', (req, res) => res.cookie('session', 'fixture-secret', { secure: false, httpOnly: false, sameSite: 'none' }).send('ok'));
+const storedPassword = req.body.password;
+
 app.get('/jwt-unsafe', (req, res) => {
   const claims = jwt.decode(req.query.token);
   res.json(claims);

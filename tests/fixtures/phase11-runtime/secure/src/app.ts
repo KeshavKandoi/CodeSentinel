@@ -1,0 +1,10 @@
+import express from 'express';
+const app = express();
+app.post('/transfer', requireCsrf, (req, res) => res.status(403).send('csrf token required'));
+app.post('/webhook', verifySignature, (req, res) => res.send('processed'));
+app.post('/profile', (req, res) => res.send('role ignored'));
+app.post('/upload', upload.single('file'), (req, res) => res.status(415).send('file type rejected'));
+app.get('/jwt', (req, res) => res.status(401).send('invalid token'));
+app.get('/session-cookie', (req, res) => res.cookie('session', 'fixture-secret', { secure: true, httpOnly: true, sameSite: 'lax' }).send('ok'));
+app.get('/cors', (req, res) => { res.setHeader('Access-Control-Allow-Origin', 'https://app.example'); res.send('ok'); });
+export default app;
