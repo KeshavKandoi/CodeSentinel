@@ -5,7 +5,7 @@ import { redactReportValue } from '../report/redaction.js';
 import { redactSecurityText } from '../security/utils.js';
 import { hasUnresolvedSegment } from '../runtime/cases/common.js';
 import type { SecurityFinding } from '../security/types.js';
-import { AUDIT_STAGES, type AuditFinding, type AuditStage, type Confidence, type FindingSource, type Severity } from './types.js';
+import { AUDIT_STAGES, type AuditFinding, type AuditStage, type Confidence, type FindingCorrelation, type FindingSource, type Severity } from './types.js';
 
 export const SEVERITY_RANK: Record<Severity, number> = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
 const CONFIDENCE_RANK: Record<Confidence, number> = { low: 0, medium: 1, high: 2 };
@@ -70,6 +70,9 @@ export function stagesOf(sources: FindingSource[]): AuditStage[] {
 }
 
 export function compareFindings(a: AuditFinding, b: AuditFinding): number {
+  const aScore = a.riskScore ?? 0;
+  const bScore = b.riskScore ?? 0;
+  if (aScore !== bScore) return bScore - aScore;
   return SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.id.localeCompare(b.id);
 }
 
@@ -163,10 +166,32 @@ export function fromDeepFinding(finding: IntelligenceFinding, evidenceById: Map<
   });
 }
 
+function buildCorrelationReason(origins: Set<string>): string {
+  const parts: string[] = [];
+  if (origins.has('security_scan')) parts.push('Static scanner');
+  if (origins.has('access_control')) parts.push('Access-control analysis');
+  if (origins.has('deep_analysis')) parts.push('Deep heuristic analysis');
+  return parts.join(' + ');
+}
+
+function updateCorrelationMetadata(existing: AuditFinding): void {
+  const origins = new Set(existing.sources.map((s) => s.origin));
+  const sourceIds = existing.sources.map((s) => s.sourceId).filter((id, i, arr) => arr.indexOf(id) === i).sort();
+  
+  if (sourceIds.length > 1 || origins.size > 1) {
+    existing.correlation = {
+      sourceIds,
+      reason: buildCorrelationReason(origins),
+      engineCount: origins.size,
+    };
+  }
+}
+
 export function addOrMerge(map: Map<string, AuditFinding>, incoming: AuditFinding): void {
   const existing = map.get(incoming.id);
   if (!existing) {
     map.set(incoming.id, incoming);
+    updateCorrelationMetadata(incoming);
     return;
   }
   const heuristic = (item: AuditFinding): boolean => item.sources.every((source) => source.origin === 'deep_analysis');
@@ -193,4 +218,5 @@ export function addOrMerge(map: Map<string, AuditFinding>, incoming: AuditFindin
   if (incoming.line !== null && (existing.line === null || incoming.line < existing.line)) existing.line = incoming.line;
   if (existing.recommendation.length === 0) existing.recommendation = incoming.recommendation;
   existing.stages = stagesOf(existing.sources);
+  updateCorrelationMetadata(existing);
 }
