@@ -74,7 +74,7 @@ function toMcpResponse<T>(outcome: ToolOutcome<T>): McpToolResponse {
     content: [
       {
         type: 'text',
-        text: JSON.stringify({ error: outcome.error.code, message: outcome.error.message }, null, 2),
+        text: JSON.stringify({ error: outcome.error.code, message: String(detachedRedacted(outcome.error.message)) }, null, 2),
       },
     ],
     isError: true,
@@ -83,7 +83,7 @@ function toMcpResponse<T>(outcome: ToolOutcome<T>): McpToolResponse {
 
 function invalidInputResponse(message: string): McpToolResponse {
   return {
-    content: [{ type: 'text', text: JSON.stringify({ error: 'INVALID_INPUT', message: message.slice(0, 500) }, null, 2) }],
+    content: [{ type: 'text', text: JSON.stringify({ error: 'INVALID_INPUT', message: String(detachedRedacted(message.slice(0, 500))) }, null, 2) }],
     isError: true,
   };
 }
