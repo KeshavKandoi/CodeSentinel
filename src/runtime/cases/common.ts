@@ -65,8 +65,9 @@ export function hasUnresolvedSegment(path: string): boolean {
   return /[:{<]/.test(path);
 }
 
-export function writeChangedState(method: string, before: RuntimeResponse, after: RuntimeResponse): boolean {
+export function writeChangedState(method: string, before: RuntimeResponse, after: RuntimeResponse, repeat: RuntimeResponse | null): boolean {
   if (!isSuccessStatus(before) || before.bodyTruncated || after.bodyTruncated) return false;
   if (method === 'DELETE' && (after.status === 404 || after.status === 410)) return true;
+  if (repeat === null || !isSuccessStatus(repeat) || repeat.bodyTruncated || repeat.bodySnippet !== before.bodySnippet) return false;
   return isSuccessStatus(after) && before.bodySnippet.length > 0 && before.bodySnippet !== after.bodySnippet;
 }
