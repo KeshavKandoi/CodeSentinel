@@ -140,15 +140,23 @@ function validateIntegrity(result: DeepAuditBase): DeepSecurityAuditResult['inte
   return { valid: invalidReferences.length === 0 && !/(Bearer\s+\w+|AKIA[0-9A-Z]{16})/i.test(serialized), checkedFindings: result.findings.length, invalidReferences, redactionPassed: !/(Bearer\s+\w+|AKIA[0-9A-Z]{16})/i.test(serialized) };
 }
 
-export async function runDeepSecurityAudit(config: AppConfig, options: { baselinePath?: string; maxFiles?: number } = {}): Promise<ToolOutcome<DeepSecurityAuditResult>> {
-  const profile = runProjectDiscovery(config.projectRoot);
+export interface DeepAuditSharedInputs {
+  profile: ReturnType<typeof runProjectDiscovery>;
+  scan: Awaited<ReturnType<typeof scanProject>>;
+  routes: ReturnType<typeof discoverRoutes>;
+  access: ReturnType<typeof analyzeAccessControl> | null;
+}
+
+export async function runDeepSecurityAudit(config: AppConfig, options: { baselinePath?: string; maxFiles?: number; shared?: DeepAuditSharedInputs } = {}): Promise<ToolOutcome<DeepSecurityAuditResult>> {
+  const profile = options.shared?.profile ?? runProjectDiscovery(config.projectRoot);
   const indexed = readIndexedFiles(config, profile, options.maxFiles);
   const repositoryIndex = buildIndex(indexed.texts, indexed.skipped);
   const evidence: IntelligenceEvidence[] = [];
   const findings: IntelligenceFinding[] = [];
-  const staticResult = await scanProject(config);
-  const routesResult = discoverRoutes(config);
-  const accessResult = routesResult.ok ? analyzeAccessControl(config, routesResult.data.entries) : null;
+  const shared = options.shared;
+  const staticResult = shared ? shared.scan : await scanProject(config);
+  const routesResult = shared ? shared.routes : discoverRoutes(config);
+  const accessResult = shared ? shared.access : (routesResult.ok ? analyzeAccessControl(config, routesResult.data.entries) : null);
   if (staticResult.ok) for (const finding of staticResult.data.findings) {
     const domain = domainForCategory(finding.category);
     const ref = addEvidence(evidence, { domain, kind: 'static_scan', sourceRef: finding.id, file: finding.file ?? '', line: finding.line ?? null, detail: finding.evidence[0]?.reason ?? finding.title, contentHash: hash(JSON.stringify(finding.evidence)) });

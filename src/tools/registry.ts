@@ -53,6 +53,8 @@ import { generateSecurityReport, getSecurityFinding } from '../report/engine.js'
 import { applyRemediation, proposeRemediation, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
 import { runDeepSecurityAudit } from '../intelligence/engine.js';
 import { buildSecurityGraph, listSecurityProofCases, proveSecurityFinding } from '../proof/engine.js';
+import { runFullSecurityAuditSchema } from '../validation/schemas.js';
+import { runSecurityAuditPipeline } from '../audit/pipeline.js';
 
 
 export interface McpToolResponse {
@@ -93,6 +95,17 @@ export interface ToolDefinition {
 }
 
 const coreToolDefinitions: ToolDefinition[] = [
+  {
+    name: 'run_full_security_audit',
+    description: 'Run the complete read-only CodeSentinel audit pipeline in one call: discovery, route discovery, static scan, access-control analysis, deep analysis, candidate classification, optional runtime proof, security graph, and a lifecycle report with stable finding IDs. Runtime proof runs only when an authorized local target is supplied and only through registered proof adapters. Never modifies source, never calls an LLM, and findings are verified only by a semantic proof oracle.',
+    inputSchema: { type: 'object', properties: { target: { type: 'object' }, sessions: { type: 'array' }, sessionParams: { type: 'object' }, investigationId: { type: 'string' }, maxFindings: { type: 'number' }, maxProofAttempts: { type: 'number' }, maxElapsedMs: { type: 'number' }, maxFiles: { type: 'number' }, includeGraph: { type: 'boolean' } } },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(runFullSecurityAuditSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      try { return toMcpResponse(await runSecurityAuditPipeline(config, validation.data)); }
+      catch (e) { logger.error('run_full_security_audit_failed', { errorName: e instanceof Error ? e.name : 'unknown' }); return toMcpResponse(err('INTERNAL_ERROR', 'The security audit pipeline failed unexpectedly.')); }
+    },
+  },
   {
     name: 'list_security_proof_cases',
     description: 'List bounded proof cases derived from the existing local route and access-control inventory. This performs no runtime request.',
