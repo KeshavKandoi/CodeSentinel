@@ -8,9 +8,10 @@ import { detachedRedacted } from '../report/redaction.js';
 import { getInvestigation, runSecurityAnalysis, startInvestigation } from '../investigation/orchestrator.js';
 import type { InvestigationFinding, SecurityInvestigation } from '../investigation/types.js';
 import type { ProposeRemediationInput } from '../validation/schemas.js';
-import type { RemediationFileChange, RemediationLifecycle, RemediationProposal, RemediationRecord, RemediationSnapshot, RemediationVerification } from './types.js';
+import type { RemediationFileChange, RemediationLifecycle, RemediationProposal, RemediationRecord, RemediationSnapshot, RemediationVerification, ReplayResult } from './types.js';
 import { verifyFinding } from '../runtime/engine.js';
 import { linkSecurityReceiptToRemediation, listSecurityReceiptsForFinding, replaySecurityProof } from '../proof/engine.js';
+import { listFiles } from '../fs/fsOperations.js';
 
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_TOTAL_BYTES = 2_000_000;
@@ -21,7 +22,6 @@ const FORBIDDEN = /(^|\/)(\.env(?:\..*)?|\.ssh|credentials?|id_rsa|.*\.(?:pem|ke
 
 function sha256(content: string | Buffer): string { return crypto.createHash('sha256').update(content).digest('hex'); }
 function now(): string { return new Date().toISOString(); }
-function newId(): string { return `remediation-${crypto.randomUUID()}`; }
 function lockKey(record: RemediationRecord): string { return `${record.proposal.investigationId}:${record.proposal.files.map((f) => f.path).sort().join('|')}`; }
 function proposalLockKey(input: ProposeRemediationInput): string {
   return `proposal:${input.investigationId}:${input.findingId}:${input.files.map((file) => `${file.path}:${file.originalContentHash}:${sha256(file.proposedContent)}`).sort().join('|')}`;
@@ -35,6 +35,54 @@ async function withLock<T>(key: string, operation: () => Promise<T>): Promise<T>
   try { return await operation(); } finally { release(); if (locks.get(key) === current) locks.delete(key); }
 }
 
+const MAX_CHANGED_LINES = 500;
+const MAX_REPORTED_CHANGES = 50;
+
+interface TreeSnapshot { hashes: Map<string, string>; truncated: boolean; }
+
+function deterministicId(input: ProposeRemediationInput): string {
+  const canonical = JSON.stringify({ findingId: input.findingId, description: input.description, rationale: input.rationale, expectedSecurityEffect: input.expectedSecurityEffect, requiresRuntimeVerification: input.requiresRuntimeVerification, files: input.files.map((file) => ({ path: file.path, originalContentHash: file.originalContentHash, proposedHash: sha256(file.proposedContent), description: file.description })).sort((a, b) => a.path.localeCompare(b.path)) });
+  return `remediation-${sha256(canonical).slice(0, 32)}`;
+}
+
+function remediationTypeFor(finding: InvestigationFinding): string {
+  return finding.origin === 'security_scan' ? `source_${finding.category}` : `access_${finding.candidateType}`;
+}
+
+function changedLines(before: string, after: string): number {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA--; endB--; }
+  return (endA - start) + (endB - start);
+}
+
+function treeSnapshot(config: AppConfig): TreeSnapshot {
+  const hashes = new Map<string, string>();
+  const listed = listFiles(config, { dirPath: '.', recursive: true, maxResults: config.maxListResults });
+  if (!listed.ok) return { hashes, truncated: true };
+  const root = fs.realpathSync(config.projectRoot);
+  for (const entry of listed.data) {
+    if (entry.type !== 'file') continue;
+    try {
+      const absolute = path.join(root, entry.path);
+      const stat = fs.lstatSync(absolute);
+      if (stat.isSymbolicLink()) { hashes.set(entry.path, 'symlink'); continue; }
+      hashes.set(entry.path, stat.size > MAX_FILE_BYTES ? `size:${stat.size}` : sha256(fs.readFileSync(absolute)));
+    } catch {
+      hashes.set(entry.path, 'unreadable');
+    }
+  }
+  return { hashes, truncated: listed.data.length >= config.maxListResults };
+}
+
+function fingerprint(entries: Array<[string, string]>): string {
+  return sha256(entries.map(([file, digest]) => `${file}|${digest}`).sort().join('\n'));
+}
+
 function invalid(message: string): ToolOutcome<never> { return err('REMEDIATION_INVALID', message); }
 function findingFor(investigation: SecurityInvestigation, findingId: string): InvestigationFinding | null {
   return investigation.findings.find((finding) => finding.findingId === findingId) ?? null;
@@ -44,6 +92,9 @@ function validateFile(config: AppConfig, change: RemediationFileChange): ToolOut
   if (FORBIDDEN.test(change.path) || change.path.toLowerCase().startsWith('.git/')) return invalid(`Remediation path "${change.path}" is protected and cannot be modified.`);
   let absolute: string;
   try { absolute = resolveExistingWithinRoot(config.projectRoot, change.path); } catch { return err('PATH_OUTSIDE_ROOT', `Remediation path "${change.path}" is outside the project root.`); }
+  let aliased = false;
+  try { const lexical = path.join(fs.realpathSync(config.projectRoot), change.path); aliased = fs.realpathSync(lexical) !== lexical; } catch { return err('NOT_FOUND', `Remediation file ${change.path} could not be resolved.`); }
+  if (aliased) return invalid(`Remediation path ${change.path} resolves through a symbolic link or path alias.`);
   let stat: fs.Stats;
   try { stat = fs.lstatSync(absolute); } catch { return err('NOT_FOUND', `Remediation file "${change.path}" was not found.`); }
   if (stat.isSymbolicLink()) return invalid(`Remediation file "${change.path}" is a symbolic link.`);
@@ -82,16 +133,21 @@ export async function proposeRemediation(config: AppConfig, input: ProposeRemedi
     if (input.files.some((file, index) => input.files.findIndex((other) => other.path === file.path) !== index)) return invalid('A remediation proposal cannot contain duplicate file paths.');
     const total = input.files.reduce((sum, file) => sum + Buffer.byteLength(file.proposedContent, 'utf8'), 0);
     if (total > MAX_TOTAL_BYTES) return invalid('The remediation proposal exceeds the total size bound.');
+    let totalChangedLines = 0;
     for (const file of input.files) {
       const checked = validateFile(config, file);
       if (!checked.ok) return checked;
       if (sha256(checked.data.content) !== file.originalContentHash) return err('REMEDIATION_CONFLICT', `Original hash mismatch for "${file.path}"; the proposal is stale.`);
+      totalChangedLines += changedLines(checked.data.content, file.proposedContent);
+      if (totalChangedLines > MAX_CHANGED_LINES) return invalid(`The remediation proposal changes more than ${MAX_CHANGED_LINES} lines.`);
     }
     const duplicate = [...records.values()].find((record) => proposalLockKey(record.proposal as ProposeRemediationInput) === proposalLockKey(input));
     if (duplicate) return err('DUPLICATE_OPERATION', `An identical remediation proposal already exists as "${duplicate.proposal.proposalId}".`);
     if (input.runtimeVerification && input.runtimeVerification.findingId !== input.findingId) return invalid('runtimeVerification.findingId must match findingId.');
-    const proposal = freezeProposal({ proposalId: newId(), ...input, files: input.files.map((file) => ({ ...file })), createdAt: now() });
-    const record: RemediationRecord = { proposal, status: 'validated', snapshots: [], appliedContentHashes: {}, verification: null, updatedAt: now() };
+    const proposalId = deterministicId(input);
+    if (records.has(proposalId)) return err('DUPLICATE_OPERATION', `An identical remediation proposal already exists as "${proposalId}".`);
+    const proposal = freezeProposal({ proposalId, ...input, files: input.files.map((file) => ({ ...file })), remediationType: remediationTypeFor(finding), findingFile: finding.file, findingRoute: finding.path, createdAt: now() });
+    const record: RemediationRecord = { proposal, status: 'validated', appliedAt: null, integrity: null, changeSummary: `Proposes changes to ${proposal.files.map((file) => file.path).sort().join(', ')}`.slice(0, 1000), snapshots: [], appliedContentHashes: {}, verification: null, updatedAt: now() };
     if (records.size >= MAX_RECORDS) return err('BUDGET_EXCEEDED', 'The bounded remediation store is full.');
     records.set(proposal.proposalId, record);
     return ok(publicProposal(proposal));
@@ -122,6 +178,7 @@ export async function applyRemediation(config: AppConfig, remediationId: string)
       if (sha256(result.data.content) !== change.originalContentHash) return err('REMEDIATION_CONFLICT', `Original hash mismatch for "${change.path}"; no files were changed.`);
       checked.push({ change, absolute: result.data.absolute, content: result.data.content, proposedHash: sha256(change.proposedContent), mode: fs.statSync(result.data.absolute).mode });
     }
+    const treeBefore = treeSnapshot(config);
     record.status = 'preparing';
     try {
       record.snapshots = checked.map(({ change, content }) => ({ path: change.path, originalContentHash: change.originalContentHash, originalContent: content, capturedAt: now() }));
@@ -171,6 +228,31 @@ export async function applyRemediation(config: AppConfig, remediationId: string)
       record.status = canRestore ? 'apply_failed' : 'rollback_required'; record.updatedAt = now();
       return err('INTERNAL_ERROR', canRestore ? 'Post-commit integrity verification failed; the snapshot was restored.' : 'Post-commit integrity verification failed and rollback was blocked by an external change.');
     }
+    const treeAfter = treeSnapshot(config);
+    const changedSet = new Set<string>();
+    for (const [file, digest] of treeAfter.hashes) if (treeBefore.hashes.get(file) !== digest) changedSet.add(file);
+    for (const file of treeBefore.hashes.keys()) if (!treeAfter.hashes.has(file)) changedSet.add(file);
+    const changedFiles = [...changedSet].sort();
+    const expectedChanged = checked.filter((item) => item.proposedHash !== item.change.originalContentHash).map((item) => item.change.path).sort();
+    if (changedFiles.join('\n') !== expectedChanged.join('\n')) {
+      let restored = true;
+      for (const snapshot of record.snapshots) { try { fs.writeFileSync(resolveWithinRoot(config.projectRoot, snapshot.path), snapshot.originalContent, 'utf8'); } catch { restored = false; } }
+      record.status = restored ? 'apply_failed' : 'rollback_required'; record.updatedAt = now();
+      return err('REMEDIATION_CONFLICT', restored ? 'An unexpected source-tree change was detected during apply; the snapshot was restored.' : 'An unexpected source-tree change was detected during apply and rollback was blocked.');
+    }
+    const resulting = checked.map((item): [string, string] => [item.change.path, sha256(fs.readFileSync(item.absolute))]);
+    record.integrity = Object.freeze({
+      expectedSourceFingerprint: fingerprint(checked.map((item): [string, string] => [item.change.path, item.change.originalContentHash])),
+      resultingFingerprint: fingerprint(resulting),
+      treeFingerprintBefore: fingerprint([...treeBefore.hashes]),
+      treeFingerprintAfter: fingerprint([...treeAfter.hashes]),
+      changedFiles: changedFiles.slice(0, MAX_REPORTED_CHANGES),
+      unchangedTargetFiles: checked.map((item) => item.change.path).filter((file) => !changedSet.has(file)).sort(),
+      unchangedFileCount: [...treeAfter.hashes.keys()].filter((file) => !changedSet.has(file)).length,
+      truncated: treeBefore.truncated || treeAfter.truncated,
+    });
+    record.appliedAt = now();
+    record.changeSummary = `Changed ${changedFiles.length} file(s): ${checked.map((item) => `${item.change.path} (${changedLines(item.content, item.change.proposedContent)} line(s))`).sort().join(', ')}`.slice(0, 1000);
     record.status = 'applied_pending_verification'; record.updatedAt = now();
     const appliedFinding = findingFor(investigation.data, record.proposal.findingId);
     if (record.proposal.requiresRuntimeVerification && appliedFinding?.origin === 'security_scan') {
@@ -192,6 +274,11 @@ export async function verifyRemediation(config: AppConfig, remediationId: string
   return withLock(lockKey(existing), async () => {
     const record = records.get(remediationId)!;
     if (record.status !== 'applied_pending_verification' && record.status !== 'verification_inconclusive' && record.status !== 'changed_finding' && record.status !== 'still_vulnerable') return err('INVALID_TRANSITION', `Remediation cannot be verified from status "${record.status}".`);
+    const drifted = Object.entries(record.appliedContentHashes).some(([file, expected]) => { try { return sha256(fs.readFileSync(resolveExistingWithinRoot(config.projectRoot, file))) !== expected; } catch { return true; } });
+    if (drifted || record.integrity === null) {
+      record.status = 'verification_inconclusive'; record.updatedAt = now();
+      return err('VERIFICATION_INCONCLUSIVE', 'The applied files no longer match the recorded post-remediation fingerprint; verification cannot justify resolution.');
+    }
     record.status = 'verifying'; record.updatedAt = now();
     const before = currentInvestigation(record.proposal.investigationId);
     if (!before.ok) return before;
@@ -223,9 +310,11 @@ export async function verifyRemediation(config: AppConfig, remediationId: string
         runtimeStatus = runtime.data.result.status;
       }
     }
-    const replaySafe = runtimeStatus === 'not_reproduced';
+    const originalVerified = originalFinding.lifecycle === 'runtime_verified' || listSecurityReceiptsForFinding(record.proposal.findingId).some((receipt) => receipt.status === 'verified' && receipt.replayOfReceiptId === null);
+    const replaySafe = runtimeStatus === 'not_reproduced' && originalVerified;
+    const replayResult: ReplayResult = originalPresent || runtimeStatus === 'verified' ? 'still_present' : runtimeStatus === 'blocked' ? 'blocked' : related.length === 0 && replaySafe && record.proposal.requiresRuntimeVerification ? 'resolved' : 'inconclusive';
     const status: RemediationLifecycle = originalPresent ? 'still_vulnerable' : related.length > 0 ? 'changed_finding' : !record.proposal.requiresRuntimeVerification ? 'verification_inconclusive' : !replaySafe ? 'verification_inconclusive' : 'verified_resolved';
-    const verification: RemediationVerification = { status, beforeFindingId: record.proposal.findingId, afterInvestigationId: after.data.id, staticFindingPresent: originalPresent, relatedFindings: related.map((finding) => ({ findingId: finding.findingId, title: finding.title, category: finding.category, path: finding.path, file: finding.file })), runtimeStatus, runtimeReceiptId, summary: originalPresent ? 'The original finding remains after deterministic re-analysis.' : related.length > 0 ? 'The original finding changed or a related security finding was introduced.' : status === 'verified_resolved' ? 'The original finding was absent after deterministic re-analysis and its verified proof no longer reproduced.' : 'Static re-analysis did not establish a verified resolution.', verifiedAt: now() };
+    const verification: RemediationVerification = { status, beforeFindingId: record.proposal.findingId, afterInvestigationId: after.data.id, staticFindingPresent: originalPresent, relatedFindings: related.map((finding) => ({ findingId: finding.findingId, title: finding.title, category: finding.category, path: finding.path, file: finding.file })), runtimeStatus, runtimeReceiptId, replayResult, summary: originalPresent ? 'The original finding remains after deterministic re-analysis.' : related.length > 0 ? 'The original finding changed or a related security finding was introduced.' : status === 'verified_resolved' ? 'The original finding was absent after deterministic re-analysis and its verified proof no longer reproduced.' : 'Static re-analysis did not establish a verified resolution.', verifiedAt: now() };
     record.verification = verification; record.status = status; record.updatedAt = now(); return ok(safeRecord(record));
   });
 }
