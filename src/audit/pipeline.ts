@@ -17,7 +17,7 @@ import { detachedRedacted } from '../report/redaction.js';
 import { err, ok, type ToolOutcome } from '../types.js';
 import type { RunFullSecurityAuditInput } from '../validation/schemas.js';
 import { applyClassification } from './classify.js';
-import { extendGraphWithAudit } from './graph.js';
+import { extendGraphWithAudit, findNearDuplicates } from './graph.js';
 import { accessCategory, addOrMerge, canonicalCategory, compareBySeverity, compareFindings, createFinding, findingIdentity, fromAccessFinding, fromDeepFinding, fromSecurityFinding, normalizeFile, safeText, synthesizeEvidence } from './identity.js';
 import { calculateRiskScore } from './scoring.js';
 import { advance, advanceToVerified } from './lifecycle.js';
@@ -290,6 +290,7 @@ function buildResult(ctx: AuditContext, input: RunFullSecurityAuditInput): Audit
     stages: ctx.stages,
     summary,
     findings,
+    nearDuplicates: findNearDuplicates(findings),
     graph: summarizeGraph(ctx.graph, input.includeGraph === true),
     remediation: { investigationId: input.investigationId ?? null, records: ctx.remediationRecords.length, resolved: summary.resolved },
     finalVerification,
