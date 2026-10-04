@@ -328,3 +328,48 @@ describe('Phase 7 prioritization', () => {
     expect(one[0]).toBe('cs-b');
   });
 });
+
+describe('Phase 7 audit result surface', () => {
+  const run = async () => {
+    const outcome = await runSecurityAuditPipeline(config, { includeGraph: true } as any);
+    if (!outcome.ok) throw new Error('audit failed');
+    return outcome.data;
+  };
+  const stable = (data: Awaited<ReturnType<typeof run>>) => ({
+    findings: data.findings.map((f) => ({ id: f.id, riskScore: f.riskScore, evidenceSynthesis: f.evidenceSynthesis, correlation: f.correlation, status: f.status })),
+    nearDuplicates: data.nearDuplicates,
+    relationships: data.graph.edges?.filter((edge) => edge.relation === 'correlates_with' || edge.relation === 'duplicate_of') ?? [],
+    edgeIds: data.graph.edges?.map((edge) => edge.id) ?? [],
+  });
+
+  it('exposes scored, synthesized findings and a bounded advisory nearDuplicates list', async () => {
+    const data = await run();
+    expect(Array.isArray(data.nearDuplicates)).toBe(true);
+    expect(data.nearDuplicates.length).toBeLessThanOrEqual(100);
+    const ids = new Set(data.findings.map((f) => f.id));
+    for (const group of data.nearDuplicates) {
+      expect(group.findingIds.length).toBeGreaterThanOrEqual(2);
+      expect(group.findingIds.length).toBeLessThanOrEqual(20);
+      for (const id of group.findingIds) expect(ids.has(id)).toBe(true);
+    }
+    for (const finding of data.findings) {
+      expect(Number.isInteger(finding.riskScore)).toBe(true);
+      expect(finding.evidenceSynthesis!.length).toBeLessThanOrEqual(600);
+      expect(finding.status).not.toBe('verified');
+    }
+  }, 60_000);
+
+  it('computes nearDuplicates from final findings without modifying them', async () => {
+    const data = await run();
+    const before = JSON.stringify(data.findings);
+    expect(findNearDuplicates(data.findings)).toEqual(data.nearDuplicates);
+    expect(JSON.stringify(data.findings)).toBe(before);
+  }, 60_000);
+
+  it('is deterministic across two runs on the same fixture', async () => {
+    const first = stable(await run());
+    const second = stable(await run());
+    expect(second).toEqual(first);
+    expect(JSON.stringify(first)).not.toMatch(/ghp_|AKIA[0-9A-Z]{16}|Bearer\s+\w+/);
+  }, 120_000);
+});
