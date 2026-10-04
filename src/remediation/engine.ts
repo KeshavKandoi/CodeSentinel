@@ -269,6 +269,17 @@ function relatedFinding(finding: InvestigationFinding, candidate: InvestigationF
 }
 
 export async function verifyRemediation(config: AppConfig, remediationId: string): Promise<ToolOutcome<RemediationRecord>> {
+  try {
+    return await verifyRemediationInner(config, remediationId);
+  } catch {
+    return err('INTERNAL_ERROR', 'Remediation verification failed unexpectedly.');
+  } finally {
+    const stuck = records.get(remediationId);
+    if (stuck && stuck.status === 'verifying') { stuck.status = 'verification_inconclusive'; stuck.updatedAt = now(); }
+  }
+}
+
+async function verifyRemediationInner(config: AppConfig, remediationId: string): Promise<ToolOutcome<RemediationRecord>> {
   const existing = records.get(remediationId);
   if (!existing) return err('REMEDIATION_NOT_FOUND', `Remediation "${remediationId}" was not found.`);
   return withLock(lockKey(existing), async () => {
