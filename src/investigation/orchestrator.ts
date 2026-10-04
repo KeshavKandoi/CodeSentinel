@@ -8,6 +8,7 @@ import { analyzeAccessControl } from '../access/engine.js';
 import { verifyFinding } from '../runtime/engine.js';
 import type { VerifyFindingRequest } from '../runtime/engine.js';
 import { err, ok, type ToolOutcome } from '../types.js';
+import { detachedRedacted } from '../report/redaction.js';
 import type {
   InvestigationBudget,
   InvestigationEvidence,
@@ -294,25 +295,10 @@ export async function requestRuntimeVerification(config: AppConfig, input: Verif
   });
 }
 
-const SECRET_KEY_RE = /authorization|cookie|set-cookie|api[_-]?key|token|password|secret|credential/i;
-const SECRET_VALUE_RE = /Bearer\s+[A-Za-z0-9._-]+|sk-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9]+/g;
-function sanitize(value: unknown, depth = 0): unknown {
-  if (depth > 8) return '[TRUNCATED]';
-  if (typeof value === 'string') return value.replace(SECRET_VALUE_RE, '[REDACTED]').slice(0, 2_000);
-  if (Array.isArray(value)) return value.slice(0, 50).map((item) => sanitize(item, depth + 1));
-  if (value && typeof value === 'object') {
-    const output: Record<string, unknown> = {};
-    for (const [key, child] of Object.entries(value)) output[key] = SECRET_KEY_RE.test(key) ? '[REDACTED]' : sanitize(child, depth + 1);
-    return output;
-  }
-  return value;
-}
-
 export function getInvestigation(investigationId: string): ToolOutcome<SecurityInvestigation> {
   const state = get(investigationId);
   if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${investigationId}" was not found.`);
-  const safe = sanitize(state.investigation);
-  return ok(JSON.parse(JSON.stringify(safe)) as SecurityInvestigation);
+  return ok(detachedRedacted(state.investigation));
 }
 
 export const SECURITY_AGENT_INSTRUCTIONS = `CodeSentinel Phase 7 is a bounded security investigation toolkit for an external AI agent. Call start_security_investigation first with the configured project path, a narrow scope, and a concrete question. Call run_security_analysis once, then inspect its project, route, scanner, and access-control evidence identifiers. Call record_security_hypothesis only when the hypothesis cites at least one returned evidence reference; static findings are candidates, not proof. Call request_runtime_verification only for an existing evidence-backed Phase 5 access-control finding when an operator has explicitly authorized the exact runtime target and supplied any required test sessions. Call get_investigation to collect the bounded final state and evidence.
