@@ -504,7 +504,7 @@ const coreToolDefinitions: ToolDefinition[] = [
       logger.info('tool_execution', {
         tool: 'run_command',
         command: validation.data.command,
-        args: validation.data.args,
+        argCount: validation.data.args.length,
       });
       const result = await runCommand(config, {
         command: validation.data.command,
