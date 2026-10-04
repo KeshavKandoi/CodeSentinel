@@ -51,7 +51,7 @@ async function main(): Promise<void> {
     if (!tool) {
       logger.warn('unknown_tool_requested', { tool: name });
       return {
-        content: [{ type: 'text', text: JSON.stringify({ error: 'UNKNOWN_TOOL', message: `No such tool: ${name}` }) }],
+        content: [{ type: 'text', text: JSON.stringify({ error: 'UNKNOWN_TOOL', message: `No such tool: ${String(name).slice(0, 64)}` }) }],
         isError: true,
       };
     }
