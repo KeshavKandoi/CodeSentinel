@@ -8,6 +8,8 @@
  * passwords, bearer headers) before they are ever serialized.
  */
 
+import { redactReportValue } from './report/redaction.js';
+
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const SECRET_KEY_PATTERN =
@@ -18,7 +20,7 @@ const SECRET_VALUE_PATTERN =
 
 function redactValue(value: unknown): unknown {
   if (typeof value === 'string') {
-    return value.replace(SECRET_VALUE_PATTERN, '[REDACTED]');
+    return String(redactReportValue(value.replace(SECRET_VALUE_PATTERN, '[REDACTED]')));
   }
   if (Array.isArray(value)) {
     return value.map(redactValue);
