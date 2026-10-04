@@ -114,7 +114,8 @@ const coreToolDefinitions: ToolDefinition[] = [
     handler: async (config, rawInput) => {
       const validation = safeValidate(securityGraphSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
-      return toMcpResponse(ok(listSecurityProofCases(config)));
+      try { return toMcpResponse(ok(listSecurityProofCases(config))); }
+      catch (e) { logger.error('proof_case_listing_failed', { errorName: e instanceof Error ? e.name : 'unknown' }); return toMcpResponse(err('INTERNAL_ERROR', 'Proof case listing failed unexpectedly.')); }
     },
   },
   {
@@ -124,7 +125,8 @@ const coreToolDefinitions: ToolDefinition[] = [
     handler: async (config, rawInput) => {
       const validation = safeValidate(proveSecurityFindingSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
-      return toMcpResponse(await proveSecurityFinding(config, validation.data));
+      try { return toMcpResponse(await proveSecurityFinding(config, validation.data)); }
+      catch (e) { logger.error('prove_security_finding_failed', { errorName: e instanceof Error ? e.name : 'unknown' }); return toMcpResponse(err('INTERNAL_ERROR', 'Security proof failed unexpectedly.')); }
     },
   },
   {
@@ -134,7 +136,8 @@ const coreToolDefinitions: ToolDefinition[] = [
     handler: async (config, rawInput) => {
       const validation = safeValidate(securityGraphSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
-      return toMcpResponse(buildSecurityGraph(config));
+      try { return toMcpResponse(buildSecurityGraph(config)); }
+      catch (e) { logger.error('security_graph_failed', { errorName: e instanceof Error ? e.name : 'unknown' }); return toMcpResponse(err('INTERNAL_ERROR', 'Security graph construction failed unexpectedly.')); }
     },
   },
   {
