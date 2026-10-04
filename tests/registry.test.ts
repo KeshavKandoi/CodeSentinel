@@ -301,3 +301,14 @@ describe('phase 1 MCP boundary', () => {
     }
   });
 });
+
+describe('Phase 9 MCP contract', () => {
+  it('registers exactly 37 tools and rejects unknown arguments on every one', async () => {
+    expect(toolDefinitions.length).toBe(37);
+    for (const definition of toolDefinitions) {
+      const response = await definition.handler(config, { unexpectedPhase9Key: 1 });
+      expect(response.isError, definition.name).toBe(true);
+      expect(JSON.parse(response.content[0]!.text).error, definition.name).toBe('INVALID_INPUT');
+    }
+  });
+});
