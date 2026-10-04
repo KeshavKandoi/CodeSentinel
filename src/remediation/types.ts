@@ -24,6 +24,9 @@ export interface RemediationProposal {
   expectedSecurityEffect: string;
   requiresRuntimeVerification: boolean;
   runtimeVerification?: VerifyFindingInput;
+  remediationType: string;
+  findingFile: string;
+  findingRoute: string;
   createdAt: string;
 }
 
@@ -42,13 +45,30 @@ export interface RemediationVerification {
   relatedFindings: Array<{ findingId: string; title: string; category: string; path: string; file: string }>;
   runtimeStatus: string | null;
   runtimeReceiptId: string | null;
+  replayResult: ReplayResult;
   summary: string;
   verifiedAt: string;
+}
+
+export type ReplayResult = 'resolved' | 'still_present' | 'inconclusive' | 'blocked';
+
+export interface RemediationIntegrity {
+  expectedSourceFingerprint: string;
+  resultingFingerprint: string;
+  treeFingerprintBefore: string;
+  treeFingerprintAfter: string;
+  changedFiles: string[];
+  unchangedTargetFiles: string[];
+  unchangedFileCount: number;
+  truncated: boolean;
 }
 
 export interface RemediationRecord {
   proposal: RemediationProposal;
   status: RemediationLifecycle;
+  appliedAt: string | null;
+  integrity: RemediationIntegrity | null;
+  changeSummary: string;
   snapshots: RemediationSnapshot[];
   appliedContentHashes: Record<string, string>;
   verification: RemediationVerification | null;
