@@ -478,3 +478,16 @@ describe('Phase 9 runtime client bounds', () => {
     }
   }, 15000);
 });
+
+describe('Phase 9 lifecycle invariants', () => {
+  it('never promotes terminal states and never reaches verified without proof_eligible', async () => {
+    const { FINDING_STATUSES } = await import('../../src/audit/types.js');
+    for (const terminal of ['not_reproduced', 'unsupported', 'blocked', 'inconclusive', 'verified_resolved'] as const) {
+      for (const next of FINDING_STATUSES) expect(canAdvance(terminal, next), `${terminal} -> ${next}`).toBe(false);
+    }
+    expect(canAdvance('candidate', 'verified')).toBe(false);
+    expect(canAdvance('analyzed', 'verified')).toBe(false);
+    expect(canAdvance('unsupported', 'verified')).toBe(false);
+    expect(canAdvance('proof_eligible', 'verified')).toBe(true);
+  });
+});
