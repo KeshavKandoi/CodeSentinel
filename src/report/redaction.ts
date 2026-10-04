@@ -1,9 +1,23 @@
 const SECRET_KEY_RE = /authorization|cookie|set-cookie|api[_-]?key|bearer|token|password|secret|credential|environment|env/i;
 const SECRET_VALUE_RE = /Bearer\s+[A-Za-z0-9._-]+|(?:sk|ghp|xox[baprs])[-_][A-Za-z0-9._-]+|AKIA[0-9A-Z]{16}/gi;
 
+const JWT_RE = /\beyJ[\w-]{5,}\.[\w-]{5,}\.(?!invalid-signature\b)[\w-]{5,}/g;
+const PEM_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g;
+const URL_CRED_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s\/:@]+:[^\s\/@]+@/gi;
+const SECRET_PAIR_RE = /("?(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^&\s,;}]+)/gi;
+
+function redactString(text: string): string {
+  return text
+    .replace(PEM_RE, '[REDACTED]')
+    .replace(JWT_RE, '[REDACTED]')
+    .replace(URL_CRED_RE, '$1[REDACTED]@')
+    .replace(SECRET_PAIR_RE, '$1[REDACTED]')
+    .replace(SECRET_VALUE_RE, '[REDACTED]');
+}
+
 export function redactReportValue(value: unknown, depth = 0): unknown {
   if (depth > 8) return '[TRUNCATED]';
-  if (typeof value === 'string') return value.replace(SECRET_VALUE_RE, '[REDACTED]').slice(0, 2_000);
+  if (typeof value === 'string') return redactString(value).slice(0, 2_000);
   // Keep report arrays bounded, but preserve the evidence graph's references.
   // Deep audits cap evidence at 1,000 items; truncating this to 100 after
   // integrity validation would silently return findings pointing at absent
