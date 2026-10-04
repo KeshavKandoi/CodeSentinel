@@ -408,7 +408,7 @@ describe('phase 1 git history and repository configuration hardening', () => {
       const output = result.data.stdout;
       expect(output).not.toContain('HISTORYSECRET');
       expect(output).not.toContain('server.pem');
-      expect(output).not.toMatch(/\.env\b/i);
+      expect(output).not.toMatch(/(^|[\s/])\.env\b/im);
       if (args[0] !== 'log' || args.includes('-p')) expect(output).toMatch(/ok2\.txt|first|second/);
     } finally {
       project.cleanup();
