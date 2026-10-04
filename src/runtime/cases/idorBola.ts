@@ -73,6 +73,7 @@ export async function runIdorCase(
   if (!isSuccessStatus(ownerEvidence.response)) {
     return buildResult(vcase, 'inconclusive', 'low', `The owner baseline for GET ${vcase.path} received ${ownerEvidence.response.status}, so legitimate owner access could not be established and no IDOR verdict is possible.`, [ownerEvidence], startedAt);
   }
+  const ownerRepeat = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(vcase.method) ? await issueRuntimeRequest(target, sessions, { method: 'GET', path: vcase.path, sessionId: ownerSessionId }, state) : null;
   const evidence = [
     ownerEvidence,
     await issueRuntimeRequest(target, sessions, { method: vcase.method, path: vcase.path, sessionId: otherSessionId }, state),
@@ -106,7 +107,7 @@ export async function runIdorCase(
   if (isSuccessStatus(response) && isWrite) {
     const afterRead = await issueRuntimeRequest(target, sessions, { method: 'GET', path: vcase.path, sessionId: ownerSessionId }, state);
     evidence.push(afterRead);
-    if (!ownerEvidence || !writeChangedState(vcase.method, ownerEvidence.response, afterRead.response)) {
+    if (!ownerEvidence || !writeChangedState(vcase.method, ownerEvidence.response, afterRead.response, ownerRepeat ? ownerRepeat.response : null)) {
       return buildResult(vcase, 'inconclusive', 'medium', `${vcase.method} ${vcase.path} returned a 2xx status, but no change in the readable state of the resource was demonstrated, so the status alone does not prove the vulnerability.`, evidence, startedAt);
     }
     return buildResult(
