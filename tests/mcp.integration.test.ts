@@ -128,6 +128,21 @@ describe('MCP Server Integration', () => {
     expect(parsed.error).toBe('COMMAND_NOT_ALLOWED');
   });
   
+  it('redacts secrets echoed in unknown-tool errors', async () => {
+    const hostile = 'Authorization: Basic dXNlcjpwYXNzd29yZA==';
+    const res = await sendRequest({
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: { name: hostile, arguments: {} }
+    });
+    expect(res.id).toBe(7);
+    expect(res.result.isError).toBe(true);
+    const text = JSON.stringify(res);
+    expect(text).toContain('UNKNOWN_TOOL');
+    expect(text).not.toContain('dXNlcjpwYXNzd29yZA');
+  });
+
   it('does not leak logs to stdout (protocol corruption check)', () => {
     for (const res of responses) {
       expect(res.unparsed).toBeUndefined();
