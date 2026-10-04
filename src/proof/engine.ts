@@ -191,9 +191,10 @@ export function linkSecurityReceiptToRemediation(findingId: string, receiptId: s
   return ok(detachedRedacted(linked));
 }
 
-export function isTrustedVerifiedReceipt(receipt: SecurityReceipt, adapterType: ProofCaseType | null): boolean {
+export function isTrustedVerifiedReceipt(receipt: SecurityReceipt, adapterType: ProofCaseType | null, targetOrigin?: string): boolean {
   const stored = receipts.get(receipt.receiptId);
   if (!stored || stored.status !== 'verified' || stored.findingId !== receipt.findingId) return false;
+  if (targetOrigin !== undefined && stored.targetOrigin !== targetOrigin) return false;
   if (stored.proofCase.id !== receipt.proofCase.id || stored.proofCase.type !== receipt.proofCase.type || stored.whyProven !== receipt.whyProven) return false;
   if (adapterType === null || stored.proofCase.type !== adapterType || !stored.proofCase.executable) return false;
   if (registeredAdapter(stored.proofCase.type) === null) return false;
@@ -202,6 +203,14 @@ export function isTrustedVerifiedReceipt(receipt: SecurityReceipt, adapterType: 
 }
 
 export function resetSecurityProofsForTests(): void { receipts.clear(); proofAttempts.clear(); totalProofAttempts = 0; }
+
+async function isKnownFinding(config: AppConfig, findingId: string): Promise<boolean> {
+  const scan = await scanProject(config);
+  if (scan.ok && scan.data.findings.some((item) => item.id === findingId)) return true;
+  const routes = discoverRoutes(config);
+  if (!routes.ok) return false;
+  return analyzeAccessControl(config, routes.data.entries).findings.some((item) => item.id === findingId);
+}
 
 async function findStaticCandidate(config: AppConfig, findingId: string): Promise<{ finding: SecurityFinding; entry: AttackSurfaceEntry; adapter: SourceProofAdapter } | null> {
   const scan = await scanProject(config);
@@ -404,12 +413,13 @@ export async function replaySecurityProof(
   if (!adapter || !original || original.status !== 'verified' || originalReceipt.status !== 'verified') return err('UNSUPPORTED_CANDIDATE_TYPE', 'Only a previously verified source proof receipt can be replayed by the proof engine.');
   if (original.findingId !== originalReceipt.findingId || original.findingId !== request.findingId || original.remediationRef !== originalReceipt.remediationRef || original.remediationRef !== remediationId) return err('VERIFICATION_INCONCLUSIVE', 'The replay requires a verified original receipt already bound to this remediation.');
   if (!original.replayContract || JSON.stringify(original.replayContract) !== JSON.stringify(originalReceipt.replayContract)) return err('VERIFICATION_INCONCLUSIVE', 'The supplied original receipt replay contract does not match the persisted contract.');
+  if (original.targetOrigin === undefined || original.targetOrigin !== request.target.allowedOrigin) return err('VERIFICATION_INCONCLUSIVE', 'The original receipt was not created for this target origin.');
   const execution = await executeSafeSourceProofCase(request, original.proofCase, adapter, original.replayContract);
   const replay = sourceReceipt(request.findingId, execution, original.sourceRefs, [...original.evidenceRefs, `remediation:${remediationId}`], remediationId, original.replayContract, original.receiptId, { beforeStatus: original.status, afterStatus: execution.status });
   if (original) {
     receipts.set(original.receiptId, detachedRedacted({ ...original, remediationRef: remediationId, reVerification: { status: replay.status, receiptId: replay.receiptId } }));
   }
-  return ok(storeReceipt(replay));
+  return ok(storeReceipt({ ...replay, targetOrigin: request.target.allowedOrigin, executedAt: new Date().toISOString() }));
 }
 
 export async function proveSecurityFinding(config: AppConfig, request: VerifyFindingRequest): Promise<ToolOutcome<SecurityReceipt>> {
@@ -423,14 +433,15 @@ export async function proveSecurityFinding(config: AppConfig, request: VerifyFin
 }
 
 async function proveSecurityFindingInner(config: AppConfig, request: VerifyFindingRequest): Promise<ToolOutcome<SecurityReceipt>> {
+  const cases = listSecurityProofCases(config);
+  const proofCase = cases.find((item) => item.findingId === request.findingId);
+  const candidate = proofCase ? null : await findStaticCandidate(config, request.findingId);
+  if (!proofCase && !candidate && !(await isKnownFinding(config, request.findingId))) return err('NOT_FOUND', 'No finding was found for the supplied finding id.');
   const used = proofAttempts.get(request.findingId) ?? 0;
   if (used >= MAX_PROOF_ATTEMPTS_PER_FINDING || totalProofAttempts >= MAX_PROOF_ATTEMPTS_TOTAL) return err('BUDGET_EXCEEDED', 'The bounded proof attempt budget for this finding or process has been exhausted.');
   proofAttempts.set(request.findingId, used + 1);
   totalProofAttempts += 1;
-  const cases = listSecurityProofCases(config);
-  const proofCase = cases.find((item) => item.findingId === request.findingId);
   if (!proofCase) {
-    const candidate = await findStaticCandidate(config, request.findingId);
     if (!candidate) {
       const receipt = receiptForBlocked(request.findingId, metadata('sql_injection', request.findingId), 'No executable proof adapter was established from the current route/static inventory.');
       return ok(storeReceipt(receipt));
