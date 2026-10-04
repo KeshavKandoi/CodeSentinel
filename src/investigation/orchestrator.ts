@@ -291,7 +291,7 @@ export async function requestRuntimeVerification(config: AppConfig, input: Verif
     const pendingVerification = state.investigation.hypotheses.some((item) => item.findingId !== null && item.status === 'open');
     state.investigation.status = pendingVerification ? 'awaiting_verification' : 'completed';
     state.investigation.updatedAt = now();
-    return ok(state.investigation);
+    return ok(detachedRedacted(state.investigation));
   });
 }
 
