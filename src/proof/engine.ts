@@ -469,7 +469,8 @@ export function buildSecurityGraph(config: AppConfig, shared?: GraphInputs): Too
   const listed = listFiles(config, { dirPath: '.', recursive: true, maxResults: 2_000 });
   const nodes: SecurityGraphNode[] = [];
   const edges: SecurityGraphEdge[] = [];
-  const addNode = (node: SecurityGraphNode) => { if (!nodes.some((item) => item.id === node.id)) nodes.push(node); };
+  const seenNodes = new Set<string>();
+  const addNode = (node: SecurityGraphNode) => { if (!seenNodes.has(node.id)) { seenNodes.add(node.id); nodes.push(node); } };
   const addEdge = (from: string, to: string, relation: string, confidence: SecurityGraphEdge['confidence'], evidenceRefs: string[]) => edges.push({ id: `edge-${hash(`${from}|${to}|${relation}`)}`, from, to, relation, confidence, evidenceRefs });
   if (listed.ok) for (const file of listed.data.filter((item) => item.type === 'file')) addNode({ id: `file:${file.path}`, kind: 'file', label: file.path, sourceRef: file.path });
   for (const route of routes.data.entries) {
