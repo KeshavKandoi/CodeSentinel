@@ -194,3 +194,110 @@ describe('scan_project handler', () => {
     expect(parsed.error).toBe('INVALID_INPUT');
   });
 });
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { vi } from 'vitest';
+import { logger } from '../src/logger.js';
+
+describe('phase 1 MCP boundary', () => {
+  const fx = makeFixtureProject();
+  fs.writeFileSync(path.join(fx.root, '.env'), 'API_KEY=hunter2topsecret\n');
+  fs.symlinkSync(path.join(fx.root, '.env'), path.join(fx.root, 'envlink.txt'));
+  fs.mkdirSync(path.join(fx.root, '.ssh'));
+  fs.writeFileSync(path.join(fx.root, '.ssh', 'id_rsa'), 'hunter2topsecret\n');
+  afterAll(() => fx.cleanup());
+
+  const call = async (name: string, input: unknown) => {
+    const response = await getTool(name).handler(fx.config, input);
+    return { isError: response.isError, raw: response.content[0].text, body: JSON.parse(response.content[0].text) };
+  };
+
+  it.each([
+    ['list_files', { path: '.', allowSensitive: true }],
+    ['list_files', { root: '/' }],
+    ['read_file', { path: 'README.md', allowSensitive: true }],
+    ['read_file', { path: 'README.md', projectRoot: '/' }],
+    ['search_files', { query: 'x', allowSensitive: true }],
+    ['run_command', { command: 'ls', args: [], cwd: '/' }],
+    ['run_command', { command: 'ls', env: { PATH: '/tmp' } }],
+  ])('rejects unexpected or privileged fields on %s', async (name, input) => {
+    const result = await call(name, input);
+    expect(result.isError).toBe(true);
+    expect(result.body.error).toBe('INVALID_INPUT');
+  });
+
+  it.each([
+    ['read_file', { path: ['a'] }],
+    ['read_file', { path: 'a\0b' }],
+    ['read_file', { path: 'x'.repeat(5000) }],
+    ['read_file', null],
+    ['read_file', 'string'],
+    ['search_files', { query: 123 }],
+    ['search_files', { query: 'x', maxResults: -1 }],
+    ['list_files', { maxResults: 1e9 }],
+    ['run_command', { command: 'ls', args: 'x' }],
+    ['run_command', { command: 'ls', args: [1] }],
+    ['run_command', { command: {} }],
+  ])('rejects malformed input on %s', async (name, input) => {
+    const result = await call(name, input);
+    expect(result.isError).toBe(true);
+    expect(result.body.error).toBe('INVALID_INPUT');
+  });
+
+  it.each([
+    ['read_file', { path: '/etc/passwd' }],
+    ['read_file', { path: '../x' }],
+    ['read_file', { path: '..\\x' }],
+    ['read_file', { path: 'C:\\Windows\\win.ini' }],
+    ['list_files', { path: '/' }],
+    ['search_files', { query: 'x', path: '..' }],
+  ])('blocks path escape on %s end-to-end without leaking the host root', async (name, input) => {
+    const result = await call(name, input);
+    expect(result.isError).toBe(true);
+    expect(result.body.error).toBe('PATH_OUTSIDE_ROOT');
+    expect(result.raw).not.toContain(fx.root);
+  });
+
+  it.each([
+    ['read_file', { path: '.env' }],
+    ['read_file', { path: '.ENV' }],
+    ['read_file', { path: 'envlink.txt' }],
+    ['list_files', { path: '.ssh' }],
+    ['search_files', { query: 'hunter2', path: '.ssh' }],
+  ])('refuses sensitive paths on %s', async (name, input) => {
+    const result = await call(name, input);
+    expect(result.isError).toBe(true);
+    expect(result.body.error).toBe('INVALID_INPUT');
+    expect(result.raw).not.toContain('hunter2topsecret');
+  });
+
+  it('never surfaces sensitive content through search_files, list_files, or run_command', async () => {
+    const search = await call('search_files', { query: 'hunter2' });
+    expect(search.isError).toBe(false);
+    expect(search.body).toEqual([]);
+    const listing = await call('list_files', { path: '.', recursive: true });
+    expect(listing.isError).toBe(false);
+    const names = listing.body.map((entry: { path: string }) => entry.path);
+    expect(names).not.toContain('.env');
+    expect(names).not.toContain('.ssh/id_rsa');
+    const command = await call('run_command', { command: 'cat', args: ['.env'] });
+    expect(command.isError).toBe(true);
+    expect(command.body.error).toBe('COMMAND_NOT_ALLOWED');
+    expect(command.raw).not.toContain('hunter2topsecret');
+  });
+
+  it('writes diagnostics to stderr only and never to stdout', () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      logger.info('phase1_probe', { token: 'sk-abcdefghijklmnop1234' });
+      expect(stdout).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledTimes(1);
+      expect(String(stderr.mock.calls[0]?.[0])).not.toContain('sk-abcdefghijklmnop1234');
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+});
