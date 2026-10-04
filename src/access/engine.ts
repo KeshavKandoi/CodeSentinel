@@ -201,7 +201,7 @@ function makeAccessFinding(
 }
 
 function findMissingAuthentication(entry: AccessControlEntry): AccessControlFinding | null {
-  if (entry.explicitlyPublic || !entry.pathResolved || entry.authentication.length > 0) return null;
+  if (entry.explicitlyPublic || !entry.pathResolved || entry.authentication.length > 0 || entry.authorization.length > 0) return null;
   const sensitiveByResource = entry.stateChanging && entry.resourceParameters.length > 0;
   const sensitiveByAdmin = entry.administrative;
   if (!sensitiveByResource && !sensitiveByAdmin) return null;
