@@ -207,3 +207,39 @@ describe('Phase 9 hardening regressions', () => {
     expect(out.note).not.toContain('sk-abcdefghij1234');
   });
 });
+
+describe('Phase 9 report boundary redaction', () => {
+  const hostile = 'Authorization: Digest username="bob", response="abcdef0123456789abcdef" Authorization: Basic dXNlcjpwYXNz Authorization: Token tok-abc123xyz postgres://admin:hunter2secret@db.local/x client_secret=fixture-secret-value Access-Control-Allow-Origin: *';
+  const secrets = ['abcdef0123456789abcdef', 'dXNlcjpwYXNz', 'tok-abc123xyz', 'hunter2secret', 'fixture-secret-value'];
+
+  it('generates a completed report and finding view without any injected secret', async () => {
+    const started = payload(await tool('start_security_investigation').handler(config, { projectPath: FIXTURE, scope: ['authentication', 'authorization'], hypothesis: hostile }));
+    const investigationId = started.id as string;
+    const analysis = payload(await tool('run_security_analysis').handler(config, { investigationId }));
+    const findingId = analysis.analysis.accessControl.findingIds.find((id: string) => id.startsWith('CS-ACCESS-001'));
+    await tool('record_security_hypothesis').handler(config, {
+      investigationId,
+      title: hostile.slice(0, 200),
+      description: hostile,
+      findingId,
+      evidenceRefs: [`accessFinding:${findingId}`],
+      severity: 'high',
+      confidence: 'medium',
+    });
+    await tool('request_runtime_verification').handler(config, {
+      investigationId,
+      hypothesisId: payload(await tool('get_investigation').handler(config, { investigationId })).hypotheses[0].id,
+      findingId,
+      target: { allowedOrigin: 'http://10.0.0.4:3000' },
+    });
+    const report = await tool('generate_security_report').handler(config, { investigationId });
+    expect(report.isError).toBe(false);
+    expect(payload(report).error).toBeUndefined();
+    const finding = await tool('get_security_finding').handler(config, { investigationId, findingId });
+    const state = await tool('get_investigation').handler(config, { investigationId });
+    for (const response of [report, finding, state]) {
+      const text = JSON.stringify(response);
+      for (const secret of secrets) expect(text, secret).not.toContain(secret);
+    }
+  });
+});
