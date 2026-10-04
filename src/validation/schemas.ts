@@ -314,7 +314,7 @@ export const runFullSecurityAuditSchema = z.object({
   target: runtimeTargetSchema.optional(),
   sessions: z.array(testSessionSchema).max(10).default([]),
   sessionParams: sessionParamsSchema.default({}),
-  investigationId: z.string().min(1).max(256).optional(),
+  investigationId: z.string().min(1).max(128).optional(),
   maxFindings: z.number().int().min(1).max(500).optional(),
   maxProofAttempts: z.number().int().min(1).max(10).optional(),
   maxElapsedMs: z.number().int().min(5_000).max(600_000).optional(),
