@@ -3,6 +3,8 @@
  * are deliberately conservative and return null/unknown instead of guessing.
  */
 
+import { redactSecurityText } from '../security/utils.js';
+
 export interface CallArg {
   text: string;
   start: number;
@@ -59,6 +61,41 @@ export function stripJsComments(src: string): string {
     }
     out += c;
     i++;
+  }
+  return out;
+}
+
+/** Same-length copy with string and template contents blanked, so call patterns inside strings never match. */
+export function blankStringContents(src: string): string {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src.charAt(i);
+    if (c !== '"' && c !== "'" && c !== '`') {
+      out += c;
+      i++;
+      continue;
+    }
+    out += c;
+    let j = i + 1;
+    while (j < n) {
+      const d = src.charAt(j);
+      if (d === '\\') {
+        out += ' ';
+        if (j + 1 < n) out += src.charAt(j + 1) === '\n' ? '\n' : ' ';
+        j += 2;
+        continue;
+      }
+      if (d === c || (d === '\n' && c !== '`')) break;
+      out += d === '\n' ? '\n' : ' ';
+      j++;
+    }
+    if (j < n && src.charAt(j) === c) {
+      out += c;
+      j++;
+    }
+    i = j;
   }
   return out;
 }
@@ -168,7 +205,8 @@ export function isFunctionLike(text: string): boolean {
 export function argDisplayName(text: string): string {
   const t = text.trim().replace(/\s+/g, ' ');
   if (isFunctionLike(t)) return '<inline function>';
-  return truncate(t, 80);
+  const quoted = t.replace(/(:\s*)(['"`])(?:\\.|(?!\2)[^\\\n])*\2/g, '$1$2[REDACTED]$2');
+  return truncate(redactSecurityText(quoted), 80);
 }
 
 /** Expands `[a, b]` into items; any other text is returned as a single item. */
