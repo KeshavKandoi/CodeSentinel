@@ -87,7 +87,7 @@ async function withInvestigationLock<T>(investigationId: string, operation: () =
 }
 
 function operationKey(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+  return crypto.createHash('sha256').update(value.trim().toLowerCase().replace(/\s+/g, ' ')).digest('hex');
 }
 
 function checkTime(state: InvestigationInternals): string | null {
@@ -144,14 +144,18 @@ export function startInvestigation(
     budget, execution: { analysisSteps: 0, runtimeVerifications: 0, evidenceBytes: 0, operations: [] }, createdAt: timestamp, updatedAt: timestamp,
   };
   investigations.set(investigation.id, { investigation, accessFindings: [], routes: [], securityFindings: [], runtimeResults: new Map() });
-  return ok(investigation);
+  return ok(detachedRedacted(investigation));
 }
 
 export async function runSecurityAnalysis(config: AppConfig, investigationId: string): Promise<ToolOutcome<SecurityInvestigation>> {
   return withInvestigationLock(investigationId, async () => {
     const state = get(investigationId);
     if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${investigationId}" was not found.`);
-    if (state.investigation.execution.operations.includes('static-analysis')) return ok(state.investigation);
+    if (state.investigation.execution.operations.includes('static-analysis')) {
+      if (state.investigation.status === 'failed') return err('ANALYSIS_FAILED', 'Deterministic security analysis previously failed for this investigation.');
+      if (state.investigation.status === 'blocked') return err('BUDGET_EXCEEDED', 'Investigation analysis was previously blocked by its budget.');
+      return ok(detachedRedacted(state.investigation));
+    }
     if (state.investigation.status !== 'created') return err('INVALID_TRANSITION', `Static analysis cannot start from status "${state.investigation.status}".`);
     const elapsed = checkTime(state);
     if (elapsed) return err('BUDGET_EXCEEDED', elapsed);
@@ -197,7 +201,7 @@ export async function runSecurityAnalysis(config: AppConfig, investigationId: st
       ];
       state.investigation.status = state.accessFindings.length > 0 ? 'awaiting_verification' : 'completed';
       state.investigation.updatedAt = now();
-      return ok(state.investigation);
+      return ok(detachedRedacted(state.investigation));
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       if (/budget/i.test(message)) {
@@ -238,7 +242,7 @@ export async function recordHypothesis(config: AppConfig, input: { investigation
     state.investigation.execution.operations.push(`hypothesis:${key}`);
     addStep(state, 'hypothesis', hypothesis.title, input.evidenceRefs);
     state.investigation.updatedAt = now();
-    return ok(hypothesis);
+    return ok(detachedRedacted(hypothesis));
   });
 }
 
