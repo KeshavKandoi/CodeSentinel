@@ -5,6 +5,7 @@ import { parseExports, parseImports, resolveRelativeImport } from '../jsModules.
 import type { ImportBinding, ModuleExports } from '../jsModules.js';
 import {
   argDisplayName,
+  blankStringContents,
   buildLineIndex,
   collectConstStrings,
   describeHandler,
@@ -85,6 +86,7 @@ interface BuildState {
   models: Map<string, FileModel>;
   fileSet: ReadonlySet<string>;
   warnings: string[];
+  budget: { calls: number };
 }
 
 interface ChildRef {
@@ -191,11 +193,12 @@ function makeRoute(
 
 function scanModel(model: FileModel, st: BuildState): void {
   const { code, file, lineStarts } = model;
+  const masked = blankStringContents(code);
   let m: RegExpExecArray | null;
 
   // 1) app.get('/x', ...), router.post('/y', ...)
   const callRe = /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|post|put|patch|delete|head|options|all)\s*\(/g;
-  while ((m = callRe.exec(code)) !== null) {
+  while ((m = callRe.exec(masked)) !== null) {
     const recv = m[1] ?? '';
     const node = st.nodes.get(nodeKey(file, recv));
     if (!node) continue;
@@ -212,7 +215,7 @@ function scanModel(model: FileModel, st: BuildState): void {
 
   // 2) router.route('/x').get(h).post(h2)
   const routeRe = /\b([A-Za-z_$][\w$]*)\s*\.\s*route\s*\(/g;
-  while ((m = routeRe.exec(code)) !== null) {
+  while ((m = routeRe.exec(masked)) !== null) {
     const node = st.nodes.get(nodeKey(file, m[1] ?? ''));
     if (!node) continue;
     const call = readCallArgs(code, m.index + m[0].length - 1);
@@ -234,7 +237,7 @@ function scanModel(model: FileModel, st: BuildState): void {
 
   // 3) app.use(...) / router.use(...): mounts and middleware
   const useRe = /\b([A-Za-z_$][\w$]*)\s*\.\s*use\s*\(/g;
-  while ((m = useRe.exec(code)) !== null) {
+  while ((m = useRe.exec(masked)) !== null) {
     const recv = m[1] ?? '';
     const parentKey = nodeKey(file, recv);
     const node = st.nodes.get(parentKey);
@@ -307,6 +310,11 @@ function applicableUses(node: RouterNode, beforeLine: number, pathHint: string):
 function chainsFor(key: string, st: BuildState, visiting: Set<string>): Chain[] {
   const node = st.nodes.get(key);
   if (!node) return [];
+  st.budget.calls += 1;
+  if (st.budget.calls > 20_000) {
+    if (st.budget.calls === 20_001) st.warnings.push('Router mount resolution stopped after exceeding its work limit; some route prefixes are unresolved.');
+    return [];
+  }
   if (visiting.has(key)) {
     st.warnings.push(`Circular router mount detected involving ${node.file} "${node.varName}".`);
     return [];
@@ -448,7 +456,7 @@ export const expressAdapter: FrameworkAdapter = {
       if (model && model.vars.size > 0) models.set(file, model);
     }
 
-    const st: BuildState = { nodes: new Map(), edges: [], models, fileSet, warnings: ctx.warnings };
+    const st: BuildState = { nodes: new Map(), edges: [], models, fileSet, warnings: ctx.warnings, budget: { calls: 0 } };
     for (const model of models.values()) {
       for (const [name, kind] of model.vars) {
         const key = nodeKey(model.file, name);
