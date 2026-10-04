@@ -10,6 +10,8 @@ import { validateRedirect, validateTarget, validateUrl } from '../../src/runtime
 import { buildPublicPrivateInconsistencyCase, runPublicPrivateInconsistencyCase } from '../../src/runtime/cases/publicPrivateInconsistency.js';
 import http from 'node:http';
 import { buildIdorCase, runIdorCase } from '../../src/runtime/cases/idorBola.js';
+import { buildMissingAuthorizationCase, runMissingAuthorizationCase } from '../../src/runtime/cases/missingAuthorization.js';
+import { buildMethodAuthorizationCase, runMethodAuthorizationCase } from '../../src/runtime/cases/methodAuthorization.js';
 import type { AppConfig } from '../../src/config.js';
 import type { RuntimeTarget } from '../../src/runtime/types.js';
 
@@ -204,6 +206,7 @@ describe('Phase 6 orchestration and MCP-facing semantics', () => {
     }
   });
   it('applies the IDOR owner baseline and never verifies a public or unbaselined resource', async () => {
+    const versions = new Map<string, number>();
     const server = http.createServer((request, response) => {
       const user = request.headers['x-user'];
       const pathname = new URL(request.url ?? '/', 'http://x').pathname;
@@ -212,6 +215,9 @@ describe('Phase 6 orchestration and MCP-facing semantics', () => {
       if (!user) return send(401, 'auth required');
       if (pathname === '/docs/secure' && user !== 'userA') return send(403, 'forbidden');
       if (pathname === '/docs/ownerfail' && request.method === 'GET') return send(403, 'forbidden');
+      if (pathname === '/docs/noop' && request.method !== 'GET') return send(200, 'ok');
+      if (request.method === 'GET') return send(200, `doc v${versions.get(pathname) ?? 0}`);
+      versions.set(pathname, (versions.get(pathname) ?? 0) + 1);
       return send(200, `doc ${request.method}`);
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -228,10 +234,49 @@ describe('Phase 6 orchestration and MCP-facing semantics', () => {
     };
     try {
       expect((await run('PUT', '/docs/idor')).status).toBe('verified');
+      expect((await run('PUT', '/docs/noop')).status).toBe('inconclusive');
       expect((await run('PUT', '/docs/public')).status).toBe('inconclusive');
       expect((await run('GET', '/docs/public')).status).toBe('inconclusive');
       expect((await run('PUT', '/docs/secure')).status).toBe('not_reproduced');
       expect((await run('PUT', '/docs/ownerfail')).status).toBe('inconclusive');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+  it('requires a demonstrated state change before verifying write authorization', async () => {
+    const state = new Map<string, string>();
+    const server = http.createServer((request, response) => {
+      const pathname = new URL(request.url ?? '/', 'http://x').pathname;
+      const send = (status: number, text: string) => { response.writeHead(status, { 'content-type': 'text/plain' }); response.end(text); };
+      if (pathname === '/admin/secure' && request.method === 'POST') return send(403, 'forbidden');
+      if (pathname === '/admin/prot' && request.method === 'PUT') return send(401, 'auth required');
+      if (pathname === '/admin/noop' && request.method !== 'GET') return send(200, 'ok');
+      if (request.method === 'GET') return send(200, `state ${state.get(pathname) ?? 'user'}`);
+      state.set(pathname, 'admin');
+      return send(200, 'changed');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const origin = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
+    const sessions = new Map([['low', { id: 'low', kind: 'authenticated' as const, headers: { 'x-user': 'low' } }]]);
+    const targetFor = (path: string): RuntimeTarget => ({ allowedOrigin: origin, allowDestructiveMethods: true, vettedTestPaths: [path], minRequestIntervalMs: 0 });
+    const authz = async (method: string, path: string) => {
+      const t = targetFor(path);
+      const vcase = buildMissingAuthorizationCase({ id: 'f' } as any, { id: 'r', method, path, framework: 'express' } as any, 'low');
+      return runMissingAuthorizationCase(vcase, 'low', t, sessions, new RuntimeClientState(t));
+    };
+    const methodAuthz = async (method: string, path: string) => {
+      const t = targetFor(path);
+      const vcase = buildMethodAuthorizationCase({ id: 'f' } as any, { id: 'r', method, path, framework: 'express' } as any);
+      return runMethodAuthorizationCase(vcase, t, sessions, new RuntimeClientState(t));
+    };
+    try {
+      expect((await authz('POST', '/admin/role')).status).toBe('verified');
+      expect((await authz('POST', '/admin/noop')).status).toBe('inconclusive');
+      expect((await authz('POST', '/admin/secure')).status).toBe('not_reproduced');
+      expect((await methodAuthz('POST', '/m/open')).status).toBe('verified');
+      expect((await methodAuthz('POST', '/admin/noop')).status).toBe('inconclusive');
+      expect((await methodAuthz('PUT', '/admin/prot')).status).toBe('not_reproduced');
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

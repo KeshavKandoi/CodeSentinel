@@ -153,4 +153,36 @@ describe('Phase 11 real local fixture proofs', () => {
       own.kill('SIGTERM');
     }
   });
+  it('verifies the cookie-flag oracle only for a session-like cookie, never an unrelated one', async () => {
+    const scan = await scanProject(config);
+    expect(scan.ok).toBe(true);
+    if (!scan.ok) return;
+    const finding = scan.data.findings.find((item) => item.ruleId === 'CS-NODE-017');
+    expect(finding).toBeDefined();
+    if (!finding) return;
+    const http = await import('node:http');
+    const run = async (cookie: string) => {
+      const server = http.createServer((_request, response) => { response.writeHead(200, { 'content-type': 'text/plain', 'set-cookie': cookie }); response.end('ok'); });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      try {
+        const result = await proveSecurityFinding(config, { findingId: finding.id, target: { allowedOrigin: `http://127.0.0.1:${port}`, minRequestIntervalMs: 0 } });
+        expect(result.ok).toBe(true);
+        return result.ok ? result.data : null;
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    };
+    const unrelated = await run('theme=dark');
+    expect(unrelated?.status).toBe('inconclusive');
+    expect(unrelated?.whyProven).toBe('');
+    const lookalike = await run('sidebar=open');
+    expect(lookalike?.status).toBe('inconclusive');
+    const session = await run('session=abc123');
+    expect(session?.status).toBe('verified');
+    expect(JSON.stringify(session)).not.toContain('abc123');
+    const secure = await run('session=abc123; Secure; HttpOnly; SameSite=Lax');
+    expect(secure?.status).toBe('not_reproduced');
+  });
 });
