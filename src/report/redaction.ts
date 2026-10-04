@@ -6,12 +6,19 @@ const PEM_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRI
 const URL_CRED_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s\/:@]+:[^\s\/@]+@/gi;
 const SECRET_PAIR_RE = /("?(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^&\s,;}]+)/gi;
 
+const AUTH_SCHEME_RE = /\b(Authorization\s*:\s*)(?:Basic|Digest|Token)\s+[^\s,;"]+/gi;
+const BASIC_B64_RE = /\bBasic\s+[A-Za-z0-9+\/]{8,}={1,2}/g;
+const COOKIE_HEADER_RE = /\b((?:Set-)?Cookie\s*:\s*)[A-Za-z0-9_.-]+=[^\r\n]*/gi;
+
 function redactString(text: string): string {
   return text
     .replace(PEM_RE, '[REDACTED]')
     .replace(JWT_RE, '[REDACTED]')
     .replace(URL_CRED_RE, '$1[REDACTED]@')
     .replace(SECRET_PAIR_RE, '$1[REDACTED]')
+    .replace(AUTH_SCHEME_RE, '$1[REDACTED]')
+    .replace(BASIC_B64_RE, '[REDACTED]')
+    .replace(COOKIE_HEADER_RE, '$1[REDACTED]')
     .replace(SECRET_VALUE_RE, '[REDACTED]');
 }
 
