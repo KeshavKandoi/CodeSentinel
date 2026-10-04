@@ -34,6 +34,7 @@ function redactHeaders(headers: Headers): Record<string, string> {
     if (key.toLowerCase() === 'set-cookie') {
       const attributes = value.split(';').slice(1).map((part) => part.trim().split('=')[0].toLowerCase()).filter(Boolean);
       out[key] = `cookie-attributes:${[...new Set(attributes)].sort().join(',')}`;
+      if (/^(__host-|__secure-)?(connect\.sid|sessionid|session|sess|sid|jsessionid|phpsessid|auth|token|jwt)([_.-][\w.-]+)?$/i.test((value.split('=')[0] ?? '').trim())) out['x-codesentinel-session-cookie'] = '1';
     } else {
       out[key] = SENSITIVE_HEADER_RE.test(key) ? '[REDACTED]' : value.replace(SENSITIVE_VALUE_RE, '[REDACTED]');
     }
