@@ -7,6 +7,7 @@ import { listFiles } from '../fs/fsOperations.js';
 import { verifyFinding } from '../runtime/engine.js';
 import type { VerifyFindingRequest } from '../runtime/engine.js';
 import { issueRuntimeRequest, RuntimeClientState } from '../runtime/httpClient.js';
+import { isLoopback, parseAllowedOrigin } from '../runtime/targetGuard.js';
 import { buildResult, blockedResult, hasUnresolvedSegment } from '../runtime/cases/common.js';
 import { buildSessionMap } from '../runtime/session.js';
 import type { RuntimeTarget, VerificationEvidence, VerificationResult } from '../runtime/types.js';
@@ -20,8 +21,17 @@ import { PROOF_CASE_TYPES } from './types.js';
 
 const hash = (value: string): string => crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
 const receipts = new Map<string, import('./types.js').SecurityReceipt>();
+const MAX_PROOF_ATTEMPTS_PER_FINDING = 10;
+const MAX_PROOF_ATTEMPTS_TOTAL = 500;
+const proofAttempts = new Map<string, number>();
+let totalProofAttempts = 0;
+const MAX_STORED_RECEIPTS = 2000;
 function storeReceipt(receipt: SecurityReceipt): SecurityReceipt {
   const stored = detachedRedacted(receipt);
+  if (!receipts.has(stored.receiptId) && receipts.size >= MAX_STORED_RECEIPTS) {
+    const oldest = receipts.keys().next().value;
+    if (oldest !== undefined) receipts.delete(oldest);
+  }
   receipts.set(stored.receiptId, stored);
   return detachedRedacted(stored);
 }
@@ -56,7 +66,7 @@ const metadata = (type: ProofCaseType, findingId: string, method = 'GET', path =
   requestShape: { method, path, body: null, headers: [] },
   vulnerableOracle: type === 'idor_bola' ? 'A non-owner identity successfully performs a state-changing or semantically owner-specific operation.' : type === 'missing_authentication' ? 'An unauthenticated request reaches a protected resource with deterministic semantic evidence.' : type === 'missing_authorization' || type === 'authorization_inconsistency' ? 'A lower-privilege identity successfully performs the protected state-changing operation.' : 'A deterministic response/body oracle demonstrates the security property failure; status alone is insufficient.',
   safeOracle: 'An authentication/authorization rejection or an explicit safe semantic response demonstrates the control, subject to the case-specific evidence.',
-  maxRequests: ['csrf', 'webhook_signature', 'mass_assignment', 'unrestricted_upload'].includes(type) ? 3 : type === 'idor_bola' ? 2 : 1,
+  maxRequests: ['csrf', 'webhook_signature', 'mass_assignment', 'unrestricted_upload'].includes(type) ? 3 : type === 'idor_bola' ? 3 : type === 'jwt_verification' ? 2 : 1,
   allowedMethods: type === 'idor_bola' || type === 'missing_authorization' ? ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] : ['GET', 'HEAD', 'OPTIONS'],
   requiredFixtureData: ['A disposable local fixture with known routes and deterministic expected behavior.'],
   evidenceCaptured: ['Bounded request metadata', 'Redacted response facts', 'Deterministic oracle result', 'Source and route references'],
@@ -74,16 +84,16 @@ const EXECUTABLE_ADAPTERS: SecurityProofAdapter[] = [
 ];
 
 const SAFE_SOURCE_ADAPTERS: SourceProofAdapter[] = [
-  { type: 'path_traversal', categories: ['path_traversal'], marker: 'CODESENTINEL_PROOF_OUTSIDE_ROOT', parameter: 'path', title: 'Path traversal proof', notes: 'Requires a local fixture to return the exact outside-root marker only when traversal succeeds.' },
+  { type: 'path_traversal', categories: ['path_traversal'], marker: 'CODESENTINEL_PROOF_OUTSIDE_ROOT', requestValue: 'codesentinel-inert-probe', parameter: 'path', title: 'Path traversal proof', notes: 'Requires a local fixture to return the exact outside-root marker only when traversal succeeds.' },
   { type: 'open_redirect', categories: ['open_redirect', 'insecure_redirects'], marker: 'https://codesentinel.invalid/proof', requestValue: 'codesentinel-proof-redirect', parameter: 'url', title: 'Open redirect proof', notes: 'Uses a harmless local probe token; a fixture-controlled Location header provides the non-routable oracle and is never followed.' },
-  { type: 'ssrf', categories: ['ssrf'], marker: 'CODESENTINEL_PROOF_SSRF_SENTINEL', parameter: 'url', title: 'SSRF proof', notes: 'Requires a local fixture-controlled SSRF oracle; no external or metadata target is used.' },
-  { type: 'sql_injection', categories: ['injection'], marker: 'CODESENTINEL_PROOF_SQLI_SENTINEL', parameter: 'query', title: 'SQL injection proof', notes: 'Requires a local fixture-controlled semantic marker, never a generic SQL error.' },
-  { type: 'command_injection', categories: ['command_injection'], marker: 'CODESENTINEL_PROOF_COMMAND_SENTINEL', parameter: 'command', title: 'Command injection proof', notes: 'Requires a local fixture-controlled marker; CodeSentinel never executes the supplied value.' },
+  { type: 'ssrf', categories: ['ssrf'], marker: 'CODESENTINEL_PROOF_SSRF_SENTINEL', requestValue: 'codesentinel-inert-probe', parameter: 'url', title: 'SSRF proof', notes: 'Requires a local fixture-controlled SSRF oracle; no external or metadata target is used.' },
+  { type: 'sql_injection', categories: ['injection'], marker: 'CODESENTINEL_PROOF_SQLI_SENTINEL', requestValue: 'codesentinel-inert-probe', parameter: 'query', title: 'SQL injection proof', notes: 'Requires a local fixture-controlled semantic marker, never a generic SQL error.' },
+  { type: 'command_injection', categories: ['command_injection'], marker: 'CODESENTINEL_PROOF_COMMAND_SENTINEL', requestValue: 'codesentinel-inert-probe', parameter: 'command', title: 'Command injection proof', notes: 'Requires a local fixture-controlled marker; CodeSentinel never executes the supplied value.' },
   { type: 'xss_reflected', categories: ['xss'], marker: 'CODESENTINEL_PROOF_XSS_SENTINEL', parameter: 'q', title: 'Reflected XSS proof', notes: 'Verifies exact unencoded reflection of a unique inert marker, not script execution.' },
   { type: 'jwt_verification', categories: ['authentication'], marker: 'invalid-signature-authorization', requestValue: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjb2Rlc2VudGluZWwifQ.invalid-signature', parameter: 'token', title: 'JWT verification proof', notes: 'Uses a deterministic invalid signature token and verifies the protected authorization behavior; decoded claims and markers are never treated as proof.', oracleKind: 'authorization_behavior', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-016' },
   { type: 'session_cookie_flags', categories: ['security_configuration'], marker: 'httponly,samesite,secure', parameter: 'probe', title: 'Session cookie flags proof', notes: 'Inspects only a redacted cookie-attribute summary; cookie names and values are never retained.', oracleKind: 'cookie_flags_incomplete', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-017' },
   { type: 'permissive_cors', categories: ['cors'], marker: 'access-control-allow-origin:*', parameter: 'origin', title: 'Permissive CORS proof', notes: 'Requires the actual response header to allow every origin; status alone is insufficient.', oracleKind: 'header_contains' },
-  { type: 'insecure_deserialization', categories: ['deserialization'], marker: 'CODESENTINEL_PROOF_DESERIALIZED', parameter: 'payload', title: 'Insecure deserialization proof', notes: 'Requires an explicit local semantic marker and never executes the supplied payload in CodeSentinel.', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-011' },
+  { type: 'insecure_deserialization', categories: ['deserialization'], marker: 'CODESENTINEL_PROOF_DESERIALIZED', requestValue: 'codesentinel-inert-probe', parameter: 'payload', title: 'Insecure deserialization proof', notes: 'Requires an explicit local semantic marker and never executes the supplied payload in CodeSentinel.', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-011' },
   { type: 'csrf', categories: ['csrf'], marker: 'state-change', parameter: 'probe', title: 'CSRF proof', notes: 'Compares bounded authenticated fixture state before and after a cross-site-style state-changing request.', method: 'POST', requestBody: 'amount=1&destination=codesentinel-inert', requestHeaders: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://cross-site.invalid', 'x-codesentinel-auth': 'fixture-user' }, oracleKind: 'state_transition', statePath: '/transfer-state', stateField: 'transfers', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-018' },
   { type: 'webhook_signature', categories: ['webhook_signature'], marker: 'event-counter', parameter: 'probe', title: 'Webhook signature proof', notes: 'Compares the bounded processed-event counter before and after an invalid-signature event.', method: 'POST', requestBody: '{"event":"codesentinel-inert"}', requestHeaders: { 'content-type': 'application/json', 'x-codesentinel-signature': 'invalid-codesentinel-signature' }, oracleKind: 'state_transition', statePath: '/webhook-state', stateField: 'processed', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-019' },
   { type: 'mass_assignment', categories: ['mass_assignment'], marker: 'protected-role', parameter: 'probe', title: 'Mass-assignment proof', notes: 'Reads bounded profile state and verifies whether an attacker-controlled role actually changes.', method: 'POST', requestBody: 'displayName=CodeSentinel&role=admin', requestHeaders: { 'content-type': 'application/x-www-form-urlencoded' }, oracleKind: 'state_transition', statePath: '/profile-state', stateField: 'role', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-020' },
@@ -102,10 +112,8 @@ function registeredAdapter(type: ProofCaseType): RegisteredProofAdapter | null {
 }
 
 function isLocalProofTarget(target: RuntimeTarget): boolean {
-  try {
-    const hostname = new URL(target.allowedOrigin).hostname.toLowerCase().replace(/\.$/, '');
-    return hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.');
-  } catch { return false; }
+  const parsed = parseAllowedOrigin(target.allowedOrigin);
+  return !('reason' in parsed) && isLoopback(parsed.hostname.replace(/^\[|\]$/g, ''));
 }
 
 function adapterForCandidate(candidateType: string): SecurityProofAdapter | null {
@@ -183,7 +191,17 @@ export function linkSecurityReceiptToRemediation(findingId: string, receiptId: s
   return ok(detachedRedacted(linked));
 }
 
-export function resetSecurityProofsForTests(): void { receipts.clear(); }
+export function isTrustedVerifiedReceipt(receipt: SecurityReceipt, adapterType: ProofCaseType | null): boolean {
+  const stored = receipts.get(receipt.receiptId);
+  if (!stored || stored.status !== 'verified' || stored.findingId !== receipt.findingId) return false;
+  if (stored.proofCase.id !== receipt.proofCase.id || stored.proofCase.type !== receipt.proofCase.type || stored.whyProven !== receipt.whyProven) return false;
+  if (adapterType === null || stored.proofCase.type !== adapterType || !stored.proofCase.executable) return false;
+  if (registeredAdapter(stored.proofCase.type) === null) return false;
+  if (stored.responseFacts.length === 0 || stored.whyProven.trim().length < 10) return false;
+  return JSON.stringify(stored.responseFacts) === JSON.stringify(receipt.responseFacts);
+}
+
+export function resetSecurityProofsForTests(): void { receipts.clear(); proofAttempts.clear(); totalProofAttempts = 0; }
 
 async function findStaticCandidate(config: AppConfig, findingId: string): Promise<{ finding: SecurityFinding; entry: AttackSurfaceEntry; adapter: SourceProofAdapter } | null> {
   const scan = await scanProject(config);
@@ -300,6 +318,12 @@ async function executeSafeSourceProofCase(
     } catch { return null; }
   };
   const before = adapter.oracleKind === 'state_transition' && adapter.statePath ? await boundedState(adapter.statePath) : null;
+  if (adapter.oracleKind === 'authorization_behavior') {
+    const baseline = await issueRuntimeRequest(replayTarget, sessions, { method: 'GET', path: contract.relativeRoute, sessionId: null }, state);
+    evidence.push(baseline);
+    if (baseline.response.status === 0) return { status: 'blocked', proofCase, evidence, summary: baseline.note };
+    if (baseline.response.status !== 401 && baseline.response.status !== 403) return { status: 'inconclusive', proofCase, evidence, summary: `${adapter.title} could not establish a protected baseline: the unauthenticated request was not rejected, so acceptance of an invalid token proves nothing.` };
+  }
   const mutation = await issueRuntimeRequest(replayTarget, sessions, { method: contract.method as 'GET' | 'POST', path, headers: contract.requestHeaders, body: contract.requestBody ?? undefined, sessionId: contract.sessionLabelReferences[0] ?? null }, state);
   evidence.push(mutation);
   const response = mutation.response;
@@ -388,6 +412,20 @@ export async function replaySecurityProof(
 }
 
 export async function proveSecurityFinding(config: AppConfig, request: VerifyFindingRequest): Promise<ToolOutcome<SecurityReceipt>> {
+  const outcome = await proveSecurityFindingInner(config, request);
+  if (!outcome.ok) return outcome;
+  const stored = receipts.get(outcome.data.receiptId);
+  if (!stored) return outcome;
+  const stamped = detachedRedacted({ ...stored, targetOrigin: request.target.allowedOrigin, executedAt: new Date().toISOString() });
+  receipts.set(stamped.receiptId, stamped);
+  return ok(detachedRedacted(stamped));
+}
+
+async function proveSecurityFindingInner(config: AppConfig, request: VerifyFindingRequest): Promise<ToolOutcome<SecurityReceipt>> {
+  const used = proofAttempts.get(request.findingId) ?? 0;
+  if (used >= MAX_PROOF_ATTEMPTS_PER_FINDING || totalProofAttempts >= MAX_PROOF_ATTEMPTS_TOTAL) return err('BUDGET_EXCEEDED', 'The bounded proof attempt budget for this finding or process has been exhausted.');
+  proofAttempts.set(request.findingId, used + 1);
+  totalProofAttempts += 1;
   const cases = listSecurityProofCases(config);
   const proofCase = cases.find((item) => item.findingId === request.findingId);
   if (!proofCase) {
@@ -405,6 +443,7 @@ export async function proveSecurityFinding(config: AppConfig, request: VerifyFin
     const receipt = receiptForBlocked(request.findingId, proofCase, `No executable adapter is registered for proof type "${proofCase.type}".`);
     return ok(storeReceipt(receipt));
   }
+  if (!isLocalProofTarget(request.target)) return ok(storeReceipt(receiptForBlocked(request.findingId, proofCase, 'Proof adapters only execute against localhost or loopback targets.', [request.findingId])));
   const result = await adapter.execute(config, request);
   if (!result.ok) { const receipt = receiptForBlocked(request.findingId, proofCase, result.error.message, [request.findingId]); return ok(storeReceipt(receipt)); }
   const verification = result.data.result;
