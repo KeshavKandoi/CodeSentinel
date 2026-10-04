@@ -98,7 +98,7 @@ export function isLoopback(hostnameOrIp: string): boolean {
   const h = hostnameOrIp.toLowerCase();
   if (h === 'localhost') return true;
   if (ipVersion(h) === 4) return h.startsWith('127.');
-  if (ipVersion(h) === 6) return h === '::1' || h === '0:0:0:0:0:0:0:1';
+  if (ipVersion(h) === 6) return h === '::1' || h === '0:0:0:0:0:0:0:1' || h.startsWith('::ffff:127.') || h.startsWith('::ffff:7f');
   return false;
 }
 
@@ -148,12 +148,14 @@ async function resolveHostAddresses(hostname: string): Promise<string[]> {
  * Every resolved address must pass, not just one -- a hostname with mixed
  * public/private A records is rejected. */
 async function validateHostname(hostname: string, allowPrivateNetworkTarget: boolean): Promise<ValidationBlocked | null> {
+  const bare = hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(bare) === 0 && bare !== 'localhost') return blocked(`Destination "${hostname}" must be localhost or a literal IP address.`);
   if (isCloudMetadataDestination(hostname)) {
     return blocked(`Destination "${hostname}" is a cloud metadata address and is never permitted.`);
   }
   let addresses: string[];
   try {
-    addresses = await resolveHostAddresses(hostname);
+    addresses = await resolveHostAddresses(bare);
   } catch (e) {
     return blocked((e as Error).message);
   }
@@ -173,11 +175,7 @@ async function validateHostname(hostname: string, allowPrivateNetworkTarget: boo
       }
       continue;
     }
-    // Public IP: only reachable at all if it also happens to equal the
-    // configured allowedOrigin host (checked by the caller) -- but since
-    // Phase 6 only ever tests local/staging targets, a public address here
-    // means the configured origin is not local/private, which is fine as
-    // long as it's the caller's own explicitly-authorized staging origin.
+      return blocked(`Destination "${hostname}" resolves to a non-local address (${addr}); only loopback or explicitly authorized private-network targets are permitted.`);
   }
   return null;
 }
