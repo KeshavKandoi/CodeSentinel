@@ -1,5 +1,5 @@
 import type { InvestigationRuntimeResult, SecurityInvestigation } from '../investigation/types.js';
-import type { RemediationRecord } from '../remediation/types.js';
+import type { RemediationLifecycle, RemediationRecord } from '../remediation/types.js';
 import type { SecurityReceipt } from '../proof/types.js';
 
 export type ReportFindingStatus = 'static_candidate' | 'runtime_verified' | 'not_reproduced' | 'inconclusive' | 'blocked';
@@ -33,6 +33,9 @@ export interface SecurityReportFinding {
   sourceRefs: string[];
   hypothesisId: string | null;
   runtimeResult: InvestigationRuntimeResult | null;
+  riskScore: number;
+  evidenceSynthesis: string;
+  remediationState: { status: RemediationLifecycle | null; remediationIds: string[] };
 }
 
 export interface SecurityReport {
