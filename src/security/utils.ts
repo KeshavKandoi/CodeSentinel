@@ -83,7 +83,8 @@ export function redactSecurityText(value: string): string {
     .replace(/\bBearer\s+[A-Za-z0-9._~+\/=-]+/gi, 'Bearer [REDACTED]')
     .replace(/\b(?:sk|ghp|xox[baprs])[-_][A-Za-z0-9._-]+\b/gi, '[REDACTED]')
     .replace(/\bAKIA[0-9A-Z]{16}\b/gi, '[REDACTED]')
-    .replace(/((?:api[_-]?key|secret|password|passwd|pwd|token|private[_-]?key|client[_-]?secret|access[_-]?key)\s*[:=]\s*["'`]?)[^\s,'"`;}]+/gi, '$1[REDACTED]');
+    .replace(/\b((?:set-)?cookie\s*:\s*)(?![\s{\[])[A-Za-z0-9_.-]+=[^\r\n]*/gi, '$1[REDACTED]')
+    .replace(/((?:api[_-]?key|secret|password|passwd|pwd|token|private[_-]?key|client[_-]?secret|access[_-]?key)["'`]?\s*[:=]\s*["'`]?)[^\s,'"`;}]+/gi, '$1[REDACTED]');
 }
 
 export function dedupeFindings(findings: SecurityFinding[]): SecurityFinding[] {
