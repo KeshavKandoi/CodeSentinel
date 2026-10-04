@@ -111,10 +111,10 @@ export type AnalyzeAccessControlInput = z.infer<typeof analyzeAccessControlSchem
  */
 export const runtimeTargetSchema = z
   .object({
-    allowedOrigin: z.string().min(1).max(512),
+    allowedOrigin: z.string().min(1).max(512).refine((value) => { try { const parsed = new URL(value); return parsed.protocol === 'http:' || parsed.protocol === 'https:'; } catch { return false; } }, 'allowedOrigin must be an http(s) URL'),
     allowPrivateNetworkTarget: z.boolean().optional(),
     allowDestructiveMethods: z.boolean().optional(),
-    vettedTestPaths: z.array(z.string().min(1).max(4096)).max(20).optional(),
+    vettedTestPaths: z.array(z.string().min(1).max(4096).refine((value) => value.startsWith('/') && !value.startsWith('//') && !value.includes('\\'), 'vettedTestPaths entries must be single-slash absolute paths')).max(20).optional(),
     maxRequestsPerCase: z.number().int().positive().max(50).optional(),
     requestTimeoutMs: z.number().int().positive().max(30_000).optional(),
     maxResponseBytes: z.number().int().positive().max(5_000_000).optional(),
