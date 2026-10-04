@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { loadConfig, type AppConfig } from './config.js';
 import { logger } from './logger.js';
+import { redactReportValue } from './report/redaction.js';
 import { toolDefinitions } from './tools/registry.js';
 
 async function main(): Promise<void> {
@@ -51,7 +52,7 @@ async function main(): Promise<void> {
     if (!tool) {
       logger.warn('unknown_tool_requested', { tool: name });
       return {
-        content: [{ type: 'text', text: JSON.stringify({ error: 'UNKNOWN_TOOL', message: `No such tool: ${String(name).slice(0, 64)}` }) }],
+        content: [{ type: 'text', text: JSON.stringify({ error: 'UNKNOWN_TOOL', message: `No such tool: ${String(redactReportValue(String(name).slice(0, 64)))}` }) }],
         isError: true,
       };
     }
