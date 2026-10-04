@@ -340,6 +340,7 @@ async function executeSafeSourceProofCase(
     : adapter.type === 'unrestricted_upload'
       ? Array.isArray(fieldBefore) && Array.isArray(fieldAfter) && fieldAfter.length === fieldBefore.length + 1 && JSON.stringify(fieldAfter).includes('codesentinel.html')
       : typeof fieldBefore === 'number' && typeof fieldAfter === 'number' && fieldAfter === fieldBefore + 1;
+  if (adapter.oracleKind === 'cookie_flags_incomplete' && cookieSummary.length > 0 && !Object.keys(response.headers).some((key) => key.toLowerCase() === 'x-codesentinel-session-cookie')) return { status: 'inconclusive', proofCase, evidence, summary: `${adapter.title} observed a cookie that is not identifiable as a session or authentication cookie, so its flags do not prove the finding.` };
   const proved = adapter.oracleKind === 'state_transition'
     ? stateChanged
     : adapter.oracleKind === 'authorization_behavior'
