@@ -8,6 +8,8 @@ import { toolDefinitions } from '../../src/tools/registry.js';
 import { issueRuntimeRequest, RuntimeClientState } from '../../src/runtime/httpClient.js';
 import { validateRedirect, validateTarget, validateUrl } from '../../src/runtime/targetGuard.js';
 import { buildPublicPrivateInconsistencyCase, runPublicPrivateInconsistencyCase } from '../../src/runtime/cases/publicPrivateInconsistency.js';
+import http from 'node:http';
+import { buildIdorCase, runIdorCase } from '../../src/runtime/cases/idorBola.js';
 import type { AppConfig } from '../../src/config.js';
 import type { RuntimeTarget } from '../../src/runtime/types.js';
 
@@ -199,6 +201,39 @@ describe('Phase 6 orchestration and MCP-facing semantics', () => {
     } finally {
       child.kill();
       await once(child, 'exit').catch(() => undefined);
+    }
+  });
+  it('applies the IDOR owner baseline and never verifies a public or unbaselined resource', async () => {
+    const server = http.createServer((request, response) => {
+      const user = request.headers['x-user'];
+      const pathname = new URL(request.url ?? '/', 'http://x').pathname;
+      const send = (status: number, text: string) => { response.writeHead(status, { 'content-type': 'text/plain' }); response.end(text); };
+      if (pathname === '/docs/public') return send(200, 'public doc');
+      if (!user) return send(401, 'auth required');
+      if (pathname === '/docs/secure' && user !== 'userA') return send(403, 'forbidden');
+      if (pathname === '/docs/ownerfail' && request.method === 'GET') return send(403, 'forbidden');
+      return send(200, `doc ${request.method}`);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const origin = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
+    const sessions = new Map([
+      ['userA', { id: 'userA', kind: 'authenticated' as const, headers: { 'x-user': 'userA' } }],
+      ['userB', { id: 'userB', kind: 'authenticated' as const, headers: { 'x-user': 'userB' } }],
+    ]);
+    const run = async (method: string, path: string) => {
+      const idorTarget: RuntimeTarget = { allowedOrigin: origin, allowDestructiveMethods: true, vettedTestPaths: [path], minRequestIntervalMs: 0 };
+      const vcase = buildIdorCase({ id: 'f' } as any, { id: 'r', method, path, framework: 'express' } as any, 'userA', 'userB');
+      return runIdorCase(vcase, 'userB', idorTarget, sessions, new RuntimeClientState(idorTarget));
+    };
+    try {
+      expect((await run('PUT', '/docs/idor')).status).toBe('verified');
+      expect((await run('PUT', '/docs/public')).status).toBe('inconclusive');
+      expect((await run('GET', '/docs/public')).status).toBe('inconclusive');
+      expect((await run('PUT', '/docs/secure')).status).toBe('not_reproduced');
+      expect((await run('PUT', '/docs/ownerfail')).status).toBe('inconclusive');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });

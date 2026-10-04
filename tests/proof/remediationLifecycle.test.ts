@@ -84,7 +84,7 @@ describe('proof to remediation lifecycle', () => {
     expect(proof.data.status).toBe('verified');
     expect(proof.data.replayContract).toMatchObject({
       proofType: 'sql_injection', method: 'GET', relativeRoute: '/search', parameterName: 'query',
-      inertProbeValue: 'CODESENTINEL_PROOF_SQLI_SENTINEL',
+      inertProbeValue: 'codesentinel-inert-probe',
       targetConstraints: { allowedOrigin: origin, maxRedirects: 0 },
       sessionLabelReferences: [], oracleDefinition: { kind: 'body_contains', safeResult: 'not_reproduced' },
     });

@@ -107,4 +107,50 @@ describe('Phase 11 real local fixture proofs', () => {
     expect(replay.data.remediationRef).toBe(remediationId);
     expect(replay.data.beforeAfter).toEqual({ beforeStatus: 'verified', afterStatus: 'not_reproduced' });
   });
+  it('does not verify an invalid-token oracle on a route that is simply public', async () => {
+    const scan = await scanProject(config);
+    expect(scan.ok).toBe(true);
+    if (!scan.ok) return;
+    const finding = scan.data.findings.find((item) => item.ruleId === 'CS-NODE-016');
+    expect(finding).toBeDefined();
+    if (!finding) return;
+    const http = await import('node:http');
+    const server = http.createServer((_request, response) => { response.writeHead(200, { 'content-type': 'text/plain' }); response.end('ok'); });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    try {
+      const result = await proveSecurityFinding(config, { findingId: finding.id, target: { allowedOrigin: `http://127.0.0.1:${port}`, minRequestIntervalMs: 0 } });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.status).toBe('inconclusive');
+      expect(result.data.whyProven).toBe('');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('records the target origin and execution time on a verified receipt', async () => {
+    const scan = await scanProject(config);
+    expect(scan.ok).toBe(true);
+    if (!scan.ok) return;
+    const finding = scan.data.findings.find((item) => item.ruleId === 'CS-NODE-016');
+    expect(finding).toBeDefined();
+    if (!finding) return;
+    const port = 43893;
+    const ownOrigin = `http://127.0.0.1:${port}`;
+    const own = spawn(process.execPath, ['server.mjs'], { cwd: fixture, env: { ...process.env, PORT: String(port), CODESENTINEL_SECURE: '0' }, stdio: 'ignore' });
+    try {
+      await waitForServer(port);
+      const result = await proveSecurityFinding(config, { findingId: finding.id, target: { allowedOrigin: ownOrigin, minRequestIntervalMs: 0 } });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.status).toBe('verified');
+      expect(result.data.targetOrigin).toBe(ownOrigin);
+      expect(Number.isNaN(Date.parse(result.data.executedAt ?? ''))).toBe(false);
+      expect(result.data.responseFacts.length).toBe(2);
+    } finally {
+      own.kill('SIGTERM');
+    }
+  });
 });
