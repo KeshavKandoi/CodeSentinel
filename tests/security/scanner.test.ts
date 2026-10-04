@@ -6,6 +6,8 @@ import { scanProject } from '../../src/security/scanner.js';
 import { getSecurityRules } from '../../src/security/ruleRegistry.js';
 import type { AppConfig } from '../../src/config.js';
 import type { SecurityFinding } from '../../src/security/types.js';
+import { addBoundedWarning, redactSecurityText } from '../../src/security/utils.js';
+import { safeText } from '../../src/audit/identity.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = path.resolve(__dirname, '..', 'fixtures', 'security-cases');
@@ -120,5 +122,38 @@ describe('Phase 3 static security scanner', () => {
     const findings = await runScan();
     const keys = findings.map((finding) => `${finding.ruleId}:${finding.file}:${finding.line}:${finding.evidence[0].matchedText}`);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe('Phase 3 evidence redaction and bounds', () => {
+  it.each([
+    ["res.cookie('session', 'cookie-literal-xyz', { secure: false })", 'cookie-literal-xyz'],
+    ["res.setHeader('Authorization', 'Basic dXNlcjpwYXNzd29yZA==')", 'dXNlcjpwYXNzd29yZA'],
+    ['const t = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.c2lnbmF0dXJl";', 'eyJhbGci'],
+    ['postgres://admin:hunter2pw@db.internal/app', 'hunter2pw'],
+    ['-----BEGIN RSA PRIVATE KEY-----\nMIIEabc123\n-----END RSA PRIVATE KEY-----', 'MIIEabc123'],
+  ])('redacts secret-bearing text: %s', (input, secret) => {
+    const redacted = redactSecurityText(input);
+    expect(redacted).not.toContain(secret);
+    expect(redacted).toContain('[REDACTED]');
+  });
+
+  it('keeps non-sensitive configuration text readable', () => {
+    expect(redactSecurityText("res.setHeader('Access-Control-Allow-Origin', '*')")).toContain("'*'");
+  });
+
+  it('does not return literal cookie values in scanner output', async () => {
+    expect(JSON.stringify(await runScan())).not.toContain('fixture-secret');
+  });
+
+  it('applies the same redaction to audit evidence text', () => {
+    expect(safeText("res.cookie('session', 'audit-literal-abc', {})")).not.toContain('audit-literal-abc');
+  });
+
+  it('bounds the number and length of scanner warnings', () => {
+    const warnings: string[] = [];
+    for (let i = 0; i < 200; i++) addBoundedWarning(warnings, 'x'.repeat(1000));
+    expect(warnings.length).toBeLessThanOrEqual(51);
+    expect(warnings.every((warning) => warning.length <= 400)).toBe(true);
   });
 });
