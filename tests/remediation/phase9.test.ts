@@ -229,3 +229,182 @@ describe('Phase 9 controlled remediation', () => {
     expect(tool('propose_remediation').inputSchema.properties).not.toHaveProperty('command');
   });
 });
+
+import { canAdvance } from '../../src/audit/lifecycle.js';
+import type { FindingStatus } from '../../src/audit/types.js';
+
+const sha = (value: string): string => crypto.createHash('sha256').update(value).digest('hex');
+const leftovers = (root: string): string[] => fs.readdirSync(path.join(root, 'src')).filter((name) => name.includes('.codesentinel-'));
+
+async function setup() {
+  const { root, config } = makeProject();
+  const started = body(await tool('start_security_investigation').handler(config, { projectPath: root, scope: ['input_validation'], hypothesis: 'Find unsafe input handling.' }));
+  const analysis = body(await tool('run_security_analysis').handler(config, { investigationId: started.id }));
+  const findingId = analysis.findings.find((item: { origin: string; file: string }) => item.origin === 'security_scan' && item.file === 'src/vulnerable.ts').findingId as string;
+  const original = fs.readFileSync(path.join(root, 'src/vulnerable.ts'), 'utf8');
+  const input = (proposed: string, extra: Record<string, unknown> = {}) => ({
+    investigationId: started.id as string, findingId, description: 'Harden source.', rationale: 'Reduce attack surface.',
+    files: [{ path: 'src/vulnerable.ts', originalContentHash: sha(original), proposedContent: proposed, description: 'Update file.' }],
+    expectedSecurityEffect: 'Unsafe sinks are removed.', requiresRuntimeVerification: false, ...extra,
+  });
+  const propose = async (proposed: string, extra: Record<string, unknown> = {}) => body(await tool('propose_remediation').handler(config, input(proposed, extra)));
+  return { root, config, findingId, original, input, propose };
+}
+
+describe('Phase 9 proposal integrity', () => {
+  it('derives deterministic proposal ids from finding and content, and retains finding identity', async () => {
+    const s = await setup();
+    const first = await s.propose('export const safe = true;\n');
+    expect(first.proposalId).toMatch(/^remediation-[a-f0-9]{32}$/);
+    expect(first.findingId).toBe(s.findingId);
+    expect(first.findingFile).toBe('src/vulnerable.ts');
+    expect(typeof first.remediationType).toBe('string');
+    resetRemediationsForTests();
+    expect((await s.propose('export const safe = true;\n')).proposalId).toBe(first.proposalId);
+    resetRemediationsForTests();
+    expect((await s.propose('export const safe = false;\n')).proposalId).not.toBe(first.proposalId);
+  });
+
+  it('rejects wrong finding ids, malformed proposals, and forged internal fields', async () => {
+    const s = await setup();
+    const wrong = await tool('propose_remediation').handler(s.config, s.input('export const safe = true;\n', { findingId: 'missing-finding' }));
+    expect(body(wrong).error).toBe('REPORT_FINDING_NOT_FOUND');
+    expect(body(await tool('propose_remediation').handler(s.config, {})).error).toBe('INVALID_INPUT');
+    for (const forged of [{ status: 'verified_resolved' }, { integrity: {} }, { proposalId: 'remediation-forged' }, { resultingFingerprint: 'x' }, { replayResult: 'resolved' }]) {
+      const response = await tool('propose_remediation').handler(s.config, s.input('export const safe = true;\n', forged));
+      expect(response.isError).toBe(true);
+      expect(body(response).error).toBe('INVALID_INPUT');
+    }
+    for (const name of ['apply_remediation', 'verify_remediation', 'rollback_remediation']) {
+      expect(body(await tool(name).handler(s.config, { remediationId: 'x', status: 'verified_resolved', replayResult: 'resolved' })).error).toBe('INVALID_INPUT');
+    }
+  });
+
+  it('rejects traversal, absolute, backslash, directory, missing, and symlink targets', async () => {
+    const s = await setup();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'codesentinel-outside-'));
+    roots.push(outside);
+    fs.writeFileSync(path.join(outside, 'target.ts'), 'outside\n');
+    fs.symlinkSync(path.join(outside, 'target.ts'), path.join(s.root, 'src/escape.ts'));
+    fs.symlinkSync(path.join(s.root, 'src/safe.ts'), path.join(s.root, 'src/alias.ts'));
+    for (const bad of ['../outside.ts', '/etc/passwd', 'src/../../outside.ts', '..\\outside.ts', 'src\\..\\..\\x.ts', 'src', 'src/missing.ts', 'src/escape.ts', 'src/alias.ts']) {
+      const response = await tool('propose_remediation').handler(s.config, s.input('x\n', { files: [{ path: bad, originalContentHash: '0'.repeat(64), proposedContent: 'x\n', description: 'bad' }] }));
+      expect(response.isError, bad).toBe(true);
+    }
+    expect(fs.readFileSync(path.join(outside, 'target.ts'), 'utf8')).toBe('outside\n');
+    expect(listRemediationsForInvestigation(s.input('x').investigationId)).toHaveLength(0);
+  });
+
+  it('rejects proposals that change too many lines', async () => {
+    const s = await setup();
+    const big = Array.from({ length: 600 }, (_, i) => `export const v${i} = ${i};`).join('\n');
+    expect(body(await tool('propose_remediation').handler(s.config, s.input(big))).error).toBe('REMEDIATION_INVALID');
+  });
+
+  it('redacts credential-like text in proposal output', async () => {
+    const s = await setup();
+    const response = await tool('propose_remediation').handler(s.config, s.input('export const safe = true;\n', { description: 'Rotate sk_live_abcdef1234567890 and password=fixture-secret', rationale: 'Authorization: Bearer abc.def.ghi leaked' }));
+    const text = response.content[0]!.text;
+    for (const leak of ['sk_live_abcdef', 'fixture-secret', 'abc.def.ghi']) expect(text).not.toContain(leak);
+  });
+});
+
+describe('Phase 9 safe apply and integrity', () => {
+  it('records fingerprints, changed files, and leaves unrelated files untouched', async () => {
+    const s = await setup();
+    const safePath = path.join(s.root, 'src/safe.ts');
+    const safeBefore = fs.readFileSync(safePath, 'utf8');
+    const next = 'export const safe = true;\n';
+    const proposal = await s.propose(next);
+    const applied = body(await tool('apply_remediation').handler(s.config, { remediationId: proposal.proposalId }));
+    expect(applied.status).toBe('applied_pending_verification');
+    expect(applied.integrity.changedFiles).toEqual(['src/vulnerable.ts']);
+    expect(applied.integrity.unchangedFileCount).toBeGreaterThan(0);
+    expect(applied.integrity.expectedSourceFingerprint).toBe(sha(`src/vulnerable.ts|${sha(s.original)}`));
+    expect(applied.integrity.resultingFingerprint).toBe(sha(`src/vulnerable.ts|${sha(next)}`));
+    expect(applied.integrity.treeFingerprintBefore).not.toBe(applied.integrity.treeFingerprintAfter);
+    expect(typeof applied.appliedAt).toBe('string');
+    expect(applied.changeSummary).toContain('src/vulnerable.ts');
+    expect(applied.proposal.findingId).toBe(s.findingId);
+    expect(fs.readFileSync(safePath, 'utf8')).toBe(safeBefore);
+    expect(leftovers(s.root)).toEqual([]);
+  });
+
+  it('cleans up temporary files and keeps the original when the atomic replace fails', async () => {
+    const s = await setup();
+    const target = path.join(s.root, 'src/vulnerable.ts');
+    const proposal = await s.propose('export const safe = true;\n');
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation((() => { throw new Error('rename failure'); }) as typeof fs.renameSync);
+    let result;
+    try { result = await tool('apply_remediation').handler(s.config, { remediationId: proposal.proposalId }); } finally { spy.mockRestore(); }
+    expect(body(result).error).toBe('INTERNAL_ERROR');
+    expect(fs.readFileSync(target, 'utf8')).toBe(s.original);
+    expect(leftovers(s.root)).toEqual([]);
+  });
+
+  it('rejects a stale proposal after the file changed', async () => {
+    const s = await setup();
+    const target = path.join(s.root, 'src/vulnerable.ts');
+    const proposal = await s.propose('export const safe = true;\n');
+    fs.writeFileSync(target, `${s.original}// external\n`);
+    expect(body(await tool('apply_remediation').handler(s.config, { remediationId: proposal.proposalId })).error).toBe('REMEDIATION_CONFLICT');
+    expect(fs.readFileSync(target, 'utf8')).toContain('// external');
+    expect(leftovers(s.root)).toEqual([]);
+  });
+
+  it('lets only one of two racing proposals on the same file apply', async () => {
+    const s = await setup();
+    const target = path.join(s.root, 'src/vulnerable.ts');
+    const a = await s.propose('export const a = 1;\n');
+    const b = await s.propose('export const b = 2;\n');
+    expect(a.proposalId).not.toBe(b.proposalId);
+    const results = await Promise.all([tool('apply_remediation').handler(s.config, { remediationId: a.proposalId }), tool('apply_remediation').handler(s.config, { remediationId: b.proposalId })]);
+    expect(results.filter((response) => !response.isError)).toHaveLength(1);
+    expect(results.filter((response) => body(response).error === 'REMEDIATION_CONFLICT')).toHaveLength(1);
+    expect(['export const a = 1;\n', 'export const b = 2;\n']).toContain(fs.readFileSync(target, 'utf8'));
+  });
+});
+
+describe('Phase 9 replay and resolution gate', () => {
+  it('never resolves a static-only finding even when the finding disappears', async () => {
+    const s = await setup();
+    const proposal = await s.propose('export const safe = true;\n');
+    await tool('apply_remediation').handler(s.config, { remediationId: proposal.proposalId });
+    const verified = body(await tool('verify_remediation').handler(s.config, { remediationId: proposal.proposalId }));
+    expect(verified.status).toBe('verification_inconclusive');
+    expect(verified.verification.replayResult).toBe('inconclusive');
+  });
+
+  it('reports still_present when the original finding remains after re-analysis', async () => {
+    const s = await setup();
+    const proposal = await s.propose(`${s.original}export const extra = 1;\n`);
+    await tool('apply_remediation').handler(s.config, { remediationId: proposal.proposalId });
+    const verified = body(await tool('verify_remediation').handler(s.config, { remediationId: proposal.proposalId }));
+    expect(verified.status).not.toBe('verified_resolved');
+    expect(verified.verification.replayResult).toBe('still_present');
+  });
+
+  it('refuses to verify when applied files drifted from the recorded fingerprint', async () => {
+    const s = await setup();
+    const target = path.join(s.root, 'src/vulnerable.ts');
+    const proposal = await s.propose('export const safe = true;\n');
+    await tool('apply_remediation').handler(s.config, { remediationId: proposal.proposalId });
+    fs.writeFileSync(target, 'export const tampered = true;\n');
+    const response = await tool('verify_remediation').handler(s.config, { remediationId: proposal.proposalId });
+    expect(body(response).error).toBe('VERIFICATION_INCONCLUSIVE');
+    expect(fs.readFileSync(target, 'utf8')).toBe('export const tampered = true;\n');
+  });
+});
+
+describe('Phase 9 lifecycle transitions', () => {
+  it('allows only verified -> remediation_applied -> verified_resolved', () => {
+    expect(canAdvance('verified', 'remediation_applied')).toBe(true);
+    expect(canAdvance('remediation_applied', 'verified_resolved')).toBe(true);
+    const others: FindingStatus[] = ['candidate', 'analyzed', 'proof_eligible', 'unsupported', 'blocked', 'not_reproduced', 'inconclusive', 'verified_resolved'];
+    for (const status of others) {
+      expect(canAdvance(status, 'verified_resolved'), status).toBe(false);
+      expect(canAdvance(status, 'remediation_applied'), status).toBe(false);
+    }
+    for (const terminal of ['not_reproduced', 'unsupported', 'blocked', 'inconclusive', 'verified_resolved'] as FindingStatus[]) expect(canAdvance(terminal, 'verified')).toBe(false);
+  });
+});
