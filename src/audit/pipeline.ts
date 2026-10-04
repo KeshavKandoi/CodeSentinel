@@ -18,7 +18,8 @@ import { err, ok, type ToolOutcome } from '../types.js';
 import type { RunFullSecurityAuditInput } from '../validation/schemas.js';
 import { applyClassification } from './classify.js';
 import { extendGraphWithAudit } from './graph.js';
-import { accessCategory, addOrMerge, canonicalCategory, compareFindings, createFinding, findingIdentity, fromAccessFinding, fromDeepFinding, fromSecurityFinding, normalizeFile, safeText } from './identity.js';
+import { accessCategory, addOrMerge, canonicalCategory, compareBySeverity, compareFindings, createFinding, findingIdentity, fromAccessFinding, fromDeepFinding, fromSecurityFinding, normalizeFile, safeText, synthesizeEvidence } from './identity.js';
+import { calculateRiskScore } from './scoring.js';
 import { advance, advanceToVerified } from './lifecycle.js';
 import type { AuditContext, AuditFinding, AuditGraphSummary, AuditResult, AuditStage, AuditSummary, FinalVerification, NamedCount, StageStatus, TreeFingerprint } from './types.js';
 
@@ -364,7 +365,7 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
   });
 
   await runStage(ctx, 'candidate_classification', false, false, () => {
-    const ordered = [...ctx.findings.values()].sort(compareFindings);
+    const ordered = [...ctx.findings.values()].sort(compareBySeverity);
     if (ordered.length > ctx.limits.maxFindings) {
       for (const dropped of ordered.slice(ctx.limits.maxFindings)) ctx.findings.delete(dropped.id);
       ctx.truncatedFindings = ordered.length - ctx.limits.maxFindings;
@@ -384,7 +385,7 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
   });
 
   await runStage(ctx, 'runtime_proof', true, true, async () => {
-    const eligible = [...ctx.findings.values()].filter((finding) => finding.status === 'proof_eligible').sort(compareFindings);
+    const eligible = [...ctx.findings.values()].filter((finding) => finding.status === 'proof_eligible').sort(compareBySeverity);
     const target = input.target;
     const attempted = new Set<string>();
     const notAttempted: string[] = [];
@@ -437,6 +438,11 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
       note: idle ? 'No authorized runtime target supplied and no prior receipts; eligible findings remain proof_eligible.' : `${attempts} proof attempt(s) executed, ${reused} finding(s) used prior receipts.`,
     };
   });
+
+  for (const finding of ctx.findings.values()) {
+    finding.riskScore = calculateRiskScore(finding);
+    finding.evidenceSynthesis = synthesizeEvidence(finding);
+  }
 
   await runStage(ctx, 'graph_construction', true, true, () => {
     const routeOutcome = ctx.routesOutcome;
