@@ -74,12 +74,13 @@ If you must integrate CodeSentinel with ChatGPT, you must deploy a custom remote
 
 ## Available MCP Tools
 
-CodeSentinel provides a rich set of discovery, static, and orchestration tools. Some notable tools include:
+CodeSentinel provides a rich set of discovery, static, and orchestration tools. 37 tools are registered and every tool rejects unknown arguments. Some notable tools include:
 
 - `analyze_project`: Detects the programming language, framework, database, and ecosystem. (STATIC-ONLY)
 - `scan_project`: Runs deterministic security rules to detect static code issues. (STATIC-ONLY)
 - `discover_routes`: Generates an inventory of externally reachable API routes. (METADATA-ONLY)
 - `analyze_access_control`: Classifies route authentication (public/authenticated/roles) and surfaces IDOR/BOLA candidates. (STATIC-ONLY)
+- `run_full_security_audit`: Runs the unified read-only audit pipeline with stable finding IDs and an optional loopback proof stage. (STATIC + RUNTIME-PROVEN when a target is supplied)
 - `start_security_audit`: Creates a bounded session with specific scopes. (METADATA-ONLY)
 - `prove_security_finding`: Issues a verifiable payload to prove a vulnerability locally. (RUNTIME-PROVEN)
 - `propose_remediation`: Submits an AI-generated fix for verification. (METADATA-ONLY)
@@ -108,13 +109,13 @@ CodeSentinel explicitly enforces:
 - File paths are restricted to the configured `PROJECT_ROOT`.
 - Directory traversal (`../`) is blocked.
 - Shell commands (`run_command`) are restricted to a pre-defined allowlist.
-- HTTP Runtime Proofs are restricted to configured internal test servers (Loopback/Private IPs only unless specifically authorized).
+- Proof adapters (`prove_security_finding`, `run_full_security_audit`) execute only against loopback origins. `verify_finding` may additionally target a private-network origin only when `allowPrivateNetworkTarget` is set. Public hosts, hostnames other than `localhost`, cloud metadata addresses, and redirects that leave the configured origin are always rejected.
 - Protocol Integrity: Output logging is isolated to `stderr`, leaving `stdout` purely for JSON-RPC MCP messages.
 - Error schemas mask arbitrary file paths, environment variables, or token exposures.
 
 ## Runtime Proof
 
-CodeSentinel distinguishes between theoretical vulnerabilities and **RUNTIME-PROVEN** vulnerabilities. The AI client cannot execute arbitrary requests to external targets; it can only invoke `prove_security_finding` against the local development/staging fixture. The proof mechanism ensures the vulnerability is actively exploitable using fixed semantic oracles.
+CodeSentinel distinguishes between theoretical vulnerabilities and **RUNTIME-PROVEN** vulnerabilities. The AI client cannot execute arbitrary requests to external targets; it can only invoke `prove_security_finding` against the local development/staging fixture. The proof mechanism ensures the vulnerability is actively exploitable using fixed semantic oracles. Receipts are bound to the target origin they were created for and cannot be reused or replayed against another origin. `prove_security_finding` returns `NOT_FOUND` for a finding ID that matches no scan or access-control finding, and an unknown ID creates no receipt and consumes no proof budget. For state-changing access-control proofs, a write is reported as a state change only when two baseline reads are identical and the post-write read differs, so volatile response fields cannot cause a false `verified`.
 
 ## Remediation and Replay
 
@@ -151,6 +152,10 @@ For production deployments, package CodeSentinel into an isolated container alon
 - Weak password storage rules and cryptography misuse rules remain **STATIC-ONLY** and cannot be dynamically proven by CodeSentinel's runtime framework.
 - CodeSentinel requires the target codebase to be available on the local filesystem of the executing environment.
 - Complex IDOR analysis lacks full inter-procedural data-flow tracing; it relies on deterministic pattern heuristics.
+- `generate_security_report` fails closed with `REPORT_INVALID` for an investigation with more than 100 findings or 250 evidence items instead of truncating.
+- Receipts, remediation records, and investigations are held in memory and are lost on restart; stores are bounded.
+- A `NOT_FOUND` proof lookup re-runs the static scan and route discovery to confirm the ID is unknown; the cost is bounded per call.
+- Redaction is pattern-based; secret formats not covered by the shared redactor may still appear in evidence text.
 
 ## Unified audit pipeline
 
