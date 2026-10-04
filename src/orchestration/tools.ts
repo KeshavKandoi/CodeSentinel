@@ -13,7 +13,7 @@ function respond<T>(outcome: ToolOutcome<T>): McpToolResponse {
 }
 
 function invalid(message: string): McpToolResponse {
-  return { content: [{ type: 'text', text: JSON.stringify({ error: 'INVALID_INPUT', message }, null, 2) }], isError: true };
+  return { content: [{ type: 'text', text: JSON.stringify({ error: 'INVALID_INPUT', message: message.slice(0, 500) }, null, 2) }], isError: true };
 }
 
 function validate<S extends z.ZodType>(schema: S, raw: unknown): { ok: true; data: z.infer<S> } | { ok: false; message: string } {
