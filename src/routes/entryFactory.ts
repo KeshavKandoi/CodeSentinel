@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Confidence, Evidence } from '../discovery/types.js';
 import { classifyGuards } from './authHeuristics.js';
+import { redactSecurityText } from '../security/utils.js';
 import type {
   AttackSurfaceEntry,
   Exposure,
@@ -59,7 +60,7 @@ export function buildEntry(input: EntryInput): AttackSurfaceEntry {
   else if (!input.pathResolved) exposure = 'unknown';
   else exposure = 'public';
 
-  const evidence: Evidence[] = [...input.evidence];
+  const evidence: Evidence[] = input.evidence.map((item) => ({ ...item, detail: redactSecurityText(item.detail) }));
   for (const a of authIndicators) {
     evidence.push({ source: 'heuristic:authentication', detail: `Authentication indicator "${a}" matched by name/pattern.` });
   }
