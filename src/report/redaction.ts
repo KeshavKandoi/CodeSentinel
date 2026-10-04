@@ -1,5 +1,5 @@
 const SECRET_KEY_RE = /authorization|cookie|set-cookie|api[_-]?key|bearer|token|password|secret|credential|environment|env/i;
-const SECRET_VALUE_RE = /Bearer\s+[A-Za-z0-9._-]+|(?:sk|ghp|xox[baprs])[-_][A-Za-z0-9._-]+|AKIA[0-9A-Z]{16}/gi;
+const SECRET_VALUE_RE = /Bearer\s+[A-Za-z0-9._-]+|\b(?:sk|ghp|xox[baprs])[-_][A-Za-z0-9._-]+|AKIA[0-9A-Z]{16}/gi;
 
 const JWT_RE = /\beyJ[\w-]{5,}\.[\w-]{5,}\.(?!invalid-signature\b)[\w-]{5,}/g;
 const PEM_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g;
