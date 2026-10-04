@@ -68,6 +68,7 @@ export interface AuditFinding {
   recommendation: string;
   correlation?: FindingCorrelation;
   riskScore?: number;
+  evidenceSynthesis?: string;
 }
 
 export interface AuditIssue {
