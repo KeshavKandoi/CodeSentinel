@@ -273,6 +273,14 @@ export async function verifyRemediation(config: AppConfig, remediationId: string
     return await verifyRemediationInner(config, remediationId);
   } catch {
     return err('INTERNAL_ERROR', 'Remediation verification failed unexpectedly.');
+  }
+}
+
+async function guardVerification(remediationId: string, run: () => Promise<ToolOutcome<RemediationRecord>>): Promise<ToolOutcome<RemediationRecord>> {
+  try {
+    return await run();
+  } catch {
+    return err('INTERNAL_ERROR', 'Remediation verification failed unexpectedly.');
   } finally {
     const stuck = records.get(remediationId);
     if (stuck && stuck.status === 'verifying') { stuck.status = 'verification_inconclusive'; stuck.updatedAt = now(); }
@@ -282,7 +290,7 @@ export async function verifyRemediation(config: AppConfig, remediationId: string
 async function verifyRemediationInner(config: AppConfig, remediationId: string): Promise<ToolOutcome<RemediationRecord>> {
   const existing = records.get(remediationId);
   if (!existing) return err('REMEDIATION_NOT_FOUND', `Remediation "${remediationId}" was not found.`);
-  return withLock(lockKey(existing), async () => {
+  return withLock(lockKey(existing), () => guardVerification(remediationId, async () => {
     const record = records.get(remediationId)!;
     if (record.status !== 'applied_pending_verification' && record.status !== 'verification_inconclusive' && record.status !== 'changed_finding' && record.status !== 'still_vulnerable') return err('INVALID_TRANSITION', `Remediation cannot be verified from status "${record.status}".`);
     const drifted = Object.entries(record.appliedContentHashes).some(([file, expected]) => { try { return sha256(fs.readFileSync(resolveExistingWithinRoot(config.projectRoot, file))) !== expected; } catch { return true; } });
@@ -327,7 +335,7 @@ async function verifyRemediationInner(config: AppConfig, remediationId: string):
     const status: RemediationLifecycle = originalPresent ? 'still_vulnerable' : related.length > 0 ? 'changed_finding' : !record.proposal.requiresRuntimeVerification ? 'verification_inconclusive' : !replaySafe ? 'verification_inconclusive' : 'verified_resolved';
     const verification: RemediationVerification = { status, beforeFindingId: record.proposal.findingId, afterInvestigationId: after.data.id, staticFindingPresent: originalPresent, relatedFindings: related.map((finding) => ({ findingId: finding.findingId, title: finding.title, category: finding.category, path: finding.path, file: finding.file })), runtimeStatus, runtimeReceiptId, replayResult, summary: originalPresent ? 'The original finding remains after deterministic re-analysis.' : related.length > 0 ? 'The original finding changed or a related security finding was introduced.' : status === 'verified_resolved' ? 'The original finding was absent after deterministic re-analysis and its verified proof no longer reproduced.' : 'Static re-analysis did not establish a verified resolution.', verifiedAt: now() };
     record.verification = verification; record.status = status; record.updatedAt = now(); return ok(safeRecord(record));
-  });
+  }));
 }
 
 export async function rollbackRemediation(config: AppConfig, remediationId: string): Promise<ToolOutcome<RemediationRecord>> {
