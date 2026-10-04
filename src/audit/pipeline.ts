@@ -138,6 +138,11 @@ function collect(ctx: AuditContext, finding: AuditFinding): boolean {
   return existed;
 }
 
+function scopeReceipts(list: SecurityReceipt[], target: { allowedOrigin: string } | undefined): SecurityReceipt[] {
+  if (!target) return list;
+  return list.filter((receipt) => receipt.replayOfReceiptId !== null || receipt.targetOrigin === target.allowedOrigin);
+}
+
 function applyReceipts(finding: AuditFinding, receipts: SecurityReceipt[], ranNow: boolean): void {
   finding.proof.receiptIds = receipts.map((receipt) => receipt.receiptId).slice(0, 10);
   const originals = receipts.filter((receipt) => receipt.replayOfReceiptId === null);
@@ -395,7 +400,7 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
     for (const finding of eligible) {
       const sourceId = finding.classification.proofSourceId;
       if (!sourceId) continue;
-      let receipts = listSecurityReceiptsForFinding(sourceId);
+      let receipts = scopeReceipts(listSecurityReceiptsForFinding(sourceId), target);
       const hasVerified = receipts.some((receipt) => receipt.replayOfReceiptId === null && receipt.status === 'verified');
       let ranNow = false;
       if (!hasVerified && target) {
@@ -407,7 +412,7 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
           try {
             const outcome = await proveSecurityFinding(config, { findingId: sourceId, target, sessions: input.sessions, sessionParams: input.sessionParams });
             if (outcome.ok) {
-              receipts = listSecurityReceiptsForFinding(sourceId);
+              receipts = scopeReceipts(listSecurityReceiptsForFinding(sourceId), target);
               ranNow = true;
             } else {
               addIssue(ctx, 'runtime_proof', 'PROOF_DISPATCH_FAILED', outcome.error.message, true, [finding.id]);
