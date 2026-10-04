@@ -64,3 +64,9 @@ export function blockedResult(
 export function hasUnresolvedSegment(path: string): boolean {
   return /[:{<]/.test(path);
 }
+
+export function writeChangedState(method: string, before: RuntimeResponse, after: RuntimeResponse): boolean {
+  if (!isSuccessStatus(before) || before.bodyTruncated || after.bodyTruncated) return false;
+  if (method === 'DELETE' && (after.status === 404 || after.status === 410)) return true;
+  return isSuccessStatus(after) && before.bodySnippet.length > 0 && before.bodySnippet !== after.bodySnippet;
+}
