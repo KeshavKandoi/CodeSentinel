@@ -1,6 +1,7 @@
 import type { AppConfig } from '../config.js';
 import { runProjectDiscovery } from '../discovery/projectDiscovery.js';
 import { ok, type ToolOutcome } from '../types.js';
+import { redactSecurityText } from '../security/utils.js';
 import { getAdapters } from './adapterRegistry.js';
 import { createAdapterContext } from './sourceIndex.js';
 import type { AttackSurfaceEntry, DiscoverRoutesResult, Exposure } from './types.js';
@@ -48,8 +49,14 @@ export function discoverRoutes(config: AppConfig): ToolOutcome<DiscoverRoutesRes
     entries.push(entry);
   }
   entries.sort(
-    (a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.method.localeCompare(b.method) || a.path.localeCompare(b.path)
+    (a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.method.localeCompare(b.method) || a.path.localeCompare(b.path) || a.id.localeCompare(b.id)
   );
+
+  const MAX_ROUTE_ENTRIES = 10_000;
+  if (entries.length > MAX_ROUTE_ENTRIES) {
+    warnings.push(`${entries.length - MAX_ROUTE_ENTRIES} route entries were omitted by the ${MAX_ROUTE_ENTRIES}-entry limit.`);
+    entries.length = MAX_ROUTE_ENTRIES;
+  }
 
   const byKey = new Map<string, string[]>();
   for (const entry of entries) {
@@ -81,6 +88,12 @@ export function discoverRoutes(config: AppConfig): ToolOutcome<DiscoverRoutesRes
     frameworks,
     summary: { total: entries.length, byMethod, byFramework, byExposure },
     entries,
-    warnings: Array.from(new Set(warnings)),
+    warnings: boundWarnings(warnings),
   });
+}
+
+function boundWarnings(warnings: string[]): string[] {
+  const unique = Array.from(new Set(warnings.map((warning) => redactSecurityText(warning).slice(0, 400))));
+  if (unique.length <= 100) return unique;
+  return [...unique.slice(0, 100), `${unique.length - 100} additional warning(s) were omitted.`];
 }
