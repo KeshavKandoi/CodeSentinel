@@ -25,7 +25,7 @@ export function advance(finding: AuditFinding, to: FindingStatus): void {
   finding.status = to;
 }
 
-export function advanceToVerified(finding: AuditFinding, receipt: SecurityReceipt): void {
+export function advanceToVerified(finding: AuditFinding, receipt: SecurityReceipt, expectedOrigin?: string): void {
   const proven =
     receipt.status === 'verified' &&
     receipt.oracle === 'verified' &&
@@ -33,7 +33,7 @@ export function advanceToVerified(finding: AuditFinding, receipt: SecurityReceip
     receipt.proofCase.executable === true &&
     finding.classification.proofSupport === 'runtime' &&
     receipt.findingId === finding.classification.proofSourceId &&
-      isTrustedVerifiedReceipt(receipt, finding.classification.adapter);
+      isTrustedVerifiedReceipt(receipt, finding.classification.adapter, expectedOrigin);
   if (!proven) throw new Error('Verification requires an executable-adapter receipt with a verified semantic oracle');
   advance(finding, 'verified');
 }
