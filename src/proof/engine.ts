@@ -120,6 +120,36 @@ export function listSecurityProofAdapters(): Array<Pick<SecurityProofAdapter, 't
   ];
 }
 
+export interface ProofSupportQuery {
+  origin: 'access_control' | 'security_scan';
+  category: string;
+  candidateType: string;
+  ruleId: string | null;
+}
+
+export interface ProofSupportResolution {
+  supportClass: 'runtime' | 'requires-adapter' | 'static-only';
+  adapterType: ProofCaseType | null;
+  prerequisites: string[];
+  maxRequests: number;
+}
+
+export function resolveProofSupport(query: ProofSupportQuery): ProofSupportResolution {
+  let adapterType: ProofCaseType | null = null;
+  if (query.origin === 'access_control') {
+    adapterType = EXECUTABLE_ADAPTERS.find((adapter) => adapter.candidateTypes.includes(query.candidateType))?.type ?? null;
+  } else {
+    const probe = { ruleId: query.ruleId ?? '' } as SecurityFinding;
+    adapterType = SAFE_SOURCE_ADAPTERS.find((adapter) => adapter.categories.includes(query.category) && (!adapter.matchesFinding || (query.ruleId !== null && adapter.matchesFinding(probe))))?.type ?? null;
+  }
+  if (adapterType) {
+    const template = metadata(adapterType, 'classification');
+    return { supportClass: 'runtime', adapterType, prerequisites: [...template.prerequisites, ...template.requiredFixtureData], maxRequests: template.maxRequests };
+  }
+  const hinted = (PROOF_CASE_TYPES as readonly string[]).includes(query.category);
+  return { supportClass: hinted ? 'requires-adapter' : 'static-only', adapterType: null, prerequisites: [], maxRequests: 0 };
+}
+
 export function buildSecurityProofCaseTemplate(type: ProofCaseType): SecurityProofCase {
   return metadata(type, 'benchmark-template');
 }
@@ -385,11 +415,17 @@ export async function proveSecurityFinding(config: AppConfig, request: VerifyFin
   return ok(storeReceipt(safe));
 }
 
-export function buildSecurityGraph(config: AppConfig): ToolOutcome<SecurityGraph> {
-  const profile = runProjectDiscovery(config.projectRoot);
-  const routes = discoverRoutes(config);
+export interface GraphInputs {
+  profile: ReturnType<typeof runProjectDiscovery>;
+  routes: ReturnType<typeof discoverRoutes>;
+  access: ReturnType<typeof analyzeAccessControl> | null;
+}
+
+export function buildSecurityGraph(config: AppConfig, shared?: GraphInputs): ToolOutcome<SecurityGraph> {
+  const profile = shared?.profile ?? runProjectDiscovery(config.projectRoot);
+  const routes = shared?.routes ?? discoverRoutes(config);
   if (!routes.ok) return err('INTERNAL_ERROR', 'Route inventory could not be built for the security graph.');
-  const access = analyzeAccessControl(config, routes.data.entries);
+  const access = shared?.access ?? analyzeAccessControl(config, routes.data.entries);
   const listed = listFiles(config, { dirPath: '.', recursive: true, maxResults: 2_000 });
   const nodes: SecurityGraphNode[] = [];
   const edges: SecurityGraphEdge[] = [];

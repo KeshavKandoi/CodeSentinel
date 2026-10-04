@@ -309,3 +309,16 @@ export type DeepSecurityAuditInput = z.infer<typeof deepSecurityAuditSchema>;
 export const proveSecurityFindingSchema = verifyFindingSchema;
 export type ProveSecurityFindingInput = z.infer<typeof proveSecurityFindingSchema>;
 export const securityGraphSchema = z.object({}).strict();
+
+export const runFullSecurityAuditSchema = z.object({
+  target: runtimeTargetSchema.optional(),
+  sessions: z.array(testSessionSchema).max(10).default([]),
+  sessionParams: sessionParamsSchema.default({}),
+  investigationId: z.string().min(1).max(256).optional(),
+  maxFindings: z.number().int().min(1).max(500).optional(),
+  maxProofAttempts: z.number().int().min(1).max(10).optional(),
+  maxElapsedMs: z.number().int().min(5_000).max(600_000).optional(),
+  maxFiles: z.number().int().positive().max(2_000).optional(),
+  includeGraph: z.boolean().optional(),
+}).strict();
+export type RunFullSecurityAuditInput = z.infer<typeof runFullSecurityAuditSchema>;
