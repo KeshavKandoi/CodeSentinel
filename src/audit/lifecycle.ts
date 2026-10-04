@@ -1,4 +1,5 @@
 import type { SecurityReceipt } from '../proof/types.js';
+import { isTrustedVerifiedReceipt } from '../proof/engine.js';
 import type { AuditFinding, FindingStatus } from './types.js';
 
 const TRANSITIONS: Record<FindingStatus, readonly FindingStatus[]> = {
@@ -31,7 +32,8 @@ export function advanceToVerified(finding: AuditFinding, receipt: SecurityReceip
     receipt.whyProven.length > 0 &&
     receipt.proofCase.executable === true &&
     finding.classification.proofSupport === 'runtime' &&
-    receipt.findingId === finding.classification.proofSourceId;
+    receipt.findingId === finding.classification.proofSourceId &&
+      isTrustedVerifiedReceipt(receipt, finding.classification.adapter);
   if (!proven) throw new Error('Verification requires an executable-adapter receipt with a verified semantic oracle');
   advance(finding, 'verified');
 }
