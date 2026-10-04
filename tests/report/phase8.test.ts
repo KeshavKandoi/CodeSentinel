@@ -122,3 +122,66 @@ describe('Phase 8 evidence-backed report generation', () => {
     expect(value.body.length).toBeLessThanOrEqual(2_000);
   });
 });
+
+describe('Phase 8 report completeness and integrity', () => {
+  it('carries bounded riskScore and synthesis on every finding without overclaiming runtime proof', async () => {
+    const { investigationId, findingId } = await completedInvestigation();
+    const report = payload(await tool('generate_security_report').handler(config, { investigationId }));
+    expect(report.findings.length).toBeGreaterThan(0);
+    for (const finding of report.findings) {
+      expect(Number.isInteger(finding.riskScore)).toBe(true);
+      expect(finding.riskScore).toBeGreaterThanOrEqual(0);
+      expect(finding.riskScore).toBeLessThanOrEqual(100);
+      expect(typeof finding.evidenceSynthesis).toBe('string');
+      expect(finding.evidenceSynthesis.length).toBeLessThanOrEqual(600);
+      expect(finding.remediationState).toEqual({ status: null, remediationIds: [] });
+      if (finding.status !== 'runtime_verified') expect(finding.evidenceSynthesis).not.toContain('verified the condition');
+      if (!finding.runtimeResult) expect(finding.evidenceSynthesis).not.toMatch(/Runtime proof/);
+    }
+    const single = payload(await tool('get_security_finding').handler(config, { investigationId, findingId }));
+    const fromReport = report.findings.find((item: any) => item.findingId === findingId);
+    expect(single.riskScore).toBe(fromReport.riskScore);
+    expect(single.evidenceSynthesis).toBe(fromReport.evidenceSynthesis);
+  });
+
+  it('produces identical finding content for repeated reports', async () => {
+    const { investigationId } = await completedInvestigation();
+    const first = payload(await tool('generate_security_report').handler(config, { investigationId }));
+    const second = payload(await tool('generate_security_report').handler(config, { investigationId }));
+    expect(JSON.stringify(second.findings)).toBe(JSON.stringify(first.findings));
+  });
+
+  it('redacts the full credential set while keeping benign evidence readable', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop';
+    const input = { notes: ['password=fixture-secret', 'key sk_live_abcdef1234567890', 'Authorization: Bearer abc.def.ghi', jwt, 'Authorization: Basic dXNlcjpwYXNzd29yZA==', 'postgres://admin:hunter2@db.local/app', 'Cookie: sid=abc123; theme=dark', 'Set-Cookie: session=zzz999; HttpOnly', '-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY-----', 'Access-Control-Allow-Origin: *'] };
+    const out = JSON.stringify(detachedRedacted(input));
+    for (const leak of ['fixture-secret', 'sk_live_abcdef', 'abc.def.ghi', 'eyJzdWIi', 'dXNlcjpw', 'hunter2', 'sid=abc123', 'session=zzz999', 'MIIabc']) expect(out).not.toContain(leak);
+    expect(out).toContain('Access-Control-Allow-Origin: *');
+  });
+
+  it('redacts credentials in investigation views with the shared redactor', async () => {
+    const started = payload(await tool('start_security_investigation').handler(config, { projectPath: FIXTURE, scope: ['authentication'], hypothesis: 'Check Authorization: Basic dXNlcjpwYXNzd29yZA== and key sk_live_abcdef1234567890 for exposure.' }));
+    const view = JSON.stringify(payload(await tool('get_investigation').handler(config, { investigationId: started.id })));
+    expect(view).not.toContain('dXNlcjpw');
+    expect(view).not.toContain('sk_live_abcdef');
+  });
+
+  it('rejects forged lifecycle fields and malformed references safely', async () => {
+    const forged: Array<[string, Record<string, unknown>]> = [
+      ['generate_security_report', { investigationId: 'x', status: 'verified' }],
+      ['get_security_finding', { investigationId: 'x', findingId: 'y', status: 'runtime_verified' }],
+      ['verify_remediation', { remediationId: 'x', status: 'verified_resolved' }],
+      ['rollback_remediation', { remediationId: 'x', verified: true }],
+      ['verify_remediation', { remediationId: 'x'.repeat(200) }],
+    ];
+    for (const [name, input] of forged) {
+      const response = await tool(name).handler(config, input);
+      expect(response.isError).toBe(true);
+      expect(payload(response).error).toBe('INVALID_INPUT');
+    }
+    for (const name of ['verify_remediation', 'apply_remediation', 'rollback_remediation']) {
+      expect(payload(await tool(name).handler(config, { remediationId: 'missing' })).error).toBe('REMEDIATION_NOT_FOUND');
+    }
+    expect(payload(await tool('get_security_finding').handler(config, { investigationId: 'missing', findingId: 'f' })).error).toBe('INVESTIGATION_NOT_FOUND');
+  });
+});
