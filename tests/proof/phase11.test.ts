@@ -65,10 +65,10 @@ describe('Phase 11 real local fixture proofs', () => {
       const target = { allowedOrigin: `http://127.0.0.1:${port}`, allowDestructiveMethods: true, vettedTestPaths: ['/transfer', '/webhook', '/profile', '/upload'], minRequestIntervalMs: 0 };
       const paths: Array<{ path: string; body: string; expected: number }> = [
         { path: '/transfer', body: 'amount=1', expected: 403 }, { path: '/webhook', body: '{}', expected: 401 },
-        { path: '/profile', body: 'role=admin', expected: 200 }, { path: '/upload', body: 'inert', expected: 415 },
+        { path: '/profile', body: 'role=admin', expected: 200 }, { path: '/upload', body: 'filename="a.html"', expected: 415 },
       ];
       for (const item of paths) {
-        const evidence = await issueRuntimeRequest(target, new Map(), { method: 'POST', path: item.path, sessionId: null, body: item.body }, new RuntimeClientState(target));
+        const evidence = await issueRuntimeRequest(target, new Map(), { method: 'POST', path: item.path, sessionId: null, body: item.body, headers: { origin: 'https://cross-site.invalid' } }, new RuntimeClientState(target));
         expect(evidence.response.status).toBe(item.expected);
         expect(evidence.response.bodySnippet).not.toMatch(/CODESENTINEL_PROOF_(?:CSRF|WEBHOOK|ADMIN|UPLOAD)/);
       }
