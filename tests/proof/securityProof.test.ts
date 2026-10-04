@@ -936,3 +936,31 @@ describe('Phase 9 resource-limit battery', () => {
     }
   }, 180_000);
 });
+
+describe('Phase 9 Digest credential redaction', () => {
+  it('redacts the full Digest authorization value and keeps benign header text readable', () => {
+    const out = JSON.stringify(detachedRedacted('Authorization: Digest username="bob", realm="r", response="abcdef0123456789abcdef"\nAccess-Control-Allow-Origin: *'));
+    expect(out).not.toContain('abcdef0123456789abcdef');
+    expect(out).not.toContain('bob');
+    expect(out).toContain('Access-Control-Allow-Origin: *');
+  });
+});
+
+describe('Phase 9 error response redaction at the MCP boundary', () => {
+  const hostile = 'Authorization: Digest username="bob", response="abcdef0123456789abcdef" Authorization: Basic dXNlcjpwYXNz Authorization: Token tok-abc123xyz';
+  const secrets = ['abcdef0123456789abcdef', 'dXNlcjpwYXNz', 'tok-abc123xyz'];
+  it.each([
+    ['get_security_finding', { investigationId: hostile.slice(0, 120), findingId: hostile }],
+    ['verify_remediation', { remediationId: hostile.slice(0, 120) }],
+    ['rollback_remediation', { remediationId: hostile.slice(0, 120) }],
+    ['get_investigation', { investigationId: hostile.slice(0, 120) }],
+    ['scan_project', { [hostile.slice(0, 100)]: 1 }],
+  ])('does not echo secrets from %s error responses', async (name, input) => {
+    const tool = toolDefinitions.find((item) => item.name === name);
+    expect(tool).toBeDefined();
+    const response = await tool!.handler(securityConfig, input);
+    expect(response.isError).toBe(true);
+    const text = JSON.stringify(response);
+    for (const secret of secrets) expect(text, `${name}:${secret}`).not.toContain(secret);
+  });
+});
