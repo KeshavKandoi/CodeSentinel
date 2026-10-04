@@ -679,3 +679,117 @@ describe('Phase 9 blocked and budget-limited results', () => {
     resetSecurityProofsForTests();
   }, 120_000);
 });
+
+describe('Phase 9 secure and inconclusive end-to-end proofs', () => {
+  it('runs every runtime-capable finding against the secure server and ends not_reproduced, never verified', async () => {
+    resetSecurityProofsForTests();
+    const result = await runSecurityAuditPipeline(vulnerableProofConfig, { sessions: [], sessionParams: {}, maxProofAttempts: 100, target: { allowedOrigin: secureProofOrigin, minRequestIntervalMs: 0 } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const runtime = result.data.findings.filter((finding) => finding.classification.proofSupport === 'runtime');
+    expect(runtime.length).toBe(6);
+    for (const finding of runtime) {
+      expect(finding.proof.attempted, String(finding.classification.adapter)).toBe(true);
+      expect(finding.status, String(finding.classification.adapter)).toBe('not_reproduced');
+      expect(finding.proof.status).toBe('not_reproduced');
+      expect(finding.proof.receiptIds.length).toBeGreaterThan(0);
+    }
+    expect(result.data.findings.some((finding) => finding.status === 'verified' || finding.proof.status === 'verified')).toBe(false);
+    expect(result.data.summary.runtimeVerified).toBe(0);
+    resetSecurityProofsForTests();
+  }, 120_000);
+
+  it('returns inconclusive from the real proof engine when a public route cannot establish a protected baseline', async () => {
+    resetSecurityProofsForTests();
+    const phase11Root = fs.realpathSync(fileURLToPath(new URL('../fixtures/phase11-runtime', import.meta.url)));
+    const phase11Config: AppConfig = { ...config, projectRoot: phase11Root };
+    const scan = await scanProject(phase11Config);
+    expect(scan.ok).toBe(true);
+    if (!scan.ok) return;
+    const finding = scan.data.findings.find((item) => item.ruleId === 'CS-NODE-016');
+    expect(finding).toBeDefined();
+    if (!finding) return;
+    const publicServer = http.createServer((_request, response) => { response.writeHead(200, { 'content-type': 'text/plain' }); response.end('ok'); });
+    const publicOrigin = await listen(publicServer);
+    try {
+      const target = { allowedOrigin: publicOrigin, minRequestIntervalMs: 0 };
+      const result = await proveSecurityFinding(phase11Config, { findingId: finding.id, target });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.status).toBe('inconclusive');
+      expect(result.data.oracle).toBe('inconclusive');
+      expect(result.data.whyProven).toBe('');
+      expect(result.data.limitation).toMatch(/protected baseline/);
+      expect(result.data.responseFacts.length).toBeGreaterThan(0);
+      const lifecycleFinding = { status: 'proof_eligible', classification: { proofSupport: 'runtime', proofStatus: 'eligible', adapter: 'jwt_verification', proofSourceId: finding.id, prerequisites: [], maxRequests: 2, reason: 'test' } } as unknown as AuditFinding;
+      expect(() => advanceToVerified(lifecycleFinding, result.data, publicOrigin)).toThrow();
+      expect(lifecycleFinding.status).toBe('proof_eligible');
+      let accepted = 1;
+      for (let index = 0; index < 20; index++) {
+        const next = await proveSecurityFinding(phase11Config, { findingId: finding.id, target });
+        if (!next.ok) { expect(next.error.code).toBe('BUDGET_EXCEEDED'); break; }
+        expect(next.data.status).toBe('inconclusive');
+        accepted += 1;
+      }
+      expect(accepted).toBe(10);
+    } finally {
+      await new Promise<void>((resolve) => publicServer.close(() => resolve()));
+      resetSecurityProofsForTests();
+    }
+  }, 120_000);
+});
+
+describe('Phase 9 sensitive value redaction boundary', () => {
+  const forbidden = ['abcdef1234567890', 'abc123def456ghi789', 'dXNlcjpwYXNz', 'c2lnbmF0dXJlMTIzNDU2', 'hunter2', 'fixturecookie123', 'fixture-secret', 'tok-abc123', 'p4ss', 'MIIBOgIBAAJBAKj34'];
+  const leakBody = 'CODESENTINEL_PROOF_XSS_SENTINEL sk_live_abcdef1234567890 Bearer abc123def456ghi789 Basic dXNlcjpwYXNz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMxMjMifQ.c2lnbmF0dXJlMTIzNDU2 postgres://admin:hunter2@db.local/app Cookie: sid=fixturecookie123 api_secret=fixture-secret {"token":"tok-abc123","password":"p4ss"} -----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END RSA PRIVATE KEY-----';
+
+  it.each([
+    ['bare unpadded Basic credential', 'sent Basic dXNlcjpwYXNz here', 'dXNlcjpwYXNz'],
+    ['padded Basic credential', 'sent Basic dXNlcjpwYXNzd29yZA== here', 'dXNlcjpwYXNzd29yZA'],
+    ['Authorization Basic header', 'Authorization: Basic dXNlcjpwYXNz', 'dXNlcjpwYXNz'],
+    ['JSON token field', '{"token":"tok-abc123","ok":true}', 'tok-abc123'],
+    ['JSON access token field', '{"access_token":"tok-abc123"}', 'tok-abc123'],
+    ['JSON password and secret fields', '{"password":"p4ss","secret":"s3cr3t"}', 'p4ss'],
+    ['sk_live key', 'key sk_live_abcdef1234567890 end', 'abcdef1234567890'],
+    ['JWT', 'tok eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMxMjMifQ.c2lnbmF0dXJlMTIzNDU2 end', 'c2lnbmF0dXJlMTIzNDU2'],
+    ['Bearer', 'sent Bearer abc123def456ghi789 here', 'abc123def456ghi789'],
+    ['URL credentials', 'connect postgres://admin:hunter2@db.local/app', 'hunter2'],
+    ['Cookie header', 'Cookie: sid=fixturecookie123; theme=dark', 'fixturecookie123'],
+    ['Set-Cookie header', 'Set-Cookie: sid=fixturecookie123; HttpOnly', 'fixturecookie123'],
+    ['PEM private key', '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END RSA PRIVATE KEY-----', 'MIIBOgIBAAJBAKj34'],
+    ['keyed fixture-secret', 'api_secret=fixture-secret&x=1', 'fixture-secret'],
+  ])('redacts %s', (_label, input, secret) => {
+    expect(JSON.stringify(detachedRedacted(input))).not.toContain(secret);
+  });
+
+  it('does not redact ordinary prose that merely mentions Basic authentication', () => {
+    expect(detachedRedacted('Basic authentication is not used here')).toBe('Basic authentication is not used here');
+  });
+
+  it('never returns sensitive response content through the prove_security_finding tool', async () => {
+    resetSecurityProofsForTests();
+    const scan = await scanProject(vulnerableProofConfig);
+    expect(scan.ok).toBe(true);
+    if (!scan.ok) return;
+    const finding = scan.data.findings.find((item) => item.category === 'xss');
+    expect(finding).toBeDefined();
+    if (!finding) return;
+    const leakServer = http.createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/plain', 'set-cookie': 'connect.sid=fixturecookie123; HttpOnly', 'x-api-key': 'sk_live_abcdef1234567890', authorization: 'Basic dXNlcjpwYXNz' });
+      response.end(leakBody);
+    });
+    const leakOrigin = await listen(leakServer);
+    try {
+      const tool = toolDefinitions.find((item) => item.name === 'prove_security_finding');
+      expect(tool).toBeDefined();
+      if (!tool) return;
+      const response = await tool.handler(vulnerableProofConfig, { findingId: finding.id, target: { allowedOrigin: leakOrigin, minRequestIntervalMs: 0 } });
+      const text = JSON.stringify(response);
+      expect(text).toContain('receipt-');
+      for (const secret of forbidden) expect(text, secret).not.toContain(secret);
+    } finally {
+      await new Promise<void>((resolve) => leakServer.close(() => resolve()));
+      resetSecurityProofsForTests();
+    }
+  });
+});
