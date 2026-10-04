@@ -204,6 +204,7 @@ async function performRequest(
 
     if (response.status >= 300 && response.status < 400 && response.headers.has('location')) {
       hop++;
+      response.body?.cancel().catch(() => undefined);
       if (hop > maxRedirects) {
         return toEvidence(
           req,
@@ -240,7 +241,10 @@ async function performRequest(
       continue;
     }
 
-    const { text, truncated } = await readBodyCapped(response, maxBytes);
+    const bodyTimer = setTimeout(() => controller.abort(), timeoutMs);
+    let bodyResult: { text: string; truncated: boolean };
+    try { bodyResult = await readBodyCapped(response, maxBytes); } catch { bodyResult = { text: '', truncated: true }; } finally { clearTimeout(bodyTimer); }
+    const { text, truncated } = bodyResult;
     return toEvidence(
       req,
       {
