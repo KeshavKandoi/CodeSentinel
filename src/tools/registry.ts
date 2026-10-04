@@ -348,7 +348,7 @@ const coreToolDefinitions: ToolDefinition[] = [
       if (!validation.ok) return invalidInputResponse(validation.message);
       try {
         const result = await verifyFinding(config, validation.data);
-        if (!result.ok) return toMcpResponse(err(result.error.code, result.error.message));
+        if (!result.ok) return toMcpResponse(err(result.error.code, String(detachedRedacted(result.error.message))));
         return toMcpResponse(ok(detachedRedacted(result.data)));
       } catch (e) {
         logger.error('verify_finding_failed', { message: (e as Error).message });
