@@ -71,6 +71,8 @@ export interface SecurityReceipt {
   replayOfReceiptId: string | null;
   beforeAfter: { beforeStatus: ProofStatus; afterStatus: ProofStatus } | null;
   limitation: string | null;
+  targetOrigin?: string;
+  executedAt?: string;
 }
 
 export interface SecurityGraphNode { id: string; kind: string; label: string; sourceRef: string; }
