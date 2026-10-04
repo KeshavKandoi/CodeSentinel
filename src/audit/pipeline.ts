@@ -140,7 +140,7 @@ function collect(ctx: AuditContext, finding: AuditFinding): boolean {
 
 function scopeReceipts(list: SecurityReceipt[], target: { allowedOrigin: string } | undefined): SecurityReceipt[] {
   if (!target) return list;
-  return list.filter((receipt) => receipt.replayOfReceiptId !== null || receipt.targetOrigin === target.allowedOrigin);
+  return list.filter((receipt) => receipt.targetOrigin === target.allowedOrigin);
 }
 
 function applyReceipts(finding: AuditFinding, receipts: SecurityReceipt[], ranNow: boolean): void {
@@ -193,8 +193,8 @@ function collectResolved(ctx: AuditContext, investigationId: string): void {
     if (!view) continue;
     const receipts = listSecurityReceiptsForFinding(sourceId);
     const original = receipts.find((receipt) => receipt.replayOfReceiptId === null && receipt.status === 'verified');
-    const replay = [...receipts].reverse().find((receipt) => receipt.replayOfReceiptId !== null && receipt.status === 'not_reproduced');
-    if (!original || !replay) continue;
+    const replay = [...receipts].reverse().find((receipt) => original !== undefined && receipt.replayOfReceiptId === original.receiptId && receipt.status === 'not_reproduced');
+    if (!original || !replay || original.targetOrigin === undefined || original.targetOrigin !== replay.targetOrigin) continue;
     const file = normalizeFile(view.file || record.proposal.files[0]?.path || null);
     const route = view.path ? view.path : null;
     const category = view.origin === 'access_control' ? accessCategory(view.candidateType, view.category) : canonicalCategory(view.category);
