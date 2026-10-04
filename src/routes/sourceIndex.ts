@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { AppConfig } from '../config.js';
 import type { ProjectProfile } from '../discovery/types.js';
 import { dirExists, fileExists, listTopLevelNames } from '../discovery/manifestReader.js';
@@ -35,6 +37,11 @@ export function createAdapterContext(config: AppConfig, profile: ProjectProfile,
     for (const name of names) {
       if (out.length >= MAX_FILES) return;
       const childRel = rel === '' ? name : `${rel}/${name}`;
+    try {
+      if (fs.lstatSync(path.join(root, childRel)).isSymbolicLink()) continue;
+    } catch {
+      continue;
+    }
       if (dirExists(root, childRel)) {
         if (IGNORED_DIRS.has(name) || name.endsWith('.egg-info')) continue;
         if (fileExists(root, `${childRel}/pyvenv.cfg`)) continue; // Python virtualenv
