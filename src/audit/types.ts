@@ -5,6 +5,7 @@ import type { SecurityScanResult } from '../security/types.js';
 import type { AnalyzeAccessControlResult } from '../access/types.js';
 import type { ProofCaseType, ProofStatus, SecurityGraph, SecurityGraphEdge, SecurityGraphNode, SecurityReceipt } from '../proof/types.js';
 import type { RemediationLifecycle, RemediationRecord } from '../remediation/types.js';
+import type { NearDuplicateGroup } from './graph.js';
 
 export const AUDIT_STAGES = ['discovery', 'route_discovery', 'static_scan', 'access_control', 'deep_analysis', 'candidate_classification', 'runtime_proof', 'graph_construction', 'report'] as const;
 export type AuditStage = (typeof AUDIT_STAGES)[number];
@@ -165,6 +166,7 @@ export interface AuditResult {
   stages: StageRecord[];
   summary: AuditSummary;
   findings: AuditFinding[];
+  nearDuplicates: NearDuplicateGroup[];
   graph: AuditGraphSummary;
   remediation: { investigationId: string | null; records: number; resolved: number };
   finalVerification: FinalVerification;
