@@ -4,14 +4,14 @@ import {
   resolveExistingWithinRoot,
   resolveWithinRoot,
   toRelativePosix,
+  openRegularFileWithinRoot,
+  isStableDirectory,
   PathOutsideRootError,
   InvalidPathError,
 } from './pathGuard.js';
 import { ok, err, type ToolOutcome, type FileEntry, type SearchMatch } from '../types.js';
 import type { AppConfig } from '../config.js';
 
-// Directories we always skip while walking, regardless of caller input —
-// keeps results useful and avoids pulling huge dependency trees into output.
 const DEFAULT_IGNORED_DIRS = new Set([
   '.git',
   'node_modules',
@@ -22,10 +22,33 @@ const DEFAULT_IGNORED_DIRS = new Set([
   '__pycache__',
 ]);
 
-/** Credential/configuration files are never exposed through inspection APIs. */
+const SENSITIVE_MESSAGE = 'Sensitive credential and repository configuration files are not available through inspection tools.';
+const SENSITIVE_DIRECTORY_NAMES = new Set(['.ssh', '.aws', '.gnupg', '.kube', 'credential', 'credentials']);
+const SENSITIVE_FILE_NAMES = new Set(['.netrc', '.npmrc', '.pypirc', '.pgpass', '.htpasswd', '.git-credentials', '.dockercfg']);
+const SENSITIVE_ENV_FILE = /^\.env(?:\.|$)/;
+const SENSITIVE_KEY_FILE = /\.(?:pem|key|p12|pfx|jks|keystore|ppk)$/;
+const SENSITIVE_IDENTITY_FILE = /^id_(?:rsa|dsa|ecdsa|ed25519)$/;
+const MAX_SEARCH_LINE_CHARS = 2000;
+const NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d)/;
+
+function normalizeSegment(segment: string): string {
+  const base = segment.split(':')[0] ?? '';
+  return base.replace(/[. ]+$/, '').toLowerCase();
+}
+
 export function isSensitiveInspectionPath(filePath: string): boolean {
-  const normalized = filePath.replaceAll('\\', '/').replace(/^\.\//, '');
-  return /(^|\/)(\.env(?:\.[^/]+)?|\.ssh(?:\/|$)|credentials?(?:\/|$)|id_(?:rsa|dsa|ecdsa|ed25519)(?:$|\/)|[^/]+\.(?:pem|key|p12|pfx)|\.git\/config)$/.test(normalized);
+  const segments = filePath
+    .replaceAll('\\', '/')
+    .split('/')
+    .map(normalizeSegment)
+    .filter((segment) => segment !== '');
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    if (SENSITIVE_DIRECTORY_NAMES.has(segment) || SENSITIVE_FILE_NAMES.has(segment)) return true;
+    if (SENSITIVE_ENV_FILE.test(segment) || SENSITIVE_KEY_FILE.test(segment) || SENSITIVE_IDENTITY_FILE.test(segment)) return true;
+    if (segment === '.git' && segments[index + 1] === 'config') return true;
+  }
+  return false;
 }
 
 function toPathError<T>(e: unknown, attemptedPath: string): ToolOutcome<T> {
@@ -35,11 +58,13 @@ function toPathError<T>(e: unknown, attemptedPath: string): ToolOutcome<T> {
   if (e instanceof InvalidPathError) {
     return err('INVALID_INPUT', e.message);
   }
-  throw e;
+  return err('INTERNAL_ERROR', 'Path could not be resolved.');
 }
 
+const byName = (a: fs.Dirent, b: fs.Dirent): number => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+
 export interface ListFilesOptions {
-  dirPath: string; // relative to project root, '.' for root
+  dirPath: string;
   recursive: boolean;
   maxResults: number;
 }
@@ -51,6 +76,9 @@ export function listFiles(config: AppConfig, opts: ListFilesOptions): ToolOutcom
   } catch (e) {
     return toPathError(e, opts.dirPath);
   }
+  if (isSensitiveInspectionPath(opts.dirPath) || isSensitiveInspectionPath(toRelativePosix(config.projectRoot, absDir))) {
+    return err('INVALID_INPUT', SENSITIVE_MESSAGE);
+  }
 
   let stat: fs.Stats;
   try {
@@ -60,6 +88,9 @@ export function listFiles(config: AppConfig, opts: ListFilesOptions): ToolOutcom
   }
   if (!stat.isDirectory()) {
     return err('NOT_A_DIRECTORY', `Not a directory: ${opts.dirPath}`);
+  }
+  if (!isStableDirectory(config.projectRoot, absDir)) {
+    return err('PATH_OUTSIDE_ROOT', `Access denied: "${opts.dirPath}" is outside the project root.`);
   }
 
   const results: FileEntry[] = [];
@@ -71,8 +102,9 @@ export function listFiles(config: AppConfig, opts: ListFilesOptions): ToolOutcom
     try {
       entries = fs.readdirSync(dirAbs, { withFileTypes: true });
     } catch {
-      return; // permission errors etc. — skip silently, don't fail whole listing
+      return;
     }
+    entries.sort(byName);
 
     for (const entry of entries) {
       if (results.length >= cap) return;
@@ -83,18 +115,20 @@ export function listFiles(config: AppConfig, opts: ListFilesOptions): ToolOutcom
       if (isSensitiveInspectionPath(relPosix)) continue;
 
       if (entry.isDirectory()) {
+        if (!isStableDirectory(config.projectRoot, entryAbs)) continue;
         results.push({ path: relPosix, type: 'directory' });
         if (opts.recursive) walk(entryAbs);
       } else if (entry.isFile()) {
         let size: number | undefined;
         try {
-          size = fs.statSync(entryAbs).size;
+          const entryStat = fs.lstatSync(entryAbs);
+          if (!entryStat.isFile()) continue;
+          size = entryStat.size;
         } catch {
           size = undefined;
         }
         results.push({ path: relPosix, type: 'file', sizeBytes: size });
       }
-      // symlinks and other special files are intentionally omitted
     }
   };
 
@@ -105,7 +139,6 @@ export function listFiles(config: AppConfig, opts: ListFilesOptions): ToolOutcom
 export interface ReadFileOptions {
   filePath: string;
   maxBytes?: number;
-  /** Internal scanner use only; MCP callers never receive this capability. */
   allowSensitive?: boolean;
 }
 
@@ -118,7 +151,7 @@ export interface ReadFileResult {
 
 export function readFile(config: AppConfig, opts: ReadFileOptions): ToolOutcome<ReadFileResult> {
   if (!opts.allowSensitive && isSensitiveInspectionPath(opts.filePath)) {
-    return err('INVALID_INPUT', 'Sensitive credential and repository configuration files are not available through inspection tools.');
+    return err('INVALID_INPUT', SENSITIVE_MESSAGE);
   }
   let absPath: string;
   try {
@@ -126,39 +159,37 @@ export function readFile(config: AppConfig, opts: ReadFileOptions): ToolOutcome<
   } catch (e) {
     return toPathError(e, opts.filePath);
   }
+  if (!opts.allowSensitive && isSensitiveInspectionPath(toRelativePosix(config.projectRoot, absPath))) {
+    return err('INVALID_INPUT', SENSITIVE_MESSAGE);
+  }
 
   const limit = Math.min(opts.maxBytes ?? config.maxReadFileBytes, config.maxReadFileBytes);
-  let fd: number;
-  try {
-    // Open the already-contained path without following a final-component
-    // symlink. This closes the resolve/stat/read race where a file could be
-    // swapped to an outside symlink between the containment check and read.
-    fd = fs.openSync(absPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    return err(code === 'ENOENT' ? 'NOT_FOUND' : 'INTERNAL_ERROR', code === 'ENOENT' ? `File not found: ${opts.filePath}` : `Failed to open file: ${(e as Error).message}`);
+  const opened = openRegularFileWithinRoot(config.projectRoot, absPath);
+  if (!opened.ok) {
+    if (opened.reason === 'not_found') return err('NOT_FOUND', `File not found: ${opts.filePath}`);
+    if (opened.reason === 'not_file') return err('NOT_A_FILE', `Not a regular file: ${opts.filePath}`);
+    if (opened.reason === 'outside') return err('PATH_OUTSIDE_ROOT', `Access denied: "${opts.filePath}" is outside the project root.`);
+    return err('INTERNAL_ERROR', 'Failed to open file.');
   }
   try {
-    const stat = fs.fstatSync(fd);
-    if (!stat.isFile()) return err('NOT_A_FILE', `Not a regular file: ${opts.filePath}`);
-    const bytesToRead = Math.min(stat.size, limit);
+    const bytesToRead = Math.min(opened.size, limit);
     const buffer = Buffer.alloc(bytesToRead);
     let offset = 0;
     while (offset < bytesToRead) {
-      const read = fs.readSync(fd, buffer, offset, bytesToRead - offset, offset);
+      const read = fs.readSync(opened.fd, buffer, offset, bytesToRead - offset, offset);
       if (read === 0) break;
       offset += read;
     }
     return ok({
       path: opts.filePath,
       content: buffer.subarray(0, offset).toString('utf-8'),
-      sizeBytes: stat.size,
-      truncated: stat.size > limit,
+      sizeBytes: opened.size,
+      truncated: opened.size > limit,
     });
-  } catch (e) {
-    return err('INTERNAL_ERROR', `Failed to read file: ${(e as Error).message}`);
+  } catch {
+    return err('INTERNAL_ERROR', 'Failed to read file.');
   } finally {
-    fs.closeSync(fd);
+    fs.closeSync(opened.fd);
   }
 }
 
@@ -168,8 +199,29 @@ export interface SearchFilesOptions {
   caseSensitive: boolean;
   maxResults: number;
   isRegex: boolean;
-  /** Internal scanner use only; MCP callers never receive this capability. */
   allowSensitive?: boolean;
+}
+
+function readSearchableText(config: AppConfig, absPath: string): string | null {
+  const opened = openRegularFileWithinRoot(config.projectRoot, absPath);
+  if (!opened.ok) return null;
+  try {
+    if (opened.size > config.maxReadFileBytes) return null;
+    const buffer = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < opened.size) {
+      const read = fs.readSync(opened.fd, buffer, offset, opened.size - offset, offset);
+      if (read === 0) break;
+      offset += read;
+    }
+    const content = buffer.subarray(0, offset);
+    if (content.subarray(0, 512).includes(0)) return null;
+    return content.toString('utf-8');
+  } catch {
+    return null;
+  } finally {
+    fs.closeSync(opened.fd);
+  }
 }
 
 export function searchFiles(config: AppConfig, opts: SearchFilesOptions): ToolOutcome<SearchMatch[]> {
@@ -177,7 +229,7 @@ export function searchFiles(config: AppConfig, opts: SearchFilesOptions): ToolOu
     return err('INVALID_INPUT', 'Search query must not be empty');
   }
   if (!opts.allowSensitive && isSensitiveInspectionPath(opts.dirPath)) {
-    return err('INVALID_INPUT', 'Sensitive credential and repository configuration paths are not available through inspection tools.');
+    return err('INVALID_INPUT', SENSITIVE_MESSAGE);
   }
 
   let absDir: string;
@@ -185,6 +237,9 @@ export function searchFiles(config: AppConfig, opts: SearchFilesOptions): ToolOu
     absDir = resolveExistingWithinRoot(config.projectRoot, opts.dirPath);
   } catch (e) {
     return toPathError(e, opts.dirPath);
+  }
+  if (!opts.allowSensitive && isSensitiveInspectionPath(toRelativePosix(config.projectRoot, absDir))) {
+    return err('INVALID_INPUT', SENSITIVE_MESSAGE);
   }
 
   let stat: fs.Stats;
@@ -196,7 +251,13 @@ export function searchFiles(config: AppConfig, opts: SearchFilesOptions): ToolOu
   if (!stat.isDirectory()) {
     return err('NOT_A_DIRECTORY', `Not a directory: ${opts.dirPath}`);
   }
+  if (!isStableDirectory(config.projectRoot, absDir)) {
+    return err('PATH_OUTSIDE_ROOT', `Access denied: "${opts.dirPath}" is outside the project root.`);
+  }
 
+  if (opts.isRegex && NESTED_QUANTIFIER.test(opts.query)) {
+    return err('INVALID_INPUT', 'Regex patterns with nested quantifiers are not permitted.');
+  }
   let matcher: RegExp;
   try {
     const flags = opts.caseSensitive ? 'g' : 'gi';
@@ -217,46 +278,37 @@ export function searchFiles(config: AppConfig, opts: SearchFilesOptions): ToolOu
     } catch {
       return;
     }
+    entries.sort(byName);
 
     for (const entry of entries) {
       if (results.length >= cap) return;
+      const entryAbs = path.join(dirAbs, entry.name);
+      const relPosix = toRelativePosix(config.projectRoot, entryAbs);
       if (entry.isDirectory()) {
         if (DEFAULT_IGNORED_DIRS.has(entry.name)) continue;
-        walk(path.join(dirAbs, entry.name));
+        if (!opts.allowSensitive && isSensitiveInspectionPath(relPosix)) continue;
+        if (!isStableDirectory(config.projectRoot, entryAbs)) continue;
+        walk(entryAbs);
         continue;
       }
       if (!entry.isFile()) continue;
-
-      const entryAbs = path.join(dirAbs, entry.name);
-      let stat2: fs.Stats;
-      try {
-        stat2 = fs.statSync(entryAbs);
-      } catch {
-        continue;
-      }
-      if (stat2.size > config.maxReadFileBytes) continue; // skip huge/binary-ish files
-      if (isLikelyBinary(entryAbs)) continue;
-
-      let text: string;
-      try {
-        text = fs.readFileSync(entryAbs, 'utf-8');
-      } catch {
-        continue;
-      }
-
-      const relPosix = toRelativePosix(config.projectRoot, entryAbs);
       if (!opts.allowSensitive && isSensitiveInspectionPath(relPosix)) continue;
+
+      const text = readSearchableText(config, entryAbs);
+      if (text === null) continue;
+
       const lines = text.split('\n');
       for (let i = 0; i < lines.length; i++) {
         if (results.length >= cap) return;
+        const line = lines[i]!.slice(0, MAX_SEARCH_LINE_CHARS);
         matcher.lastIndex = 0;
-        const m = matcher.exec(lines[i]);
+        const m = matcher.exec(line);
         if (m) {
           results.push({
             path: relPosix,
             line: i + 1,
             column: m.index + 1,
-            preview: lines[i].slice(0, 300),
+            preview: line.slice(0, 300),
           });
         }
       }
@@ -269,21 +321,6 @@ export function searchFiles(config: AppConfig, opts: SearchFilesOptions): ToolOu
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function isLikelyBinary(absPath: string): boolean {
-  try {
-    const fd = fs.openSync(absPath, 'r');
-    const buffer = Buffer.alloc(512);
-    const bytesRead = fs.readSync(fd, buffer, 0, 512, 0);
-    fs.closeSync(fd);
-    for (let i = 0; i < bytesRead; i++) {
-      if (buffer[i] === 0) return true; // null byte -> treat as binary
-    }
-    return false;
-  } catch {
-    return true;
-  }
 }
 
 export { resolveWithinRoot };
