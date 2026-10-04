@@ -56,6 +56,7 @@ export async function runMissingAuthorizationCase(
   }
 
   const beforeRead = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(vcase.method) ? await issueRuntimeRequest(target, sessions, { method: 'GET', path: vcase.path, sessionId: lowPrivilegedSessionId }, state) : null;
+  const beforeRepeat = beforeRead ? await issueRuntimeRequest(target, sessions, { method: 'GET', path: vcase.path, sessionId: lowPrivilegedSessionId }, state) : null;
   const evidence = [
     await issueRuntimeRequest(target, sessions, { method: vcase.method, path: vcase.path, sessionId: lowPrivilegedSessionId }, state),
   ];
@@ -80,7 +81,7 @@ export async function runMissingAuthorizationCase(
   if (isSuccessStatus(response) && isWrite) {
     const afterRead = await issueRuntimeRequest(target, sessions, { method: 'GET', path: vcase.path, sessionId: lowPrivilegedSessionId }, state);
     evidence.push(afterRead);
-    if (!beforeRead || !writeChangedState(vcase.method, beforeRead.response, afterRead.response)) {
+    if (!beforeRead || !writeChangedState(vcase.method, beforeRead.response, afterRead.response, beforeRepeat ? beforeRepeat.response : null)) {
       return buildResult(vcase, 'inconclusive', 'medium', `${vcase.method} ${vcase.path} returned a 2xx status, but no change in the readable state of the resource was demonstrated, so the status alone does not prove the vulnerability.`, evidence, startedAt);
     }
     return buildResult(
