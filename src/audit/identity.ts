@@ -169,11 +169,18 @@ export function addOrMerge(map: Map<string, AuditFinding>, incoming: AuditFindin
     map.set(incoming.id, incoming);
     return;
   }
-  if (SEVERITY_RANK[incoming.severity] > SEVERITY_RANK[existing.severity]) {
+  const heuristic = (item: AuditFinding): boolean => item.sources.every((source) => source.origin === 'deep_analysis');
+  if (heuristic(existing) && !heuristic(incoming)) {
     existing.severity = incoming.severity;
     existing.title = incoming.title;
+    existing.confidence = incoming.confidence;
+  } else if (!heuristic(incoming)) {
+    if (SEVERITY_RANK[incoming.severity] > SEVERITY_RANK[existing.severity]) {
+      existing.severity = incoming.severity;
+      existing.title = incoming.title;
+    }
+    if (CONFIDENCE_RANK[incoming.confidence] > CONFIDENCE_RANK[existing.confidence]) existing.confidence = incoming.confidence;
   }
-  if (CONFIDENCE_RANK[incoming.confidence] > CONFIDENCE_RANK[existing.confidence]) existing.confidence = incoming.confidence;
   for (const source of incoming.sources) {
     if (!existing.sources.some((item) => item.origin === source.origin && item.sourceId === source.sourceId)) existing.sources.push(source);
   }
