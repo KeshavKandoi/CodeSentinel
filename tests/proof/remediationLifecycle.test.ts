@@ -204,3 +204,92 @@ describe('proof to remediation lifecycle', () => {
     }
   });
 });
+
+async function prepareAppliedRemediation() {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codesentinel-phase9-')));
+  roots.push(root);
+  fs.cpSync(vulnerableFixture, root, { recursive: true });
+  const config: AppConfig = { projectRoot: root, commandTimeoutMs: 5000, maxOutputBytes: 1_000_000, maxReadFileBytes: 2_000_000, maxListResults: 2_000 };
+  const started = body(await tool('start_security_investigation').handler(config, { projectPath: root, scope: ['input_validation'], hypothesis: 'Phase 9 verification hardening.' }));
+  const analyzed = body(await tool('run_security_analysis').handler(config, { investigationId: started.id }));
+  const finding = analyzed.findings.find((item: { origin: string; category: string }) => item.origin === 'security_scan' && item.category === 'injection');
+  const proof = await proveSecurityFinding(config, { findingId: finding.findingId, target: { allowedOrigin: origin, minRequestIntervalMs: 0 } });
+  if (!proof.ok) throw new Error('proof failed');
+  const original = fs.readFileSync(path.join(root, 'src/app.ts'), 'utf8');
+  const proposal = body(await tool('propose_remediation').handler(config, {
+    investigationId: started.id,
+    findingId: finding.findingId,
+    description: 'Replace the unsafe query handler with the secure fixture implementation.',
+    rationale: 'Use a parameterized query and preserve the route functionality.',
+    files: [{ path: 'src/app.ts', originalContentHash: crypto.createHash('sha256').update(original).digest('hex'), proposedContent: secureSource, description: 'Apply the bounded secure fixture implementation.' }],
+    expectedSecurityEffect: 'The SQL injection candidate disappears and the proof marker is no longer returned.',
+    requiresRuntimeVerification: true,
+    runtimeVerification: { findingId: finding.findingId, target: { allowedOrigin: origin, minRequestIntervalMs: 0 }, sessions: [], sessionParams: {} },
+  }));
+  const applied = body(await tool('apply_remediation').handler(config, { remediationId: proposal.proposalId }));
+  if (applied.status !== 'applied_pending_verification') throw new Error('apply failed');
+  return { config, findingId: finding.findingId as string, remediationId: proposal.proposalId as string, proof: proof.data };
+}
+
+describe('Phase 9 remediation verification hardening', () => {
+  it('never leaves a remediation stuck in verifying after a blocked or failed verification', async () => {
+    const { config, remediationId } = await prepareAppliedRemediation();
+    replayMode = 'redirect';
+    await tool('verify_remediation').handler(config, { remediationId });
+    const { getRemediation } = await import('../../src/remediation/engine.js');
+    const record = getRemediation(remediationId);
+    expect(record.ok).toBe(true);
+    if (!record.ok) return;
+    expect(['verification_inconclusive', 'verification_blocked', 'still_vulnerable', 'changed_finding']).toContain(record.data.status);
+    expect(record.data.status).not.toBe('verifying');
+    expect(record.data.status).not.toBe('verified_resolved');
+  });
+
+  it('serializes concurrent verifications and ends in a terminal state', async () => {
+    const { config, remediationId } = await prepareAppliedRemediation();
+    secureOracle = true;
+    const [first, second] = await Promise.all([
+      tool('verify_remediation').handler(config, { remediationId }),
+      tool('verify_remediation').handler(config, { remediationId }),
+    ]);
+    const { getRemediation } = await import('../../src/remediation/engine.js');
+    const record = getRemediation(remediationId);
+    expect(record.ok).toBe(true);
+    if (!record.ok) return;
+    expect(record.data.status).not.toBe('verifying');
+    expect([first.isError === true, second.isError === true].filter(Boolean).length).toBeLessThanOrEqual(1);
+  });
+
+  it('accepts a receipt only for the origin it was created for', async () => {
+    const { isTrustedVerifiedReceipt } = await import('../../src/proof/engine.js');
+    const { config, findingId, proof } = await prepareAppliedRemediation();
+    expect(proof.targetOrigin).toBe(origin);
+    expect(isTrustedVerifiedReceipt(proof, 'sql_injection', origin)).toBe(true);
+    expect(isTrustedVerifiedReceipt(proof, 'sql_injection', 'http://127.0.0.1:1')).toBe(false);
+    const stored = listSecurityReceiptsForFinding(findingId).find((receipt) => receipt.receiptId === proof.receiptId)!;
+    expect(stored.targetOrigin).toBe(origin);
+    expect(config.projectRoot.length).toBeGreaterThan(0);
+  });
+
+  it('rejects replaying a receipt against a different target origin and stamps replays with their origin', async () => {
+    const { config, findingId, proof } = await prepareAppliedRemediation();
+    const bound = listSecurityReceiptsForFinding(findingId).find((receipt) => receipt.receiptId === proof.receiptId)!;
+    expect(bound.remediationRef).not.toBeNull();
+    const remediationRef = bound.remediationRef as string;
+    const other = http.createServer((_request, response) => { response.writeHead(200); response.end('safe fixture response'); });
+    await new Promise<void>((resolve) => other.listen(0, '127.0.0.1', resolve));
+    const address = other.address();
+    if (!address || typeof address === 'string') throw new Error('no address');
+    const otherOrigin = `http://127.0.0.1:${address.port}`;
+    try {
+      secureOracle = true;
+      const crossed = await replaySecurityProof(config, { findingId, target: { allowedOrigin: otherOrigin, minRequestIntervalMs: 0 }, sessions: [], sessionParams: {} }, bound, remediationRef);
+      expect(crossed.ok).toBe(false);
+      const same = await replaySecurityProof(config, { findingId, target: { allowedOrigin: origin, minRequestIntervalMs: 0 }, sessions: [], sessionParams: {} }, bound, remediationRef);
+      expect(same.ok).toBe(true);
+      if (same.ok) expect(same.data.targetOrigin).toBe(origin);
+    } finally {
+      await new Promise<void>((resolve) => other.close(() => resolve()));
+    }
+  });
+});

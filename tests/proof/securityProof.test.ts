@@ -125,10 +125,8 @@ describe('security proof engine', () => {
 
   it('never fabricates proof for unsupported static categories', async () => {
     const result = await proveSecurityFinding(config, { findingId: 'static-only-finding', target: { allowedOrigin: 'http://10.0.0.4:3000' } });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.data.status).toBe('blocked');
-    expect(result.data.whyProven).toBe('');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('NOT_FOUND');
   });
 
   it('selects a safe source adapter for a route-backed injection candidate but blocks non-loopback targets', async () => {
@@ -202,6 +200,11 @@ describe('security proof engine', () => {
     if (!scan.ok) return;
     const finding = scan.data.findings.find((item) => item.category === category);
     const result = await proveSecurityFinding(secureProofConfig, { findingId: finding?.id ?? `secure-${proofType}`, target: { allowedOrigin: secureProofOrigin } });
+    if (!finding) {
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('NOT_FOUND');
+      return;
+    }
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.status).not.toBe('verified');
@@ -238,8 +241,8 @@ describe('security proof engine', () => {
       if (result.ok) expect(result.data.status).toBe('blocked');
     }
     const missing = await proveSecurityFinding(vulnerableProofConfig, { findingId: 'missing-prerequisite', target: { allowedOrigin: vulnerableProofOrigin } });
-    expect(missing.ok).toBe(true);
-    if (missing.ok) expect(missing.data.status).toBe('blocked');
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error.code).toBe('NOT_FOUND');
   });
   it('never verifies a target that merely echoes the probe value', async () => {
     const scan = await scanProject(vulnerableProofConfig);
@@ -263,9 +266,12 @@ describe('security proof engine', () => {
 
   it('enforces a cross-call proof attempt budget per finding', async () => {
     resetSecurityProofsForTests();
+    const scanned = await scanProject(vulnerableProofConfig);
+    const budgetFinding = scanned.ok ? scanned.data.findings.find((item) => item.category === 'injection') : undefined;
+    expect(budgetFinding).toBeDefined();
     let rejected = 0;
     for (let i = 0; i < 12; i++) {
-      const result = await proveSecurityFinding(vulnerableProofConfig, { findingId: 'budget-probe', target: { allowedOrigin: vulnerableProofOrigin } });
+      const result = await proveSecurityFinding(vulnerableProofConfig, { findingId: budgetFinding!.id, target: { allowedOrigin: vulnerableProofOrigin } });
       if (!result.ok && result.error.code === 'BUDGET_EXCEEDED') rejected += 1;
     }
     expect(rejected).toBe(2);
@@ -489,5 +495,86 @@ describe('Phase 9 lifecycle invariants', () => {
     expect(canAdvance('analyzed', 'verified')).toBe(false);
     expect(canAdvance('unsupported', 'verified')).toBe(false);
     expect(canAdvance('proof_eligible', 'verified')).toBe(true);
+  });
+});
+
+describe('Phase 9 unknown finding id', () => {
+  it('returns NOT_FOUND without consuming proof budget or creating a receipt', async () => {
+    resetSecurityProofsForTests();
+    const { listSecurityReceiptsForFinding } = await import('../../src/proof/engine.js');
+    for (let i = 0; i < 15; i++) {
+      const result = await proveSecurityFinding(config, { findingId: 'no-such-finding', target: { allowedOrigin: 'http://127.0.0.1:1' } });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('NOT_FOUND');
+    }
+    expect(listSecurityReceiptsForFinding('no-such-finding')).toHaveLength(0);
+    resetSecurityProofsForTests();
+  });
+});
+
+describe('Phase 9 redaction coverage', () => {
+  const secrets: Array<[string, string]> = [
+    ['sent Bearer QWxhZGRpbjpvcGVuIHNlc2FtZQ+x/y== here', 'x/y'],
+    ['token ghs_16C7e42F292c6912E7710c838347Ae178B4a', '16C7e42F'],
+    ['github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwxyz0123456789', '11ABCDEFG0'],
+    ['AIzaSyA1234567890abcdefghijklmnopqrstuv', 'A1234567890'],
+    ['eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY3ODkwIn0.', 'eyJzdWIi'],
+    ['Authorization: abcdef123456secret', 'abcdef123456'],
+    ['Proxy-Authorization: Basic dXNlcjpwYXNz', 'dXNlcjpw'],
+    ['https://abcd1234efgh5678@github.com/org/repo.git', 'abcd1234efgh5678'],
+    ['postgres://admin:hunter2pass@db.local:5432/app', 'hunter2pass'],
+    ['AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY', 'wJalrXUtn'],
+    ['auth_token=abcd1234efgh5678', 'abcd1234efgh'],
+    ['private_key: "abcd1234efgh5678"', 'abcd1234efgh'],
+    ['Cookie: sid=abc123def456; theme=dark', 'abc123def456'],
+    ['Set-Cookie: session=s3cr3tvalue; HttpOnly', 's3cr3tvalue'],
+    ['{"password":"Sup3rS3cret!"}', 'Sup3rS3cret'],
+  ];
+  it.each(secrets)('redacts %s', (input, fragment) => {
+    expect(JSON.stringify(detachedRedacted({ text: input }))).not.toContain(fragment);
+  });
+  it('keeps benign security evidence readable', () => {
+    for (const text of ['Missing Authorization header on GET /admin', 'Basic authentication is required', 'Route /users/:id lacks an ownership check', 'token validation is skipped', 'Cookie flags are missing HttpOnly', 'secret rotation is not configured']) {
+      expect(detachedRedacted({ text }).text).toBe(text);
+    }
+  });
+});
+
+describe('Phase 9 write oracle stability', () => {
+  type RuntimeTargetType = import('../../src/runtime/types.js').RuntimeTarget;
+  const makeCase = (method: string, path: string) => ({ id: 'VC-STABILITY', type: 'method_authorization', findingId: 'f', routeId: 'r', method, path, framework: 'express', objective: 'o', preconditions: [], requiredSessions: [], expectedSecureBehavior: 'e', cleanupRequired: false, relatedCandidateType: 'inconsistent_authorization' }) as unknown as import('../../src/runtime/types.js').VerificationCase;
+  it('does not verify a write whose only observable change is a volatile read field', async () => {
+    const { runMethodAuthorizationCase } = await import('../../src/runtime/cases/methodAuthorization.js');
+    const { RuntimeClientState } = await import('../../src/runtime/httpClient.js');
+    let reads = 0;
+    const server = http.createServer((request, response) => {
+      if (request.method === 'GET') { reads += 1; response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ name: 'a', ts: reads })); return; }
+      response.writeHead(200); response.end('ok');
+    });
+    const origin = await listen(server);
+    try {
+      const target: RuntimeTargetType = { allowedOrigin: origin, minRequestIntervalMs: 0, allowDestructiveMethods: true, vettedTestPaths: ['/item'] };
+      const result = await runMethodAuthorizationCase(makeCase('POST', '/item'), target, new Map(), new RuntimeClientState(target));
+      expect(result.status, result.summary).toBe('inconclusive');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+  it('still verifies a write that changes stable state', async () => {
+    const { runMethodAuthorizationCase } = await import('../../src/runtime/cases/methodAuthorization.js');
+    const { RuntimeClientState } = await import('../../src/runtime/httpClient.js');
+    let name = 'a';
+    const server = http.createServer((request, response) => {
+      if (request.method === 'GET') { response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ name })); return; }
+      name = 'b'; response.writeHead(200); response.end('ok');
+    });
+    const origin = await listen(server);
+    try {
+      const target: RuntimeTargetType = { allowedOrigin: origin, minRequestIntervalMs: 0, allowDestructiveMethods: true, vettedTestPaths: ['/item'] };
+      const result = await runMethodAuthorizationCase(makeCase('POST', '/item'), target, new Map(), new RuntimeClientState(target));
+      expect(result.status, result.summary).toBe('verified');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
