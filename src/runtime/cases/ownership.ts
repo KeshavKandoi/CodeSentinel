@@ -2,7 +2,7 @@ import type { AccessControlFinding } from '../../access/types.js';
 import type { AttackSurfaceEntry } from '../../routes/types.js';
 import { issueRuntimeRequest, RuntimeClientState } from '../httpClient.js';
 import type { RuntimeTarget, TestSession, VerificationCase, VerificationResult } from '../types.js';
-import { blockedResult, buildResult, hasUnresolvedSegment, isAuthRejection, isNotFound, isSuccessStatus } from './common.js';
+import { blockedResult, buildResult, hasUnresolvedSegment, isAuthRejection, isNotFound, isSuccessStatus, writeChangedState } from './common.js';
 
 /**
  * Case 4: Ownership candidate.
@@ -58,6 +58,7 @@ export async function runOwnershipCase(
     return blockedResult(vcase, 'DELETE is a destructive method and allowDestructiveMethods is not enabled on the target.', startedAt);
   }
 
+  const beforeRead = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(vcase.method) ? await issueRuntimeRequest(target, sessions, { method: 'GET', path: vcase.path, sessionId: otherSessionId }, state) : null;
   const evidence = [
     await issueRuntimeRequest(target, sessions, { method: vcase.method, path: vcase.path, sessionId: otherSessionId }, state),
   ];
@@ -80,6 +81,11 @@ export async function runOwnershipCase(
 
   const isWrite = vcase.method === 'POST' || vcase.method === 'PUT' || vcase.method === 'PATCH' || vcase.method === 'DELETE';
   if (isSuccessStatus(response) && isWrite) {
+    const afterRead = await issueRuntimeRequest(target, sessions, { method: 'GET', path: vcase.path, sessionId: otherSessionId }, state);
+    evidence.push(afterRead);
+    if (!beforeRead || !writeChangedState(vcase.method, beforeRead.response, afterRead.response)) {
+      return buildResult(vcase, 'inconclusive', 'medium', `${vcase.method} ${vcase.path} returned a 2xx status, but no change in the readable state of the resource was demonstrated, so the status alone does not prove the vulnerability.`, evidence, startedAt);
+    }
     return buildResult(
       vcase,
       'verified',
