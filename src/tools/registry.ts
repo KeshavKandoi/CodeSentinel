@@ -50,6 +50,7 @@ import {
   startInvestigation,
 } from '../investigation/orchestrator.js';
 import { generateSecurityReport, getSecurityFinding } from '../report/engine.js';
+import { detachedRedacted } from '../report/redaction.js';
 import { applyRemediation, proposeRemediation, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
 import { runDeepSecurityAudit } from '../intelligence/engine.js';
 import { buildSecurityGraph, listSecurityProofCases, proveSecurityFinding } from '../proof/engine.js';
@@ -82,7 +83,7 @@ function toMcpResponse<T>(outcome: ToolOutcome<T>): McpToolResponse {
 
 function invalidInputResponse(message: string): McpToolResponse {
   return {
-    content: [{ type: 'text', text: JSON.stringify({ error: 'INVALID_INPUT', message }, null, 2) }],
+    content: [{ type: 'text', text: JSON.stringify({ error: 'INVALID_INPUT', message: message.slice(0, 500) }, null, 2) }],
     isError: true,
   };
 }
@@ -212,7 +213,7 @@ const coreToolDefinitions: ToolDefinition[] = [
     handler: async (config, rawInput) => {
       const validation = safeValidate(searchFilesSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
-      logger.info('tool_execution', { tool: 'search_files', input: validation.data });
+      logger.info('tool_execution', { tool: 'search_files', queryLength: validation.data.query.length, path: validation.data.path });
       const result = searchFiles(config, {
         query: validation.data.query,
         dirPath: validation.data.path,
@@ -345,7 +346,7 @@ const coreToolDefinitions: ToolDefinition[] = [
       try {
         const result = await verifyFinding(config, validation.data);
         if (!result.ok) return toMcpResponse(err(result.error.code, result.error.message));
-        return toMcpResponse(ok(result.data));
+        return toMcpResponse(ok(detachedRedacted(result.data)));
       } catch (e) {
         logger.error('verify_finding_failed', { message: (e as Error).message });
         return toMcpResponse(err('INTERNAL_ERROR', 'Runtime verification failed unexpectedly.'));
