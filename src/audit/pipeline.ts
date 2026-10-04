@@ -143,7 +143,7 @@ function scopeReceipts(list: SecurityReceipt[], target: { allowedOrigin: string 
   return list.filter((receipt) => receipt.targetOrigin === target.allowedOrigin);
 }
 
-function applyReceipts(finding: AuditFinding, receipts: SecurityReceipt[], ranNow: boolean): void {
+function applyReceipts(finding: AuditFinding, receipts: SecurityReceipt[], ranNow: boolean, expectedOrigin?: string): void {
   finding.proof.receiptIds = receipts.map((receipt) => receipt.receiptId).slice(0, 10);
   const originals = receipts.filter((receipt) => receipt.replayOfReceiptId === null);
   const replays = receipts.filter((receipt) => receipt.replayOfReceiptId !== null);
@@ -155,7 +155,7 @@ function applyReceipts(finding: AuditFinding, receipts: SecurityReceipt[], ranNo
   finding.proof.fromPriorReceipt = !ranNow;
   finding.proof.note = chosen.status === 'verified' ? null : chosen.limitation ? safeText(chosen.limitation) : null;
   finding.classification.proofStatus = chosen.status;
-  if (chosen.status === 'verified') advanceToVerified(finding, chosen);
+  if (chosen.status === 'verified') advanceToVerified(finding, chosen, expectedOrigin);
   else if (chosen.status === 'not_reproduced') advance(finding, 'not_reproduced');
   else if (chosen.status === 'inconclusive') advance(finding, 'inconclusive');
   else advance(finding, 'blocked');
@@ -426,7 +426,7 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
       else if (receipts.length > 0) reused += 1;
       ctx.receipts.set(finding.id, receipts);
       try {
-        applyReceipts(finding, receipts, ranNow);
+        applyReceipts(finding, receipts, ranNow, target?.allowedOrigin);
       } catch {
         addIssue(ctx, 'runtime_proof', 'LIFECYCLE_VIOLATION', 'A proof receipt could not be applied to the finding lifecycle.', true, [finding.id]);
       }

@@ -194,6 +194,7 @@ export function linkSecurityReceiptToRemediation(findingId: string, receiptId: s
 export function isTrustedVerifiedReceipt(receipt: SecurityReceipt, adapterType: ProofCaseType | null, targetOrigin?: string): boolean {
   const stored = receipts.get(receipt.receiptId);
   if (!stored || stored.status !== 'verified' || stored.findingId !== receipt.findingId) return false;
+  if (stored.targetOrigin === undefined || receipt.targetOrigin !== stored.targetOrigin) return false;
   if (targetOrigin !== undefined && stored.targetOrigin !== targetOrigin) return false;
   if (stored.proofCase.id !== receipt.proofCase.id || stored.proofCase.type !== receipt.proofCase.type || stored.whyProven !== receipt.whyProven) return false;
   if (adapterType === null || stored.proofCase.type !== adapterType || !stored.proofCase.executable) return false;
