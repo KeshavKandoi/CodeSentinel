@@ -152,3 +152,19 @@ describe('Phase 5 deep analysis precision, redaction and merging', () => {
     expect([b.severity, b.title, b.confidence, b.sources.length]).toEqual(['medium', 'Scanner title', 'medium', 2]);
   });
 });
+
+describe('Phase 5 proof eligibility requires a containing route for scan findings', () => {
+  it('blocks a runtime-capable scan finding outside any route and keeps one inside a route eligible', async () => {
+    const { createFinding } = await import('../../src/audit/identity.js');
+    const { classifyFinding } = await import('../../src/audit/classify.js');
+    const make = (line: number) => createFinding({
+      id: `cs-route-${line}`, category: 'cors', title: 'Insecure CORS configuration', severity: 'medium', confidence: 'high',
+      file: 'src/app.ts', line, route: null, routeId: null, evidence: ['e'], recommendation: 'r',
+      sources: [{ stage: 'static_scan', origin: 'security_scan', sourceId: `s${line}`, ruleId: 'CS-NODE-007', category: 'cors', candidateType: null, routePath: null }],
+    });
+    const routes = [{ file: 'src/app.ts', sourceRange: { startLine: 10, endLine: 14 } }] as never;
+    expect(classifyFinding(make(12), routes).proofStatus).toBe('eligible');
+    expect(classifyFinding(make(30), routes).proofStatus).toBe('blocked');
+    expect(classifyFinding(make(30)).proofStatus).toBe('eligible');
+  });
+});
