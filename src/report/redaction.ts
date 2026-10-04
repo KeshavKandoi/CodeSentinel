@@ -1,10 +1,13 @@
 const SECRET_KEY_RE = /authorization|cookie|set-cookie|api[_-]?key|bearer|token|password|secret|credential|environment|env/i;
-const SECRET_VALUE_RE = /Bearer\s+[A-Za-z0-9._-]+|\b(?:sk|ghp|xox[baprs])[-_][A-Za-z0-9._-]+|AKIA[0-9A-Z]{16}/gi;
+const SECRET_VALUE_RE = /Bearer\s+[A-Za-z0-9._~+\/=-]+|\b(?:sk|gh[pousr]|github_pat|xox[baprs])[-_][A-Za-z0-9._-]+|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}/gi;
 
 const JWT_RE = /\beyJ[\w-]{5,}\.[\w-]{5,}\.(?!invalid-signature\b)[\w-]{5,}/g;
+const UNSIGNED_JWT_RE = /\beyJ[\w-]{5,}\.[\w-]{5,}\.(?![\w-])/g;
+const URL_TOKEN_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[A-Za-z0-9_-]{16,}@/gi;
+const AUTHZ_RAW_RE = /\b((?:Proxy-)?Authorization\s*:\s*)[^\s,;"]{8,}/gi;
 const PEM_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 const URL_CRED_RE = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s\/:@]+:[^\s\/@]+@/gi;
-const SECRET_PAIR_RE = /("?(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^&\s,;}]+)/gi;
+const SECRET_PAIR_RE = /("?\b[A-Za-z0-9_.-]*(?:password|passwd|secret|api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|private[_-]?key)[A-Za-z0-9_-]*"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^&\s,;}]+)/gi;
 
 const AUTH_SCHEME_RE = /\b(Authorization\s*:\s*)(?:Basic|Digest|Token)\s+[^\s,;"]+/gi;
 const BASIC_B64_RE = /\bBasic\s+[A-Za-z0-9+\/]{8,}={1,2}/g;
@@ -14,9 +17,12 @@ function redactString(text: string): string {
   return text
     .replace(PEM_RE, '[REDACTED]')
     .replace(JWT_RE, '[REDACTED]')
+    .replace(UNSIGNED_JWT_RE, '[REDACTED]')
     .replace(URL_CRED_RE, '$1[REDACTED]@')
+    .replace(URL_TOKEN_RE, '$1[REDACTED]@')
     .replace(SECRET_PAIR_RE, '$1[REDACTED]')
     .replace(AUTH_SCHEME_RE, '$1[REDACTED]')
+    .replace(AUTHZ_RAW_RE, '$1[REDACTED]')
     .replace(BASIC_B64_RE, '[REDACTED]')
     .replace(COOKIE_HEADER_RE, '$1[REDACTED]')
     .replace(SECRET_VALUE_RE, '[REDACTED]');
