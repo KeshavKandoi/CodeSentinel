@@ -151,3 +151,64 @@ For production deployments, package CodeSentinel into an isolated container alon
 - Weak password storage rules and cryptography misuse rules remain **STATIC-ONLY** and cannot be dynamically proven by CodeSentinel's runtime framework.
 - CodeSentinel requires the target codebase to be available on the local filesystem of the executing environment.
 - Complex IDOR analysis lacks full inter-procedural data-flow tracing; it relies on deterministic pattern heuristics.
+
+## Unified audit pipeline
+
+`run_full_security_audit` runs one read-only, deterministic audit over the configured `PROJECT_ROOT`. No LLM or API key is involved.
+
+### Stages
+
+`discovery` → `route_discovery` → `static_scan` → `access_control` → `deep_analysis` → `candidate_classification` → `runtime_proof` → `graph_construction` → `report`
+
+Each stage is recorded with status (`completed`, `skipped`, `failed`, `blocked`), duration, and item count. A failed optional stage records a structured issue (`stage`, `code`, safe `message`, `recoverable`, `affectedFindings`) and the audit continues. Route, scan, and access results are computed once and shared with deep analysis and graph construction.
+
+### Audit context
+
+An internal `AuditContext` carries the profile, route inventory, stage outputs, merged findings, receipts, remediation records, graph, issues, stage records, and execution limits between stages. It is in-memory and never persisted. The returned result is a bounded, redacted projection: no credentials, cookies, authorization headers, tokens, or raw request data.
+
+### Finding identity and merging
+
+Each finding gets a deterministic ID `cs-<hash>` derived from the canonical category, normalized file, route (or line for source findings), and, only when neither file nor route exists, the title. Findings from the scanner, access-control analysis, and deep analysis that share an identity are merged into one finding with all sources and stages listed. Deep-analysis findings that wrap a scanner or access finding are merged by source ID. Random IDs are used only for run identifiers (`runId`) and receipts' own identifiers.
+
+### Finding lifecycle
+
+`candidate → analyzed → proof_eligible → verified`, or `candidate/analyzed → unsupported | blocked | inconclusive`, or `proof_eligible → not_reproduced | inconclusive | blocked`. After remediation: `verified → remediation_applied → verified_resolved`.
+
+`verified` can only be reached through a receipt from a registered executable adapter with a verified semantic oracle. A regex match, an existing route, an HTTP 200, a successful request, a static rule, or a differing response never verifies a finding. `verified_resolved` additionally requires a `verified_resolved` remediation record and a `not_reproduced` replay receipt.
+
+### Proof classification
+
+The proof adapter registry is the single source of truth, queried through `resolveProofSupport`. Each finding reports:
+
+- `proofSupport`: `runtime` (a registered adapter handles this class), `requires-adapter` (a proof type exists but no executable adapter), or `static-only`.
+- `proofStatus`: `eligible`, `unsupported`, `blocked`, or the receipt outcome (`verified`, `not_reproduced`, `inconclusive`, `blocked`).
+
+`runtime` / `eligible` means a proof can be attempted; it is not a claim that a proof ran.
+
+### Runtime verification
+
+Runtime proof runs only when `target` is supplied, is bounded by `maxProofAttempts`, and goes through `proveSecurityFinding`, which applies the existing target guard (loopback or explicitly authorized origin), session, request, redirect, timeout, response-size, and destructive-method controls. Existing receipts are reused instead of repeating a verified proof.
+
+### Security graph
+
+The graph contains files, routes, handlers, middleware, authentication boundaries, authorization checks, ownership checks, findings, proof receipts, and remediation records, joined by evidence-backed edges. It is not an AST or taint graph. Pass `includeGraph: true` to include nodes and edges (capped); otherwise only counts are returned.
+
+### Remediation and replay
+
+The audit never applies remediation. Pass `investigationId` to attach remediation records (from `propose_remediation` / `apply_remediation` / `verify_remediation`) and replay receipts. Findings whose remediation was verified and replayed as `not_reproduced` appear as `verified_resolved`.
+
+### Report
+
+The result lists, per finding: stable ID, category, severity, confidence, status, proof support, proof status, file, line, route, evidence, remediation status, and replay status, plus summary counts (total, per severity, runtime verified, static-only, unsupported, blocked, inconclusive, resolved), stage records, issues, and limitations.
+
+### Read-only behavior and safety
+
+No stage writes to the project. The result reports `readOnly.sourceTreeUnchanged`, computed from file size and modification time before and after the run (bounded by `MAX_LIST_RESULTS`). Existing path guards, command allowlist, and Phase 6 runtime controls are unchanged.
+
+### Limitations
+
+- Deep-analysis findings are line-pattern heuristics and stay static-only unless merged into a finding a registered adapter handles.
+- Each proof attempt re-derives the route inventory inside the proof engine.
+- Receipts and remediation records live in memory only.
+- Remediation and replay status requires the same server process and an `investigationId`.
+- Runtime proof covers only the classes registered in the proof adapter registry.
