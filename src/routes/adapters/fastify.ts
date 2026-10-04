@@ -6,6 +6,7 @@ import type { ImportBinding } from '../jsModules.js';
 import { findObjectConst, parseObjectProps } from '../jsObjects.js';
 import {
   argDisplayName,
+  blankStringContents,
   buildLineIndex,
   collectConstStrings,
   describeHandler,
@@ -255,8 +256,9 @@ function buildModel(file: string, raw: string): FastifyModel | null {
   }
 
   const receivers = new Set<string>();
+  const maskedForReceivers = blankStringContents(code);
   const callRe = new RegExp(CALL_RE_SRC, 'g');
-  while ((m = callRe.exec(code)) !== null) receivers.add(m[1] ?? '');
+  while ((m = callRe.exec(maskedForReceivers)) !== null) receivers.add(m[1] ?? '');
 
   const ranges: FnRange[] = [];
   const addFn = (declStart: number, name: string, param: string, parenIdx: number, arrow: boolean): void => {
@@ -421,9 +423,10 @@ function makeRecord(model: FastifyModel, input: RecordInput): RouteRecord {
 
 function scanModel(model: FastifyModel, st: BuildState): void {
   const { code, file, lineStarts } = model;
+  const masked = blankStringContents(code);
   const callRe = new RegExp(CALL_RE_SRC, 'g');
   let m: RegExpExecArray | null;
-  while ((m = callRe.exec(code)) !== null) {
+  while ((m = callRe.exec(masked)) !== null) {
     const recv = m[1] ?? '';
     const kind = m[2] ?? '';
     const scope = scopeFor(model, recv, m.index, st);

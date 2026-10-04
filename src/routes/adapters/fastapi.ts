@@ -1,7 +1,8 @@
 import type { Evidence } from '../../discovery/types.js';
 import { buildEntry, unique } from '../entryFactory.js';
 import { dedupeParams, joinRoutePath, makeParam, toHttpMethod } from '../pathUtils.js';
-import { lineOf, matchClose, scanPython, splitTopLevel } from '../pyScanner.js';
+import { insideRange, lineOf, matchClose, scanPython, splitTopLevel } from '../pyScanner.js';
+import type { StringRange } from '../pyScanner.js';
 import type { AdapterContext, AttackSurfaceEntry, FrameworkAdapter, HttpMethod, RouteParameter } from '../types.js';
 
 const PY_EXTS = ['.py'] as const;
@@ -61,11 +62,12 @@ function dependencyList(args: string): string[] {
   return out;
 }
 
-function collectNodes(code: string): Map<string, NodeInfo> {
+function collectNodes(code: string, ranges: readonly StringRange[]): Map<string, NodeInfo> {
   const out = new Map<string, NodeInfo>();
   const re = new RegExp(NODE_START_RE.source, 'g');
   let m: RegExpExecArray | null;
   while ((m = re.exec(code)) !== null) {
+    if (insideRange(ranges, m.index)) continue;
     const open = m.index + m[0].length - 1;
     const close = matchClose(code, open);
     const args = close === -1 ? '' : code.slice(open + 1, close);
@@ -74,11 +76,12 @@ function collectNodes(code: string): Map<string, NodeInfo> {
   return out;
 }
 
-function collectIncludes(code: string): Map<string, IncludeInfo> {
+function collectIncludes(code: string, ranges: readonly StringRange[]): Map<string, IncludeInfo> {
   const out = new Map<string, IncludeInfo>();
   const re = new RegExp(INCLUDE_START_RE.source, 'g');
   let m: RegExpExecArray | null;
   while ((m = re.exec(code)) !== null) {
+    if (insideRange(ranges, m.index)) continue;
     const open = m.index + m[0].length - 1;
     const close = matchClose(code, open);
     if (close === -1) continue;
@@ -201,13 +204,15 @@ export const fastapiAdapter: FrameworkAdapter = {
     for (const file of ctx.listSourceFiles(PY_EXTS)) {
       const src = ctx.readSource(file);
       if (!src) continue;
-      const code = scanPython(src.content).code;
+      const scanned = scanPython(src.content);
+      const code = scanned.code;
       if (!FASTAPI_RE.test(code)) continue;
-      const nodes = collectNodes(code);
-      const includes = collectIncludes(code);
+      const nodes = collectNodes(code, scanned.ranges);
+      const includes = collectIncludes(code, scanned.ranges);
       const routeRe = new RegExp(ROUTE_START_RE.source, 'g');
       let m: RegExpExecArray | null;
       while ((m = routeRe.exec(code)) !== null) {
+        if (insideRange(scanned.ranges, m.index)) continue;
         const receiver = m[1] ?? '';
         const verb = m[2] ?? '';
         const open = m.index + m[0].length - 1;

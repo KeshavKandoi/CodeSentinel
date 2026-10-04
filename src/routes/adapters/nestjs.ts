@@ -2,6 +2,7 @@ import type { Confidence, Evidence } from '../../discovery/types.js';
 import { detectUploadIndicators, inlineAuthIndicators } from '../authHeuristics.js';
 import { buildEntry, unique } from '../entryFactory.js';
 import {
+  blankStringContents,
   buildLineIndex,
   collectConstStrings,
   evalPathString,
@@ -104,12 +105,12 @@ interface Controller {
 const CLASS_DECL_RE = /^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/;
 const METHOD_DECL_RE = /^\s*(?:(?:public|private|protected|static|async|override|readonly)\s+)*([A-Za-z_$][\w$]*)\s*(?:<[^>(]*>)?\s*\(/;
 
-function decoratorRuns(code: string): DecoratorRun[] {
+function decoratorRuns(code: string, masked: string): DecoratorRun[] {
   const runs: DecoratorRun[] = [];
   const re = /(?<![\w$])@([A-Za-z_$][\w$]*)/g;
   let current: DecoratorRun | null = null;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(code)) !== null) {
+  while ((m = re.exec(masked)) !== null) {
     const nameEnd = m.index + m[0].length;
     let end = nameEnd;
     let args = '';
@@ -183,7 +184,7 @@ export const nestjsAdapter: FrameworkAdapter = {
       if (!NEST_SOURCE_RE.test(code)) continue;
       const lineStarts = buildLineIndex(code);
       const consts = collectConstStrings(code);
-      const runs = decoratorRuns(code);
+      const runs = decoratorRuns(code, blankStringContents(code));
 
       for (const controller of findControllers(code, runs)) {
         if (controller.close === -1) {

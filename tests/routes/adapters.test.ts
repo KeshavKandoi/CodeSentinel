@@ -234,3 +234,64 @@ describe('Django adapter', () => {
     expect(found[0]?.publicOrProtected).toBe('public');
   });
 });
+
+import { describe as describeLit, expect as expectLit, it as itLit } from 'vitest';
+import fsLit from 'node:fs';
+import osLit from 'node:os';
+import pathLit from 'node:path';
+import { discoverRoutes as discoverLit } from '../../src/routes/engine.js';
+
+function litRoutes(files: Record<string, string>): string[] {
+  const root = fsLit.realpathSync(fsLit.mkdtempSync(pathLit.join(osLit.tmpdir(), 'cs-lit-')));
+  try {
+    for (const [rel, content] of Object.entries(files)) {
+      const abs = pathLit.join(root, rel);
+      fsLit.mkdirSync(pathLit.dirname(abs), { recursive: true });
+      fsLit.writeFileSync(abs, content);
+    }
+    const result = discoverLit({ projectRoot: root, commandTimeoutMs: 5000, maxOutputBytes: 1_000_000, maxReadFileBytes: 2_000_000, maxListResults: 2000 });
+    if (!result.ok) throw new Error(result.error.message);
+    return result.data.entries.map((e) => `${e.method} ${e.path}`).sort();
+  } finally {
+    fsLit.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+describeLit('Route-like text inside strings, templates and docstrings is ignored', () => {
+  itLit('NestJS', () => {
+    expectLit(
+      litRoutes({
+        'package.json': JSON.stringify({ name: 't', dependencies: { '@nestjs/common': '^10' } }),
+        'src/a.controller.ts': "import { Controller, Get } from '@nestjs/common';\n@Controller('real')\nexport class A {\n  @Get('ok') ok() { return 1; }\n  doc = \"@Get('instring') fake() { return 1; }\";\n  tpl = `@Get('intemplate') fake2() { return 1; }`;\n}\n",
+      })
+    ).toEqual(['GET /real/ok']);
+  });
+
+  itLit('Next.js pages and app routers', () => {
+    expectLit(
+      litRoutes({
+        'package.json': JSON.stringify({ name: 't', dependencies: { next: '^14' } }),
+        'pages/api/x.ts': "const s = \"req.method === 'DELETE'\";\nexport default function h(req: any, res: any) { if (req.method === 'POST') res.json(1); }\n",
+        'app/api/y/route.ts': "const s = \"export function DELETE() {}\";\nconst t = `export async function PUT() {}`;\nexport async function GET() { return Response.json(1); }\n",
+      })
+    ).toEqual(['GET /api/y', 'POST /api/x']);
+  });
+
+  itLit('FastAPI', () => {
+    expectLit(
+      litRoutes({
+        'requirements.txt': 'fastapi\n',
+        'main.py': "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/real')\ndef real():\n    return 1\nDOC = \"\"\"\n@app.get('/indoc')\ndef fake():\n    pass\n\"\"\"\nS = \"@app.post('/instring')\"\n",
+      })
+    ).toEqual(['GET /real']);
+  });
+
+  itLit('Django', () => {
+    expectLit(
+      litRoutes({
+        'requirements.txt': 'django\n',
+        'urls.py': "from django.urls import path\nfrom . import views\nurlpatterns = [path('real/', views.real)]\nDOC = \"path('instring/', views.fake)\"\n",
+      })
+    ).toEqual(['ALL /real']);
+  });
+});

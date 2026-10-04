@@ -1,7 +1,7 @@
 import type { Evidence } from '../../discovery/types.js';
 import { detectUploadIndicators, inlineAuthIndicators } from '../authHeuristics.js';
 import { buildEntry } from '../entryFactory.js';
-import { buildLineIndex, extractResponseIndicators, findFunctionBody, lineAtIndex, stripJsComments } from '../jsScanner.js';
+import { blankStringContents, buildLineIndex, extractResponseIndicators, findFunctionBody, lineAtIndex, stripJsComments } from '../jsScanner.js';
 import { makeParam } from '../pathUtils.js';
 import type { AdapterContext, AttackSurfaceEntry, FrameworkAdapter, HttpMethod, RouteParameter } from '../types.js';
 
@@ -52,12 +52,12 @@ function paramsFor(routePath: string): RouteParameter[] {
   return out;
 }
 
-function pagesMethods(code: string): HttpMethod[] {
+function pagesMethods(code: string, masked: string): HttpMethod[] {
   const methods = new Set<HttpMethod>();
-  const re = /\breq\s*\.\s*method\s*={0,2}=+\s*['"]([A-Z]+)['"]/g;
+  const re = /\breq\s*\.\s*method\s*=+\s*['"]/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(code)) !== null) {
-    const raw = m[1] ?? '';
+  while ((m = re.exec(masked)) !== null) {
+    const raw = /^([A-Z]+)['"]/.exec(code.slice(m.index + m[0].length))?.[1] ?? '';
     const method = METHODS.find((x) => x === raw);
     if (method) methods.add(method);
   }
@@ -65,15 +65,15 @@ function pagesMethods(code: string): HttpMethod[] {
   return Array.from(methods);
 }
 
-function exportedMethods(code: string): Array<{ method: HttpMethod; lineIdx: number; body: string; handler: string }> {
+function exportedMethods(code: string, masked: string): Array<{ method: HttpMethod; lineIdx: number; body: string; handler: string }> {
   const out: Array<{ method: HttpMethod; lineIdx: number; body: string; handler: string }> = [];
   for (const method of METHODS) {
     const declRe = new RegExp(`export\\s+(?:async\\s+)?function\\s+${method}\\s*\\(`, 'g');
     let m: RegExpExecArray | null;
-    while ((m = declRe.exec(code)) !== null) out.push({ method, lineIdx: m.index, body: findFunctionBody(code, method) ?? '', handler: method });
+    while ((m = declRe.exec(masked)) !== null) out.push({ method, lineIdx: m.index, body: findFunctionBody(code, method) ?? '', handler: method });
     const constRe = new RegExp(`export\\s+const\\s+${method}\\s*=`, 'g');
     let cm: RegExpExecArray | null;
-    while ((cm = constRe.exec(code)) !== null) out.push({ method, lineIdx: cm.index, body: '', handler: method });
+    while ((cm = constRe.exec(masked)) !== null) out.push({ method, lineIdx: cm.index, body: '', handler: method });
   }
   return out;
 }
@@ -93,13 +93,14 @@ export const nextjsAdapter: FrameworkAdapter = {
       const src = ctx.readSource(file);
       if (!src) continue;
       const code = stripJsComments(src.content);
+      const masked = blankStringContents(code);
       const lineStarts = buildLineIndex(code);
       const pagesPath = pagesApiPath(file);
       const appPath = appRoutePath(file);
       const routePath = pagesPath ?? appPath;
       if (!routePath) continue;
 
-      const methodDefs = appPath ? exportedMethods(code) : pagesMethods(code).map((method) => ({ method, lineIdx: 0, body: code, handler: 'default export' }));
+      const methodDefs = appPath ? exportedMethods(code, masked) : pagesMethods(code, masked).map((method) => ({ method, lineIdx: 0, body: code, handler: 'default export' }));
       if (methodDefs.length === 0) continue;
       for (const def of methodDefs) {
         const line = lineAtIndex(lineStarts, def.lineIdx);

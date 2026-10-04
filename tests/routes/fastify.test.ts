@@ -262,3 +262,36 @@ describe('Fastify adapter: false positives and ignored directories', () => {
     expect(run(root).entries.map((e) => e.path)).toEqual(['/real']);
   });
 });
+
+describe('Fastify adapter: string and template literal false positives', () => {
+  it('discovers real and multiline routes but ignores routes inside strings, templates and comments', () => {
+    const root = makeTempProject({
+      'package.json': JSON.stringify({ name: 't', dependencies: { fastify: '^4.28.0' } }),
+      'src/app.js': [
+        "const fastify = require('fastify')();",
+        "const x = \"fastify.get('/instring', async () => 1)\";",
+        "const y = `fastify.post('/intemplate', async () => 1)`;",
+        "// fastify.delete('/commented', async () => 1);",
+        "fastify.get('/real', async () => 'ok');",
+        'fastify.get(',
+        "  '/multi-real',",
+        '  { schema: {} },',
+        "  async () => 'ok'",
+        ');',
+        "fastify.post('/with-handler', handleIt);",
+        "async function handleIt(request, reply) { return reply.code(201).send({ ok: true }); }",
+        '',
+      ].join('\n'),
+    });
+    const result = run(root);
+    const paths = result.entries.map((e) => `${e.method} ${e.path}`).sort();
+    expect(paths).toEqual(['GET /multi-real', 'GET /real', 'POST /with-handler']);
+    const multi = result.entries.find((e) => e.path === '/multi-real');
+    expect(multi?.line).toBe(6);
+    expect(multi?.sourceRange.endLine).toBe(10);
+    expect(result.entries.find((e) => e.path === '/with-handler')?.handler).toBe('handleIt');
+    expect(JSON.stringify(result)).not.toContain('instring');
+    expect(JSON.stringify(result)).not.toContain('intemplate');
+    expect(JSON.stringify(result)).not.toContain('commented');
+  });
+});
