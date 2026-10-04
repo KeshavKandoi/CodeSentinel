@@ -45,7 +45,7 @@ export function contextFor(content: string, lineNumber: number, radius = 1): str
   const lines = content.split('\n');
   const start = Math.max(0, lineNumber - radius - 1);
   const end = Math.min(lines.length, lineNumber + radius);
-  return lines.slice(start, end).map((line, index) => `${start + index + 1}: ${redactSecurityText(line)}`).join('\n');
+  return lines.slice(start, end).map((line, index) => `${start + index + 1}: ${redactSecurityText(line.slice(0, 500))}`).join('\n');
 }
 
 export function lineAt(content: string, lineNumber: number): string {
@@ -53,7 +53,7 @@ export function lineAt(content: string, lineNumber: number): string {
 }
 
 export function makeFinding(rule: SecurityRule, evidence: SecurityEvidence): SecurityFinding {
-  const basis = `${rule.id}:${evidence.file ?? 'project'}:${evidence.line ?? 0}:${evidence.matchedText ?? evidence.reason}`;
+  const basis = `${rule.id}:${evidence.file ?? 'project'}:${evidence.line ?? 0}:${evidence.matchedText ? redactSecurityText(evidence.matchedText) : evidence.reason}`;
   const suffix = createHash('sha256').update(basis).digest('hex').slice(0, 12);
   return {
     id: `${rule.id}-${suffix}`,
@@ -65,7 +65,7 @@ export function makeFinding(rule: SecurityRule, evidence: SecurityEvidence): Sec
     status: 'suspected',
     file: evidence.file,
     line: evidence.line,
-    evidence: [{ ...evidence, matchedText: evidence.matchedText ? redactSecurityText(evidence.matchedText) : evidence.matchedText, context: evidence.context ? redactSecurityText(evidence.context) : evidence.context }],
+    evidence: [{ ...evidence, matchedText: evidence.matchedText ? redactSecurityText(evidence.matchedText) : evidence.matchedText, reason: redactSecurityText(evidence.reason), context: evidence.context ? redactSecurityText(evidence.context) : evidence.context }],
     description: rule.description,
     remediation: rule.remediation,
     verificationStatus: 'not_verified',
@@ -76,7 +76,11 @@ export function makeFinding(rule: SecurityRule, evidence: SecurityEvidence): Sec
  * not echo literal credentials merely because a rule matched their source. */
 export function redactSecurityText(value: string): string {
   return value
-    .replace(/\bBearer\s+[A-Za-z0-9._-]+\b/gi, 'Bearer [REDACTED]')
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, '[REDACTED]')
+    .replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, '[REDACTED]')
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s\/@'"\x60]+:[^\s\/@'"\x60]+@/gi, '$1[REDACTED]@')
+    .replace(/(\b(?:cookie|setHeader|header|set|append)\s*\(\s*['"\x60][^'"\x60]*(?:session|sid|token|auth|cookie|secret|key|pass|jwt|csrf)[^'"\x60]*['"\x60]\s*,\s*)(['"\x60])[^'"\x60]*\2/gi, '$1$2[REDACTED]$2')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/=-]+/gi, 'Bearer [REDACTED]')
     .replace(/\b(?:sk|ghp|xox[baprs])[-_][A-Za-z0-9._-]+\b/gi, '[REDACTED]')
     .replace(/\bAKIA[0-9A-Z]{16}\b/gi, '[REDACTED]')
     .replace(/((?:api[_-]?key|secret|password|passwd|pwd|token|private[_-]?key|client[_-]?secret|access[_-]?key)\s*[:=]\s*["'`]?)[^\s,'"`;}]+/gi, '$1[REDACTED]');
@@ -104,4 +108,12 @@ export function codeLineIsExecutable(line: string): boolean {
 
 export function looksLikePlaceholder(value: string): boolean {
   return /^(changeme|change_me|example|sample|test|secret|password|placeholder|your[_-]?(key|token|secret)|xxx+|todo|fixme)$/i.test(value.trim());
+}
+
+const MAX_WARNINGS = 50;
+const MAX_WARNING_CHARS = 400;
+
+export function addBoundedWarning(warnings: string[], message: string): void {
+  if (warnings.length < MAX_WARNINGS) warnings.push(redactSecurityText(message).slice(0, MAX_WARNING_CHARS));
+  else if (warnings.length === MAX_WARNINGS) warnings.push('Additional warnings were omitted.');
 }
