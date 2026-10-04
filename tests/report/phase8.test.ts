@@ -185,3 +185,25 @@ describe('Phase 8 report completeness and integrity', () => {
     expect(payload(await tool('get_security_finding').handler(config, { investigationId: 'missing', findingId: 'f' })).error).toBe('INVESTIGATION_NOT_FOUND');
   });
 });
+
+describe('Phase 9 hardening regressions', () => {
+  it('does not leak session header values through investigation operations', async () => {
+    const started = payload(await tool('start_security_investigation').handler(config, { projectPath: FIXTURE, scope: ['authentication'], hypothesis: 'session leak check' }));
+    const investigationId = started.id as string;
+    const analysis = payload(await tool('run_security_analysis').handler(config, { investigationId }));
+    const findingId = analysis.analysis.accessControl.findingIds.find((id: string) => id.startsWith('CS-ACCESS-001'));
+    await tool('record_security_hypothesis').handler(config, { investigationId, title: 'h', description: 'd', findingId, evidenceRefs: [`accessFinding:${findingId}`] });
+    const hypothesisId = payload(await tool('get_investigation').handler(config, { investigationId })).hypotheses[0].id;
+    await tool('request_runtime_verification').handler(config, { investigationId, hypothesisId, findingId, target: { allowedOrigin: 'http://10.0.0.4:3000' }, sessions: [{ id: 's1', kind: 'authenticated', headers: { 'x-session': 'plain-session-value-9f3a' } }] });
+    const text = (await tool('get_investigation').handler(config, { investigationId })).content[0]!.text;
+    expect(text).not.toContain('plain-session-value-9f3a');
+  });
+
+  it('keeps ordinary words readable while redacting key-like tokens', () => {
+    const out = detachedRedacted({ note: 'risk-based task-runner disk_usage sk-abcdefghij1234' }) as { note: string };
+    expect(out.note).toContain('risk-based');
+    expect(out.note).toContain('task-runner');
+    expect(out.note).toContain('disk_usage');
+    expect(out.note).not.toContain('sk-abcdefghij1234');
+  });
+});
