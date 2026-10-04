@@ -165,7 +165,7 @@ function reconcileRemediation(ctx: AuditContext): void {
     finding.remediation = { status: latest.status, remediationIds: records.map((record) => record.proposal.proposalId).slice(0, 10) };
     if (finding.status !== 'verified') continue;
     try {
-      if (latest.status === 'verified_resolved' && finding.replay.status === 'not_reproduced') {
+      if (latest.status === 'verified_resolved' && latest.verification?.replayResult === 'resolved' && finding.replay.status === 'not_reproduced') {
         advance(finding, 'remediation_applied');
         advance(finding, 'verified_resolved');
       } else if (latest.status === 'applied_pending_verification' || latest.status === 'verifying') {
@@ -183,7 +183,7 @@ function collectResolved(ctx: AuditContext, investigationId: string): void {
   const current = new Set([...ctx.findings.values()].flatMap((finding) => finding.sources.map((source) => source.sourceId)));
   for (const record of ctx.remediationRecords) {
     const sourceId = record.proposal.findingId;
-    if (record.status !== 'verified_resolved' || current.has(sourceId)) continue;
+    if (record.status !== 'verified_resolved' || record.verification?.replayResult !== 'resolved' || current.has(sourceId)) continue;
     const view = inv.data.findings.find((item) => item.findingId === sourceId);
     if (!view) continue;
     const receipts = listSecurityReceiptsForFinding(sourceId);
