@@ -424,3 +424,57 @@ describe('security proof engine', () => {
     }
   });
 });
+
+describe('Phase 9 audit hardening', () => {
+  it('does not reuse a verified receipt from a different target origin', async () => {
+    resetSecurityProofsForTests();
+    const first = await runSecurityAuditPipeline(vulnerableProofConfig, { sessions: [], sessionParams: {}, target: { allowedOrigin: vulnerableProofOrigin, minRequestIntervalMs: 0 } });
+    if (!first.ok) throw new Error('first audit failed');
+    expect(first.data.summary.runtimeVerified).toBeGreaterThan(0);
+    const second = await runSecurityAuditPipeline(vulnerableProofConfig, { sessions: [], sessionParams: {}, target: { allowedOrigin: secureProofOrigin, minRequestIntervalMs: 0 } });
+    if (!second.ok) throw new Error('second audit failed');
+    expect(second.data.summary.runtimeVerified).toBe(0);
+    expect(second.data.findings.every((finding) => finding.status !== 'verified')).toBe(true);
+    resetSecurityProofsForTests();
+  }, 60000);
+
+  it('produces identical normalized audit output across repeated runs', async () => {
+    resetSecurityProofsForTests();
+    const normalize = (data: any) => JSON.stringify({
+      auditId: data.auditId,
+      summary: data.summary,
+      findings: data.findings.map((f: any) => ({ id: f.id, status: f.status, severity: f.severity, riskScore: f.riskScore, evidence: f.evidence, evidenceSynthesis: f.evidenceSynthesis, sources: f.sources, correlation: f.correlation })),
+      nearDuplicates: data.nearDuplicates,
+      graph: { nodes: data.graph.nodes, edges: data.graph.edges, nodeKinds: data.graph.nodeKinds, edgeRelations: data.graph.edgeRelations },
+    });
+    const runs: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const result = await runSecurityAuditPipeline(securityConfig, { sessions: [], sessionParams: {}, includeGraph: true });
+      if (!result.ok) throw new Error('audit failed');
+      runs.push(normalize(result.data));
+    }
+    expect(runs[1]).toBe(runs[0]);
+    expect(runs[2]).toBe(runs[0]);
+  }, 60000);
+});
+
+describe('Phase 9 runtime client bounds', () => {
+  it('ends a stalled response body at the request timeout instead of hanging', async () => {
+    const { issueRuntimeRequest, RuntimeClientState } = await import('../../src/runtime/httpClient.js');
+    const stalled = http.createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/plain' });
+      response.write('x');
+    });
+    const origin = await listen(stalled);
+    try {
+      const target = { allowedOrigin: origin, requestTimeoutMs: 300, minRequestIntervalMs: 0 };
+      const started = Date.now();
+      const evidence = await issueRuntimeRequest(target, new Map(), { method: 'GET', path: '/', sessionId: null }, new RuntimeClientState(target));
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(evidence.response.bodyTruncated).toBe(true);
+    } finally {
+      stalled.closeAllConnections();
+      await new Promise<void>((resolve) => stalled.close(() => resolve()));
+    }
+  }, 15000);
+});
