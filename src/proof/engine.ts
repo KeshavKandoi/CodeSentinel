@@ -273,7 +273,7 @@ async function executeSafeSourceProofCase(
   const mutation = await issueRuntimeRequest(replayTarget, sessions, { method: contract.method as 'GET' | 'POST', path, headers: contract.requestHeaders, body: contract.requestBody ?? undefined, sessionId: contract.sessionLabelReferences[0] ?? null }, state);
   evidence.push(mutation);
   const response = mutation.response;
-  if (response.status === 0 || response.bodyTruncated || /timed out|failed|blocked/i.test(mutation.note) && response.status >= 300) return { status: 'blocked', proofCase, evidence, summary: mutation.note };
+  if (response.status === 0 || response.bodyTruncated || (adapter.type === 'open_redirect' ? /timed out|failed|blocked/i : /timed out|failed|blocked|redirect/i).test(mutation.note) && response.status >= 300) return { status: 'blocked', proofCase, evidence, summary: mutation.note };
   const after = adapter.oracleKind === 'state_transition' && adapter.statePath ? await boundedState(adapter.statePath) : null;
   if (adapter.oracleKind === 'state_transition' && (!before || !after || !adapter.stateField)) return { status: 'blocked', proofCase, evidence, summary: 'The bounded fixture state oracle could not be read safely before and after the mutation.' };
   const location = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'location')?.[1] ?? '';
