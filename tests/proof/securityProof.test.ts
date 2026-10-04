@@ -14,6 +14,7 @@ import { validateTarget } from '../../src/runtime/targetGuard.js';
 import { runSecurityAuditPipeline } from '../../src/audit/pipeline.js';
 import { advance, advanceToVerified, canAdvance } from '../../src/audit/lifecycle.js';
 import { toolDefinitions } from '../../src/tools/registry.js';
+import { listFiles } from '../../src/fs/fsOperations.js';
 import type { AuditFinding } from '../../src/audit/types.js';
 import { verifyFindingSchema } from '../../src/validation/schemas.js';
 
@@ -792,4 +793,146 @@ describe('Phase 9 sensitive value redaction boundary', () => {
       resetSecurityProofsForTests();
     }
   });
+});
+
+describe('Phase 9 logger redaction and concurrent proof budget', () => {
+  it('redacts Bearer, JWT, Basic and URL credentials in free-form log fields', async () => {
+    const { vi } = await import('vitest');
+    const { logger } = await import('../../src/logger.js');
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      logger.error('probe', { message: 'failed Bearer abc123def456ghi789 Basic dXNlcjpwYXNz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMxMjMifQ.c2lnbmF0dXJlMTIzNDU2 postgres://admin:hunter2@db.local/app' });
+      const written = spy.mock.calls.map((call) => String(call[0])).join('');
+      expect(written).toContain('probe');
+      for (const secret of ['abc123def456ghi789', 'dXNlcjpwYXNz', 'c2lnbmF0dXJlMTIzNDU2', 'hunter2']) expect(written).not.toContain(secret);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('never exceeds the per-finding proof budget under concurrent calls', async () => {
+    resetSecurityProofsForTests();
+    const scan = await scanProject(vulnerableProofConfig);
+    expect(scan.ok).toBe(true);
+    if (!scan.ok) return;
+    const finding = scan.data.findings.find((item) => item.category === 'xss');
+    expect(finding).toBeDefined();
+    if (!finding) return;
+    const results = await Promise.all(Array.from({ length: 30 }, () => proveSecurityFinding(vulnerableProofConfig, { findingId: finding.id, target: { allowedOrigin: vulnerableProofOrigin, minRequestIntervalMs: 0 } })));
+    const accepted = results.filter((item) => item.ok).length;
+    const rejected = results.filter((item) => !item.ok);
+    expect(accepted).toBe(10);
+    expect(rejected.length).toBe(20);
+    for (const item of rejected) if (!item.ok) expect(item.error.code).toBe('BUDGET_EXCEEDED');
+    resetSecurityProofsForTests();
+  }, 120_000);
+});
+
+describe('Phase 9 global proof budget under concurrency', () => {
+  it('accepts exactly 500 concurrent attempts across findings and rejects every later call', async () => {
+    resetSecurityProofsForTests();
+    const names = ['access-control-express', 'security-cases', 'phase11-runtime', 'phase11-runtime/secure', 'proof-runtime/vulnerable', 'proof-runtime/secure', 'express-routes', 'fastify-routes', 'nestjs-routes', 'nextjs-routes', 'django-routes', 'fastapi-routes', 'express-ts', 'nextjs-app', 'generic-node'];
+    const pool = new Map<string, AppConfig>();
+    for (const name of names) {
+      const projectRoot = fs.realpathSync(fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url)));
+      const cfg: AppConfig = { ...config, projectRoot };
+      const scan = await scanProject(cfg);
+      if (scan.ok) for (const item of scan.data.findings) if (!pool.has(item.id)) pool.set(item.id, cfg);
+      const routes = discoverRoutes(cfg);
+      if (routes.ok) for (const item of analyzeAccessControl(cfg, routes.data.entries).findings) if (!pool.has(item.id)) pool.set(item.id, cfg);
+    }
+    expect(pool.size, 'distinct known findings available').toBeGreaterThanOrEqual(51);
+    const pairs = [...pool.entries()];
+    const target = { allowedOrigin: 'http://127.attacker.com:3000', minRequestIntervalMs: 0 };
+    let accepted = 0;
+    for (let start = 0; start < pairs.length; start += 10) {
+      const batch = pairs.slice(start, start + 10).flatMap(([id, cfg]) => Array.from({ length: 12 }, () => proveSecurityFinding(cfg, { findingId: id, target })));
+      const results = await Promise.all(batch);
+      for (const item of results) {
+        if (item.ok) { accepted += 1; expect(item.data.status).not.toBe('verified'); }
+        else expect(item.error.code).toBe('BUDGET_EXCEEDED');
+      }
+    }
+    expect(accepted).toBe(500);
+    for (const [id, cfg] of pairs.slice(0, 5)) {
+      const late = await proveSecurityFinding(cfg, { findingId: id, target });
+      expect(late.ok).toBe(false);
+      if (!late.ok) expect(late.error.code).toBe('BUDGET_EXCEEDED');
+    }
+    resetSecurityProofsForTests();
+  }, 280_000);
+});
+
+describe('Phase 9 resource-limit battery', () => {
+  it('truncates oversized strings, arrays and depth in the shared redactor', () => {
+    expect(String(detachedRedacted('a'.repeat(1_000_000))).length).toBeLessThanOrEqual(2_000);
+    expect((detachedRedacted(Array.from({ length: 5_000 }, (_, i) => i)) as number[]).length).toBeLessThanOrEqual(1_000);
+    let nested: unknown = 'leaf';
+    for (let i = 0; i < 30; i++) nested = { child: nested };
+    expect(JSON.stringify(detachedRedacted(nested))).toContain('[TRUNCATED]');
+  });
+
+  it('rejects over-long ids, origins, session lists and token-bearing oversized values at the schema boundary', () => {
+    const target = { allowedOrigin: vulnerableProofOrigin };
+    expect(verifyFindingSchema.safeParse({ findingId: 'f'.repeat(257), target }).success).toBe(false);
+    expect(verifyFindingSchema.safeParse({ findingId: 'f', target: { allowedOrigin: `http://127.0.0.1:1/${'a'.repeat(600)}` } }).success).toBe(false);
+    expect(verifyFindingSchema.safeParse({ findingId: 'f', target, sessions: Array.from({ length: 11 }, (_, i) => ({ id: `s${i}`, headers: {} })) }).success).toBe(false);
+    expect(verifyFindingSchema.safeParse({ findingId: 'f', target: { ...target, maxRequestsPerCase: 51 } }).success).toBe(false);
+    expect(verifyFindingSchema.safeParse({ findingId: 'f', target: { ...target, maxResponseBytes: 5_000_001 } }).success).toBe(false);
+    expect(verifyFindingSchema.safeParse({ findingId: 'f', target: { ...target, requestTimeoutMs: 30_001 } }).success).toBe(false);
+  });
+
+  it('keeps scanning, routing, auditing, listing and reading bounded and deterministic on an oversized project', async () => {
+    const os = await import('node:os');
+    const nodePath = await import('node:path');
+    const dir = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), 'cs-limits-')));
+    try {
+      fs.writeFileSync(nodePath.join(dir, 'package.json'), JSON.stringify({ name: 'limits', dependencies: { express: '4.0.0' } }));
+      fs.mkdirSync(nodePath.join(dir, 'src'));
+      const routes = Array.from({ length: 1_500 }, (_, i) => `app.get('/r${i}', (req, res) => res.send(String(req.query.q)));`).join('\n');
+      fs.writeFileSync(nodePath.join(dir, 'src', 'app.js'), `const express = require('express');\nconst app = express();\n${routes}\nmodule.exports = app;\n`);
+      fs.writeFileSync(nodePath.join(dir, 'src', 'long.js'), `const x = "${'a'.repeat(3_000_000)}";\n`);
+      fs.writeFileSync(nodePath.join(dir, 'big.txt'), 'b'.repeat(3_000_000));
+      fs.mkdirSync(nodePath.join(dir, 'many'));
+      for (let i = 0; i < 2_500; i++) fs.writeFileSync(nodePath.join(dir, 'many', `f${i}.js`), `module.exports = ${i};\n`);
+      const cfg: AppConfig = { projectRoot: dir, commandTimeoutMs: 5000, maxOutputBytes: 1_000_000, maxReadFileBytes: 2_000_000, maxListResults: 2_000 };
+
+      const listed = listFiles(cfg, { dirPath: '.', recursive: true, maxResults: 10_000 });
+      expect(listed.ok).toBe(true);
+      if (listed.ok) expect(listed.data.length).toBeLessThanOrEqual(2_000);
+
+      const readTool = toolDefinitions.find((item) => item.name === 'read_file');
+      for (const input of [{ path: 'big.txt' }, { path: 'big.txt', maxBytes: 10_000_000 }]) {
+        const big = await readTool!.handler(cfg, input);
+        expect(big.isError).not.toBe(true);
+        const payload = JSON.parse(big.content[0].text) as { content: string; sizeBytes: number; truncated: boolean };
+        expect(payload.truncated).toBe(true);
+        expect(payload.sizeBytes).toBe(3_000_000);
+        expect(Buffer.byteLength(payload.content)).toBeLessThanOrEqual(2_000_000);
+      }
+      const small = await readTool!.handler(cfg, { path: 'big.txt', maxBytes: 1_000 });
+      expect(Buffer.byteLength((JSON.parse(small.content[0].text) as { content: string }).content)).toBeLessThanOrEqual(1_000);
+
+      const run = async () => {
+        const scan = await scanProject(cfg);
+        expect(scan.ok).toBe(true);
+        const found = discoverRoutes(cfg);
+        expect(found.ok).toBe(true);
+        const audit = await runSecurityAuditPipeline(cfg, { sessions: [], sessionParams: {} });
+        expect(audit.ok).toBe(true);
+        if (!scan.ok || !found.ok || !audit.ok) throw new Error('limit run failed');
+        expect(audit.data.findings.length).toBeLessThanOrEqual(5_000);
+        expect(JSON.stringify(audit.data).length).toBeLessThan(20_000_000);
+        expect(JSON.stringify(scan.data).length).toBeLessThan(20_000_000);
+        expect(JSON.stringify(found.data).length).toBeLessThan(20_000_000);
+        expect(audit.data.findings.some((finding) => finding.status === 'verified')).toBe(false);
+        return JSON.stringify({ scan: scan.data.findings.map((item) => item.id), routes: found.data.entries.map((item) => item.id), audit: audit.data.findings.map((item) => `${item.id}:${item.status}`) });
+      };
+      const started = Date.now();
+      const first = await run();
+      const second = await run();
+      expect(second).toBe(first);
+      expect(Date.now() - started).toBeLessThan(100_000);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 180_000);
 });
