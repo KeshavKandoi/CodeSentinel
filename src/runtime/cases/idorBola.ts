@@ -66,13 +66,21 @@ export async function runIdorCase(
     return blockedResult(vcase, 'DELETE is a destructive method and allowDestructiveMethods is not enabled on the target.', startedAt);
   }
 
+  const ownerSessionId = vcase.requiredSessions[0] ?? null;
+  if (!ownerSessionId) return blockedResult(vcase, 'No owner session is configured for the owner baseline.', startedAt);
+  const ownerEvidence = await issueRuntimeRequest(target, sessions, { method: 'GET', path: vcase.path, sessionId: ownerSessionId }, state);
+  if (ownerEvidence.response.status === 0) return blockedResult(vcase, ownerEvidence.note.replace(/^Blocked:\s*/, ''), startedAt, [ownerEvidence]);
+  if (!isSuccessStatus(ownerEvidence.response)) {
+    return buildResult(vcase, 'inconclusive', 'low', `The owner baseline for GET ${vcase.path} received ${ownerEvidence.response.status}, so legitimate owner access could not be established and no IDOR verdict is possible.`, [ownerEvidence], startedAt);
+  }
   const evidence = [
+    ownerEvidence,
     await issueRuntimeRequest(target, sessions, { method: vcase.method, path: vcase.path, sessionId: otherSessionId }, state),
   ];
-  const response = evidence[0]!.response;
+  const response = evidence[1]!.response;
 
   if (response.status === 0) {
-    return blockedResult(vcase, evidence[0]!.note.replace(/^Blocked:\s*/, ''), startedAt, evidence);
+    return blockedResult(vcase, evidence[1]!.note.replace(/^Blocked:\s*/, ''), startedAt, evidence);
   }
 
   if (isAuthRejection(response) || isNotFound(response)) {
@@ -86,6 +94,14 @@ export async function runIdorCase(
     );
   }
 
+  if (isSuccessStatus(response)) {
+    const anonymous = await issueRuntimeRequest(target, sessions, { method: 'GET', path: vcase.path, sessionId: null }, state);
+    evidence.push(anonymous);
+    if (anonymous.response.status === 0) return blockedResult(vcase, anonymous.note.replace(/^Blocked:\s*/, ''), startedAt, evidence);
+    if (isSuccessStatus(anonymous.response)) {
+      return buildResult(vcase, 'inconclusive', 'medium', `GET ${vcase.path} is also reachable without authentication, so the resource is public and a successful request by "${otherSessionId}" does not demonstrate broken object authorization.`, evidence, startedAt);
+    }
+  }
   const isWrite = vcase.method === 'POST' || vcase.method === 'PUT' || vcase.method === 'PATCH' || vcase.method === 'DELETE';
   if (isSuccessStatus(response) && isWrite) {
     return buildResult(
