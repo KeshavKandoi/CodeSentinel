@@ -41,6 +41,12 @@ export interface ProofClassification {
   reason: string;
 }
 
+export interface FindingCorrelation {
+  sourceIds: string[];
+  reason: string;
+  engineCount: number;
+}
+
 export interface AuditFinding {
   id: string;
   category: string;
@@ -60,6 +66,8 @@ export interface AuditFinding {
   remediation: { status: RemediationLifecycle | null; remediationIds: string[] };
   replay: { status: ReplayStatus; receiptId: string | null };
   recommendation: string;
+  correlation?: FindingCorrelation;
+  riskScore?: number;
 }
 
 export interface AuditIssue {
