@@ -578,3 +578,104 @@ describe('Phase 9 write oracle stability', () => {
     }
   });
 });
+
+describe('Phase 9 receipt origin isolation', () => {
+  const makeFinding = (adapter: string, sourceId: string): AuditFinding => ({
+    status: 'proof_eligible',
+    classification: { proofSupport: 'runtime', proofStatus: 'eligible', adapter, proofSourceId: sourceId, prerequisites: [], maxRequests: 1, reason: 'test' },
+  }) as unknown as AuditFinding;
+
+  async function proveInjection() {
+    resetSecurityProofsForTests();
+    const scan = await scanProject(securityConfig);
+    if (!scan.ok) throw new Error('scan failed');
+    const finding = scan.data.findings.find((item) => item.category === 'injection');
+    if (!finding) throw new Error('no injection finding');
+    const proven = await proveSecurityFinding(securityConfig, { findingId: finding.id, target: { allowedOrigin: vulnerableProofOrigin } });
+    if (!proven.ok) throw new Error('proof failed');
+    expect(proven.data.status).toBe('verified');
+    expect(proven.data.targetOrigin).toBe(vulnerableProofOrigin);
+    return { finding, receipt: proven.data };
+  }
+
+  it('accepts a receipt for the origin it was created for', async () => {
+    const { finding, receipt } = await proveInjection();
+    const target = makeFinding('sql_injection', finding.id);
+    advanceToVerified(target, receipt, vulnerableProofOrigin);
+    expect(target.status).toBe('verified');
+  });
+
+  it('rejects a receipt for a different expected origin', async () => {
+    const { finding, receipt } = await proveInjection();
+    const target = makeFinding('sql_injection', finding.id);
+    expect(() => advanceToVerified(target, receipt, secureProofOrigin)).toThrow();
+    expect(target.status).toBe('proof_eligible');
+  });
+
+  it('rejects a receipt stripped of its origin whether or not an origin is expected', async () => {
+    const { finding, receipt } = await proveInjection();
+    const stripped = { ...receipt, targetOrigin: undefined };
+    expect(() => advanceToVerified(makeFinding('sql_injection', finding.id), stripped, vulnerableProofOrigin)).toThrow();
+    expect(() => advanceToVerified(makeFinding('sql_injection', finding.id), stripped)).toThrow();
+  });
+
+  it('rejects a receipt whose origin was forged to match the expected origin', async () => {
+    const { finding, receipt } = await proveInjection();
+    const forged = { ...receipt, targetOrigin: secureProofOrigin };
+    expect(() => advanceToVerified(makeFinding('sql_injection', finding.id), forged, secureProofOrigin)).toThrow();
+    expect(() => advanceToVerified(makeFinding('sql_injection', finding.id), forged)).toThrow();
+  });
+
+  it('rejects replaying a bound receipt against another origin without storing a new receipt', async () => {
+    const { linkSecurityReceiptToRemediation, replaySecurityProof, listSecurityReceiptsForFinding } = await import('../../src/proof/engine.js');
+    const { finding, receipt } = await proveInjection();
+    const linked = linkSecurityReceiptToRemediation(finding.id, receipt.receiptId, 'rem-origin-test');
+    expect(linked.ok).toBe(true);
+    if (!linked.ok) return;
+    const crossed = await replaySecurityProof(securityConfig, { findingId: finding.id, target: { allowedOrigin: secureProofOrigin, minRequestIntervalMs: 0 }, sessions: [], sessionParams: {} }, linked.data, 'rem-origin-test');
+    expect(crossed.ok).toBe(false);
+    if (!crossed.ok) expect(crossed.error.message).toMatch(/target origin/);
+    expect(listSecurityReceiptsForFinding(finding.id).every((item) => item.targetOrigin === vulnerableProofOrigin)).toBe(true);
+  });
+});
+
+describe('Phase 9 blocked and budget-limited results', () => {
+  it('blocks access-control proofs for their exact prerequisite reasons without sending requests or verifying', async () => {
+    resetSecurityProofsForTests();
+    const result = await runSecurityAuditPipeline(config, { sessions: [], sessionParams: {}, target: { allowedOrigin: vulnerableProofOrigin, minRequestIntervalMs: 0 } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const blocked = result.data.findings.filter((finding) => finding.status === 'blocked');
+    expect(blocked.length).toBe(3);
+    const notes = blocked.map((finding) => `${finding.classification.adapter}:${finding.proof.note}`);
+    expect(notes.filter((note) => note.startsWith('missing_authentication:') && /allowDestructiveMethods.*vettedTestPaths/.test(note)).length).toBe(1);
+    expect(notes.filter((note) => note.startsWith('idor_bola:') && /ownerSessionId, otherSessionId/.test(note)).length).toBe(2);
+    for (const finding of blocked) {
+      expect(finding.proof.status).toBe('blocked');
+      expect(finding.proof.status).not.toBe('verified');
+    }
+    expect(result.data.findings.some((finding) => finding.status === 'verified')).toBe(false);
+    resetSecurityProofsForTests();
+  }, 60_000);
+
+  it('skips exactly the over-budget eligible finding at the default limit and proves it when budget allows', async () => {
+    resetSecurityProofsForTests();
+    const limited = await runSecurityAuditPipeline(vulnerableProofConfig, { sessions: [], sessionParams: {}, target: { allowedOrigin: vulnerableProofOrigin, minRequestIntervalMs: 0 } });
+    expect(limited.ok).toBe(true);
+    if (!limited.ok) return;
+    const skipped = limited.data.findings.filter((finding) => finding.status === 'proof_eligible');
+    expect(skipped.length).toBe(1);
+    expect(skipped[0].classification.adapter).toBe('open_redirect');
+    expect(skipped[0].proof.attempted).toBe(false);
+    const issue = limited.data.issues.find((item) => item.code === 'PROOF_ATTEMPT_LIMIT');
+    expect(issue?.affectedFindings).toEqual([skipped[0].id]);
+    expect(limited.data.findings.filter((finding) => finding.status === 'verified').length).toBe(5);
+    resetSecurityProofsForTests();
+    const full = await runSecurityAuditPipeline(vulnerableProofConfig, { sessions: [], sessionParams: {}, maxProofAttempts: 100, target: { allowedOrigin: vulnerableProofOrigin, minRequestIntervalMs: 0 } });
+    expect(full.ok).toBe(true);
+    if (!full.ok) return;
+    expect(full.data.findings.find((finding) => finding.classification.adapter === 'open_redirect')?.status).toBe('verified');
+    expect(full.data.issues.some((item) => item.code === 'PROOF_ATTEMPT_LIMIT')).toBe(false);
+    resetSecurityProofsForTests();
+  }, 120_000);
+});
