@@ -197,6 +197,10 @@ The graph contains files, routes, handlers, middleware, authentication boundarie
 
 The audit never applies remediation. Pass `investigationId` to attach remediation records (from `propose_remediation` / `apply_remediation` / `verify_remediation`) and replay receipts. Findings whose remediation was verified and replayed as `not_reproduced` appear as `verified_resolved`.
 
+### Per-finding scoring and advisory output
+
+Each finding carries a deterministic `riskScore` (0-100, computed from final state), a redacted, bounded `evidenceSynthesis` naming only the engines that contributed, and `correlation` metadata when more than one source contributed. `nearDuplicates` lists advisory groups of structurally similar findings; it never merges findings, changes IDs, lifecycle or proof eligibility, or adds graph edges. This audit result is the report surface for these fields; the investigation-based `generate_security_report` is a separate workflow and does not consume it.
+
 ### Report
 
 The result lists, per finding: stable ID, category, severity, confidence, status, proof support, proof status, file, line, route, evidence, remediation status, and replay status, plus summary counts (total, per severity, runtime verified, static-only, unsupported, blocked, inconclusive, resolved), stage records, issues, and limitations.
