@@ -5,7 +5,9 @@ import { redactReportValue } from '../report/redaction.js';
 import { redactSecurityText } from '../security/utils.js';
 import { hasUnresolvedSegment } from '../runtime/cases/common.js';
 import type { SecurityFinding } from '../security/types.js';
-import { AUDIT_STAGES, type AuditFinding, type AuditStage, type Confidence, type FindingCorrelation, type FindingSource, type Severity } from './types.js';
+import { AUDIT_STAGES, type AuditFinding, type AuditStage, type Confidence, type FindingCorrelation, type FindingSource, type FindingStatus, type Severity } from './types.js';
+
+import { calculateRiskScore, engineOrigins } from './scoring.js';
 
 export const SEVERITY_RANK: Record<Severity, number> = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
 const CONFIDENCE_RANK: Record<Confidence, number> = { low: 0, medium: 1, high: 2 };
@@ -67,13 +69,6 @@ export function findingIdentity(input: { category: string; file: string | null; 
 
 export function stagesOf(sources: FindingSource[]): AuditStage[] {
   return AUDIT_STAGES.filter((stage) => sources.some((source) => source.stage === stage));
-}
-
-export function compareFindings(a: AuditFinding, b: AuditFinding): number {
-  const aScore = a.riskScore ?? 0;
-  const bScore = b.riskScore ?? 0;
-  if (aScore !== bScore) return bScore - aScore;
-  return SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.id.localeCompare(b.id);
 }
 
 export function createFinding(input: {
@@ -166,25 +161,52 @@ export function fromDeepFinding(finding: IntelligenceFinding, evidenceById: Map<
   });
 }
 
-function buildCorrelationReason(origins: Set<string>): string {
-  const parts: string[] = [];
-  if (origins.has('security_scan')) parts.push('Static scanner');
-  if (origins.has('access_control')) parts.push('Access-control analysis');
-  if (origins.has('deep_analysis')) parts.push('Deep heuristic analysis');
-  return parts.join(' + ');
+const MAX_CORRELATION_SOURCE_IDS = 20;
+const MAX_SYNTHESIS_CHARS = 600;
+const ENGINE_LABELS: Record<string, string> = { security_scan: 'Static scanner', access_control: 'Access-control analysis', deep_analysis: 'Deep heuristic analysis' };
+const VERIFIED_STATUSES: readonly FindingStatus[] = ['verified', 'remediation_applied', 'verified_resolved'];
+const STATUS_PRIORITY: Record<FindingStatus, number> = {
+  verified: 0,
+  remediation_applied: 1,
+  proof_eligible: 2,
+  analyzed: 3,
+  candidate: 4,
+  inconclusive: 5,
+  blocked: 6,
+  unsupported: 7,
+  not_reproduced: 8,
+  verified_resolved: 9,
+};
+
+const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+export function compareBySeverity(a: AuditFinding, b: AuditFinding): number {
+  return SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.id.localeCompare(b.id);
 }
 
-function updateCorrelationMetadata(existing: AuditFinding): void {
-  const origins = new Set(existing.sources.map((s) => s.origin));
-  const sourceIds = existing.sources.map((s) => s.sourceId).filter((id, i, arr) => arr.indexOf(id) === i).sort();
-  
-  if (sourceIds.length > 1 || origins.size > 1) {
-    existing.correlation = {
-      sourceIds,
-      reason: buildCorrelationReason(origins),
-      engineCount: origins.size,
-    };
+export function compareFindings(a: AuditFinding, b: AuditFinding): number {
+  const aScore = a.riskScore ?? calculateRiskScore(a);
+  const bScore = b.riskScore ?? calculateRiskScore(b);
+  return bScore - aScore || SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status] || compareText(a.id, b.id);
+}
+
+function isHeuristic(item: AuditFinding): boolean {
+  return item.sources.every((source) => source.origin === 'deep_analysis');
+}
+
+function updateCorrelationMetadata(finding: AuditFinding): void {
+  const engines = engineOrigins(finding.sources);
+  const sourceIds = [...new Set(finding.sources.map((source) => source.sourceId))].sort();
+  if (engines.length < 2 && sourceIds.length < 2) {
+    delete finding.correlation;
+    return;
   }
+  const correlation: FindingCorrelation = {
+    sourceIds: sourceIds.slice(0, MAX_CORRELATION_SOURCE_IDS),
+    reason: engines.map((origin) => ENGINE_LABELS[origin] ?? origin).join(' + ') || 'Remediation record',
+    engineCount: engines.length,
+  };
+  finding.correlation = correlation;
 }
 
 export function addOrMerge(map: Map<string, AuditFinding>, incoming: AuditFinding): void {
@@ -194,12 +216,13 @@ export function addOrMerge(map: Map<string, AuditFinding>, incoming: AuditFindin
     updateCorrelationMetadata(incoming);
     return;
   }
-  const heuristic = (item: AuditFinding): boolean => item.sources.every((source) => source.origin === 'deep_analysis');
-  if (heuristic(existing) && !heuristic(incoming)) {
+  const existingHeuristic = isHeuristic(existing);
+  const incomingHeuristic = isHeuristic(incoming);
+  if (existingHeuristic && !incomingHeuristic) {
     existing.severity = incoming.severity;
     existing.title = incoming.title;
     existing.confidence = incoming.confidence;
-  } else if (!heuristic(incoming)) {
+  } else if (!incomingHeuristic) {
     if (SEVERITY_RANK[incoming.severity] > SEVERITY_RANK[existing.severity]) {
       existing.severity = incoming.severity;
       existing.title = incoming.title;
@@ -212,11 +235,41 @@ export function addOrMerge(map: Map<string, AuditFinding>, incoming: AuditFindin
   for (const item of incoming.evidence) {
     if (existing.evidence.length < MAX_EVIDENCE_ITEMS && !existing.evidence.includes(item)) existing.evidence.push(item);
   }
-  existing.file ??= incoming.file;
-  existing.route ??= incoming.route;
-  existing.routeId ??= incoming.routeId;
-  if (incoming.line !== null && (existing.line === null || incoming.line < existing.line)) existing.line = incoming.line;
+  if (existingHeuristic || !incomingHeuristic) {
+    existing.file ??= incoming.file;
+    existing.route ??= incoming.route;
+    existing.routeId ??= incoming.routeId;
+    if (incoming.line !== null && (existing.line === null || incoming.line < existing.line)) existing.line = incoming.line;
+  }
   if (existing.recommendation.length === 0) existing.recommendation = incoming.recommendation;
   existing.stages = stagesOf(existing.sources);
   updateCorrelationMetadata(existing);
+}
+
+export function synthesizeEvidence(finding: AuditFinding): string {
+  const parts: string[] = [];
+  const scan = finding.sources.filter((source) => source.origin === 'security_scan');
+  if (scan.length > 0) {
+    const rules = [...new Set(scan.map((source) => source.ruleId).filter((rule): rule is string => rule !== null))].sort().slice(0, 3);
+    const where = finding.file ? ` in ${finding.file}${finding.line !== null ? `:${finding.line}` : ''}` : '';
+    parts.push(`Static scanner detected ${finding.category}${where}${rules.length > 0 ? ` (rule ${rules.join(', ')})` : ''}`);
+  }
+  const access = finding.sources.filter((source) => source.origin === 'access_control');
+  if (access.length > 0) {
+    const types = [...new Set(access.map((source) => source.candidateType).filter((type): type is string => type !== null))].sort();
+    parts.push(`Access-control analysis detected ${types.length > 0 ? types.join(', ') : finding.category}${finding.route ? ` on ${finding.route}` : ''}`);
+  }
+  if (finding.sources.some((source) => source.origin === 'deep_analysis')) {
+    parts.push('Deep heuristic analysis flagged a corroborating pattern (heuristic, not proof)');
+  }
+  if (finding.proof.status !== null && finding.proof.receiptIds.length > 0) {
+    const prior = finding.proof.fromPriorReceipt ? ' using a prior receipt' : '';
+    if (finding.proof.status === 'verified') {
+      if (VERIFIED_STATUSES.includes(finding.status)) parts.push(`Runtime proof verified the condition${prior}`);
+    } else {
+      parts.push(`Runtime proof attempt was ${finding.proof.status.replace('_', ' ')} and did not verify the condition${prior}`);
+    }
+  }
+  const text = parts.length > 0 ? `${parts.join('; ')}.` : 'No analysis engine evidence is recorded for this finding.';
+  return redactSecurityText(String(redactReportValue(text))).replace(/\s+/g, ' ').trim().slice(0, MAX_SYNTHESIS_CHARS);
 }
