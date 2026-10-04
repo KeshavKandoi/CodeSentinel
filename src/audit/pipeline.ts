@@ -375,7 +375,7 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
     let unsupported = 0;
     for (const finding of ctx.findings.values()) {
       advance(finding, 'analyzed');
-      applyClassification(finding);
+      applyClassification(finding, ctx.routesOutcome && ctx.routesOutcome.ok ? ctx.routesOutcome.data.entries : undefined);
       if (finding.status === 'proof_eligible') eligible += 1;
       else if (finding.status === 'blocked') blocked += 1;
       else unsupported += 1;
