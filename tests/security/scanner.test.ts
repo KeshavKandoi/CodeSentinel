@@ -157,3 +157,17 @@ describe('Phase 3 evidence redaction and bounds', () => {
     expect(warnings.every((warning) => warning.length <= 400)).toBe(true);
   });
 });
+
+describe('Phase 5 quoted-key and header redaction', () => {
+  it.each([
+    ['{"password": "hunter2hunter2"}', 'hunter2hunter2'],
+    ["'apiKey': 'abcdefgh12345678'", 'abcdefgh12345678'],
+    ['Cookie: session=abc123def456', 'abc123def456'],
+  ])('redacts %s', (input, secret) => {
+    expect(redactSecurityText(input)).not.toContain(secret);
+  });
+
+  it('keeps object-style cookie configuration readable', () => {
+    expect(redactSecurityText('cookie: { secure: false }')).toContain('secure: false');
+  });
+});
