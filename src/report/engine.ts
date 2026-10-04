@@ -5,6 +5,10 @@ import { detachedRedacted } from './redaction.js';
 import type { RemediationRecommendation, SecurityReport, SecurityReportFinding, ReportFindingStatus } from './types.js';
 import { listRemediationsForInvestigation } from '../remediation/engine.js';
 import { listSecurityReceiptsForFinding } from '../proof/engine.js';
+import { canonicalCategory, createFinding, normalizeFile, safeText, synthesizeEvidence } from '../audit/identity.js';
+import { calculateRiskScore } from '../audit/scoring.js';
+import type { AuditFinding, FindingStatus } from '../audit/types.js';
+import type { RemediationRecord } from '../remediation/types.js';
 
 const SEVERITY_ORDER: Record<SecurityReportFinding['severity'], number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 const STATUS_ORDER: Record<ReportFindingStatus, number> = { runtime_verified: 0, static_candidate: 1, inconclusive: 2, blocked: 3, not_reproduced: 4 };
@@ -51,13 +55,38 @@ function evidenceFor(investigation: SecurityInvestigation, finding: Investigatio
   return { evidence: all, refs: all.map((item) => item.id), sourceRefs: all.map((item) => item.reference) };
 }
 
-function buildFinding(investigation: SecurityInvestigation, finding: InvestigationFinding): SecurityReportFinding | null {
+const AUDIT_STATUS: Record<ReportFindingStatus, FindingStatus> = { runtime_verified: 'verified', static_candidate: 'candidate', not_reproduced: 'not_reproduced', inconclusive: 'inconclusive', blocked: 'blocked' };
+
+function scoredView(finding: InvestigationFinding, status: ReportFindingStatus, runtime: InvestigationRuntimeResult | null): { riskScore: number; evidenceSynthesis: string } {
+  const origin = finding.origin;
+  const view: AuditFinding = createFinding({
+    id: finding.findingId,
+    category: canonicalCategory(finding.category),
+    title: safeText(finding.title),
+    severity: finding.severity,
+    confidence: finding.confidence,
+    file: normalizeFile(finding.file),
+    line: null,
+    route: finding.path || null,
+    routeId: finding.routeId || null,
+    sources: [{ stage: origin === 'security_scan' ? 'static_scan' : 'access_control', origin, sourceId: finding.findingId, ruleId: null, category: finding.category, candidateType: origin === 'access_control' ? finding.candidateType : null, routePath: origin === 'access_control' ? finding.path || null : null }],
+    evidence: [safeText(finding.explanation)],
+    recommendation: '',
+  });
+  view.status = AUDIT_STATUS[status];
+  if (runtime) view.proof = { receiptIds: [runtime.evidenceRef], status: runtime.status as AuditFinding['proof']['status'], attempted: true, fromPriorReceipt: false, note: null };
+  return { riskScore: calculateRiskScore(view), evidenceSynthesis: synthesizeEvidence(view) };
+}
+
+function buildFinding(investigation: SecurityInvestigation, finding: InvestigationFinding, records: RemediationRecord[]): SecurityReportFinding | null {
   const hypothesis = investigation.hypotheses.find((item) => item.findingId === finding.findingId) ?? null;
   const runtime = hypothesis ? investigation.runtimeResults[hypothesis.id] ?? null : null;
   const evidence = evidenceFor(investigation, finding, hypothesis?.id ?? null, runtime);
   if (!evidence) return null;
   const status = statusFor(finding, runtime);
   const runtimeEvidence = runtime ? [runtime.summary] : [];
+  const scored = scoredView(finding, status, runtime);
+  const own = records.filter((record) => record.proposal.findingId === finding.findingId);
   return {
     findingId: finding.findingId,
     title: finding.title,
@@ -78,14 +107,18 @@ function buildFinding(investigation: SecurityInvestigation, finding: Investigati
     sourceRefs: evidence.sourceRefs,
     hypothesisId: hypothesis?.id ?? null,
     runtimeResult: runtime,
+    riskScore: scored.riskScore,
+    evidenceSynthesis: scored.evidenceSynthesis,
+    remediationState: { status: own.length > 0 ? own[own.length - 1].status : null, remediationIds: own.map((record) => record.proposal.proposalId).sort() },
   };
 }
 
 function buildReport(investigation: SecurityInvestigation): ToolOutcome<SecurityReport> {
   if (investigation.evidence.length > MAX_EVIDENCE_ITEMS) return err('REPORT_INVALID', 'Investigation evidence exceeds the report safety bound.');
+  const records = listRemediationsForInvestigation(investigation.id);
   const findings: SecurityReportFinding[] = [];
   for (const finding of investigation.findings) {
-    const reportFinding = buildFinding(investigation, finding);
+    const reportFinding = buildFinding(investigation, finding, records);
     if (!reportFinding) return err('REPORT_INVALID', `Finding "${finding.findingId}" references missing investigation evidence.`);
     findings.push(reportFinding);
   }
@@ -115,7 +148,7 @@ function buildReport(investigation: SecurityInvestigation): ToolOutcome<Security
     analysisCoverage: { analysisSteps: investigation.execution.analysisSteps, expectedAnalysisSteps: 4, scanFindings: investigation.analysis?.scan.total ?? 0, routes: investigation.analysis?.routes.total ?? 0, accessControlFindings: investigation.analysis?.accessControl.totalFindings ?? 0 },
     runtimeVerificationSummary: { attempted: runtime.length, verified: runtime.filter((item) => item.status === 'verified').length, notReproduced: runtime.filter((item) => item.status === 'not_reproduced').length, inconclusive: runtime.filter((item) => item.status === 'inconclusive').length, blocked: runtime.filter((item) => item.status === 'blocked').length },
     limitations: ['Static findings are candidates unless runtime evidence directly establishes the security condition.', 'Generic successful reads and unresolved dynamic resources remain inconclusive or blocked.', 'Remediation status is included only after controlled validation, re-analysis, and authorized runtime verification; source edits alone are not proof.'],
-    remediations: listRemediationsForInvestigation(investigation.id),
+    remediations: records,
     securityReceipts: findings.flatMap((finding) => listSecurityReceiptsForFinding(finding.findingId)),
   };
   return ok(detachedRedacted(report));
