@@ -213,3 +213,27 @@ describe('analyze_access_control MCP tool', () => {
     expect(accessParsed.matrix.length).toBe(routesParsed.entries.length);
   });
 });
+
+describe('Phase 5 access-control: an authorization guard implies no missing-authentication finding', () => {
+  it('skips a role-guarded admin route but still reports an unguarded resource write', async () => {
+    const os = await import('node:os');
+    const nodePath = await import('node:path');
+    const root = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), 'cs-acc-')));
+    try {
+      fs.mkdirSync(nodePath.join(root, 'src'));
+      fs.writeFileSync(nodePath.join(root, 'package.json'), JSON.stringify({ name: 't', dependencies: { express: '^4.19.2' } }));
+      fs.writeFileSync(nodePath.join(root, 'src', 'app.js'), [
+        "const express = require('express');",
+        'const app = express();',
+        'function requireAdmin(req, res, next) { if (!req.user || !req.user.isAdmin) return res.status(403).end(); next(); }',
+        "app.delete('/admin/users', requireAdmin, (req, res) => res.send('ok'));",
+        "app.put('/items/:id', (req, res) => res.send('ok'));",
+        '',
+      ].join('\n'));
+      const found = analyze(root).findings.filter((f) => f.candidateType === 'missing_authentication').map((f) => `${f.method} ${f.path}`);
+      expect(found).toEqual(['PUT /items/:id']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
