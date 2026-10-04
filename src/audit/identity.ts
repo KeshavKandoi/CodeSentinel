@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { AccessControlFinding } from '../access/types.js';
 import type { IntelligenceEvidence, IntelligenceFinding } from '../intelligence/types.js';
 import { redactReportValue } from '../report/redaction.js';
+import { redactSecurityText } from '../security/utils.js';
 import { hasUnresolvedSegment } from '../runtime/cases/common.js';
 import type { SecurityFinding } from '../security/types.js';
 import { AUDIT_STAGES, type AuditFinding, type AuditStage, type Confidence, type FindingSource, type Severity } from './types.js';
@@ -35,7 +36,7 @@ const ACCESS_CATEGORIES: Record<string, string> = {
 };
 
 export function safeText(value: unknown): string {
-  return String(redactReportValue(String(value ?? ''))).replace(/\s+/g, ' ').trim().slice(0, MAX_EVIDENCE_CHARS);
+  return redactSecurityText(String(redactReportValue(String(value ?? '')))).replace(/\s+/g, ' ').trim().slice(0, MAX_EVIDENCE_CHARS);
 }
 
 export function canonicalCategory(raw: string): string {
