@@ -216,7 +216,7 @@ function collectResolved(ctx: AuditContext, investigationId: string): void {
     try {
       advance(finding, 'analyzed');
       advance(finding, 'proof_eligible');
-      advanceToVerified(finding, original);
+      advanceToVerified(finding, original, original.targetOrigin);
       advance(finding, 'remediation_applied');
       advance(finding, 'verified_resolved');
     } catch {
