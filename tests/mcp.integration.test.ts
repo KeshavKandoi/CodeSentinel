@@ -143,6 +143,31 @@ describe('MCP Server Integration', () => {
     expect(text).not.toContain('dXNlcjpwYXNzd29yZA');
   });
 
+  it('keeps hostile, oversized and malformed tool calls structured and secret-free', async () => {
+    const secret = 'dXNlcjpwYXNzd29yZA';
+    const hostile = `Authorization: Basic ${secret}==`;
+    const calls: Array<[string, unknown]> = [
+      [hostile, {}],
+      ['verify_finding', { findingId: hostile.repeat(10), target: { allowedOrigin: 'http://127.0.0.1:1' } }],
+      ['verify_finding', { findingId: 'x', target: 'bad' }],
+      ['get_investigation', { investigationId: hostile.repeat(10) }],
+      ['get_security_finding', { investigationId: hostile, findingId: hostile }],
+      ['list_files', { path: 'x'.repeat(100_000) }],
+      ['scan_project', { unknown: hostile }],
+      ['read_file', null],
+    ];
+    let id = 100;
+    for (const [name, args] of calls) {
+      const res = await sendRequest({ jsonrpc: '2.0', id: ++id, method: 'tools/call', params: { name, arguments: args } });
+      expect(res.id).toBe(id);
+      const text = JSON.stringify(res);
+      expect(text).not.toContain(secret);
+      expect(text).not.toMatch(/\n\s+at .*:\d+:\d+/);
+      if (res.result) expect(res.result.isError).toBe(true);
+      else expect(res.error).toBeDefined();
+    }
+  }, 60_000);
+
   it('does not leak logs to stdout (protocol corruption check)', () => {
     for (const res of responses) {
       expect(res.unparsed).toBeUndefined();
