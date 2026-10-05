@@ -229,6 +229,14 @@ export const retestFindingSchema = z.object({
   sessions: z.array(testSessionSchema).max(10).default([]),
   sessionParams: sessionParamsSchema.default({}),
 }).strict();
+export const securityRemediationSweepSchema = z.object({
+  findingIds: z.array(z.string().min(1).max(256).regex(/^[A-Za-z0-9_.:-]+$/)).max(100).optional(),
+  remediationIds: z.array(z.string().min(1).max(128).regex(/^controlled-[0-9a-f-]{36}$/)).max(100).optional(),
+  target: runtimeTargetSchema.optional(),
+  sessions: z.array(testSessionSchema).max(10).default([]),
+  sessionParams: sessionParamsSchema.default({}),
+  runtimeSetupFailure: z.object({ command: z.string().max(256), output: z.string().min(1).max(8_000) }).strict().optional(),
+}).strict();
 export type ProposeRemediationInput = z.infer<typeof proposeRemediationSchema>;
 export type RemediationIdInput = z.infer<typeof remediationIdSchema>;
 

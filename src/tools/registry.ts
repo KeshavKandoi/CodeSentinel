@@ -26,6 +26,7 @@ import {
   rollbackRemediationSchema,
   controlledRemediationSchema,
   retestFindingSchema,
+  securityRemediationSweepSchema,
   safeValidate,
   deepSecurityAuditSchema,
   proveSecurityFindingSchema,
@@ -56,6 +57,7 @@ import { generateSecurityReport, getSecurityFinding } from '../report/engine.js'
 import { detachedRedacted } from '../report/redaction.js';
 import { applyRemediation, getRemediation, proposeRemediation, remediateFinding, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
 import { retestFinding } from '../remediation/retest.js';
+import { securityRemediationSweep } from '../remediation/sweep.js';
 import { runDeepSecurityAudit } from '../intelligence/engine.js';
 import { buildSecurityGraph, listSecurityProofCases, proveSecurityFinding } from '../proof/engine.js';
 import { runFullSecurityAuditSchema } from '../validation/schemas.js';
@@ -486,6 +488,16 @@ const coreToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'security_remediation_sweep',
+    description: 'Run a read-only post-remediation security sweep: independent retests, fresh static and access scans, full audit coverage, before/after correlation, and final evidence-backed states.',
+    inputSchema: { type: 'object', properties: { findingIds: { type: 'array' }, remediationIds: { type: 'array' }, target: { type: 'object' }, sessions: { type: 'array' }, sessionParams: { type: 'object' }, runtimeSetupFailure: { type: 'object' } } },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(securityRemediationSweepSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(await securityRemediationSweep(config, validation.data));
+    },
+  },
+  {
     name: 'apply_remediation',
     description: 'Apply one validated, hash-checked remediation proposal using bounded filesystem writes. The result remains pending verification.',
     inputSchema: { type: 'object', properties: { remediationId: { type: 'string' }, authorization: { type: 'object' } }, required: ['remediationId'] },
@@ -546,7 +558,7 @@ const coreToolDefinitions: ToolDefinition[] = [
 export const toolDefinitions: ToolDefinition[] = [...coreToolDefinitions, ...orchestrationToolDefinitions];
 
 const PROJECT_ROOT_TOOLS = new Set([
-  'run_full_security_audit', 'start_security_audit', 'start_security_investigation', 'remediate_finding', 'retest_finding',
+  'run_full_security_audit', 'start_security_audit', 'start_security_investigation', 'remediate_finding', 'retest_finding', 'security_remediation_sweep',
   'get_project_info', 'scan_project', 'analyze_project', 'list_files', 'read_file', 'search_files',
   'get_security_graph', 'discover_routes', 'analyze_access_control', 'run_deep_security_audit',
   'list_verification_cases', 'list_security_proof_cases',

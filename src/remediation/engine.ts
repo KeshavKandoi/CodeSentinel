@@ -438,7 +438,24 @@ export interface ControlledRemediationRecord {
   file: string;
   appliedHash: string;
   before: ControlledBeforeFinding;
+  baselineFindings: ControlledBaselineFinding[];
+  baselineComplete: boolean;
+  lastRetest: { result: string; timestamp: string } | null;
   appliedAt: string;
+}
+
+export interface ControlledBaselineFinding {
+  id: string;
+  origin: 'security_scan' | 'access_control';
+  ruleId: string;
+  category: string;
+  file: string;
+  line: number | null;
+  evidenceHash: string;
+  candidateType: string | null;
+  route: string | null;
+  severity: string;
+  confidence: string;
 }
 
 const controlledRecords = new Map<string, ControlledRemediationRecord>();
@@ -447,22 +464,41 @@ export function getControlledRemediationRecord(projectRoot: string, findingId: s
   return [...controlledRecords.values()].reverse().find((record) => record.projectRoot === projectRoot && record.findingId === findingId) ?? null;
 }
 
-async function captureBeforeFinding(config: AppConfig, findingId: string, file: string): Promise<ControlledBeforeFinding> {
+export function listControlledRemediationRecords(projectRoot: string): ControlledRemediationRecord[] {
+  return [...controlledRecords.values()].filter((record) => record.projectRoot === projectRoot);
+}
+
+export function recordControlledRetest(projectRoot: string, remediationId: string, result: string, timestamp: string): void {
+  const record = controlledRecords.get(remediationId);
+  if (record?.projectRoot === projectRoot) record.lastRetest = { result, timestamp };
+}
+
+export function baselineFinding(finding: SecurityFinding | AccessControlFinding, origin: ControlledBaselineFinding['origin']): ControlledBaselineFinding {
+  const access = origin === 'access_control' ? finding as AccessControlFinding : null;
+  return { id: finding.id, origin, ruleId: finding.ruleId, category: finding.category, file: finding.file ?? '', line: finding.line ?? null, evidenceHash: sha256(finding.evidence.map((item) => item.matchedText ?? item.reason).join('|')), candidateType: access?.candidateType ?? null, route: access?.path ?? null, severity: finding.severity, confidence: finding.confidence };
+}
+
+async function captureBeforeFinding(config: AppConfig, findingId: string, file: string): Promise<{ before: ControlledBeforeFinding; findings: ControlledBaselineFinding[]; complete: boolean }> {
   const unsupported: ControlledBeforeFinding = { origin: 'unsupported', sourceId: null, ruleId: null, category: null, candidateType: null, file, line: null, route: null, severity: null, confidence: null, evidenceHash: null, proofSupport: 'static-only', adapterType: null, originalReceiptId: null };
   const scan = await scanProject(config);
+  const routes = discoverRoutes(config);
+  const access = routes.ok ? analyzeAccessControl(config, routes.data.entries) : null;
+  const findings = [
+    ...(scan.ok ? scan.data.findings.map((finding) => baselineFinding(finding, 'security_scan')) : []),
+    ...(access ? access.findings.map((finding) => baselineFinding(finding, 'access_control')) : []),
+  ];
+  const complete = scan.ok && routes.ok && scan.data.project.support === 'supported' && !scan.data.fileAnalysis.inventoryTruncated && scan.data.fileAnalysis.skippedFiles.length === 0 && scan.data.rulesFailed.length === 0 && scan.data.rulesSkipped.length === 0;
   const source = scan.ok ? scan.data.findings.find((finding: SecurityFinding) => finding.file === file && (finding.id === findingId || fromSecurityFinding(finding).id === findingId)) : null;
   if (source) {
     const support = resolveProofSupport({ origin: 'security_scan', category: source.category, candidateType: '', ruleId: source.ruleId });
     const prior = listSecurityReceiptsForFinding(source.id, config.projectRoot).find((receipt) => receipt.status === 'verified' && isTrustedVerifiedReceipt(receipt, support.adapterType, receipt.targetOrigin, config.projectRoot));
-    return { origin: 'security_scan', sourceId: source.id, ruleId: source.ruleId, category: source.category, candidateType: null, file, line: source.line ?? null, route: null, severity: source.severity, confidence: source.confidence, evidenceHash: sha256(source.evidence.map((item) => item.matchedText ?? item.reason).join('|')), proofSupport: support.supportClass, adapterType: support.adapterType, originalReceiptId: prior?.receiptId ?? null };
+    return { before: { origin: 'security_scan', sourceId: source.id, ruleId: source.ruleId, category: source.category, candidateType: null, file, line: source.line ?? null, route: null, severity: source.severity, confidence: source.confidence, evidenceHash: sha256(source.evidence.map((item) => item.matchedText ?? item.reason).join('|')), proofSupport: support.supportClass, adapterType: support.adapterType, originalReceiptId: prior?.receiptId ?? null }, findings, complete };
   }
-  const routes = discoverRoutes(config);
-  const access = routes.ok ? analyzeAccessControl(config, routes.data.entries) : null;
   const found = access?.findings.find((finding: AccessControlFinding) => finding.file === file && (finding.id === findingId || fromAccessFinding(finding).id === findingId));
-  if (!found) return unsupported;
+  if (!found) return { before: unsupported, findings, complete };
   const support = resolveProofSupport({ origin: 'access_control', category: found.category, candidateType: found.candidateType, ruleId: found.ruleId });
   const prior = listSecurityReceiptsForFinding(found.id, config.projectRoot).find((receipt) => receipt.status === 'verified' && isTrustedVerifiedReceipt(receipt, support.adapterType, receipt.targetOrigin, config.projectRoot));
-  return { origin: 'access_control', sourceId: found.id, ruleId: found.ruleId, category: found.category, candidateType: found.candidateType, file, line: found.line ?? null, route: found.path, severity: found.severity, confidence: found.confidence, evidenceHash: sha256(found.evidence.map((item) => item.reason).join('|')), proofSupport: support.supportClass, adapterType: support.adapterType, originalReceiptId: prior?.receiptId ?? null };
+  return { before: { origin: 'access_control', sourceId: found.id, ruleId: found.ruleId, category: found.category, candidateType: found.candidateType, file, line: found.line ?? null, route: found.path, severity: found.severity, confidence: found.confidence, evidenceHash: sha256(found.evidence.map((item) => item.reason).join('|')), proofSupport: support.supportClass, adapterType: support.adapterType, originalReceiptId: prior?.receiptId ?? null }, findings, complete };
 }
 
 export type ControlledRemediationStatus = 'not_authorized' | 'authorization_rejected' | 'dry_run' | 'applying' | 'applied_pending_validation' | 'validated_pending_retest' | 'validation_failed' | 'rolled_back' | 'rollback_failed' | 'completed';
@@ -595,9 +631,9 @@ export async function remediateFinding(config: AppConfig, input: ControlledRemed
       if (valid !== null && beforeFinding) {
         const remediationId = `controlled-${crypto.randomUUID()}`;
         receipt.remediationId = remediationId;
-        if (beforeFinding.originalReceiptId && beforeFinding.sourceId) linkSecurityReceiptToRemediation(beforeFinding.sourceId, beforeFinding.originalReceiptId, remediationId, config.projectRoot);
+        if (beforeFinding.before.originalReceiptId && beforeFinding.before.sourceId) linkSecurityReceiptToRemediation(beforeFinding.before.sourceId, beforeFinding.before.originalReceiptId, remediationId, config.projectRoot);
         if (controlledRecords.size >= MAX_RECORDS) controlledRecords.delete(controlledRecords.keys().next().value!);
-        controlledRecords.set(remediationId, { remediationId, findingId: input.finding.id, projectRoot: config.projectRoot, file, appliedHash: proposedHash, before: beforeFinding, appliedAt: now() });
+        controlledRecords.set(remediationId, { remediationId, findingId: input.finding.id, projectRoot: config.projectRoot, file, appliedHash: proposedHash, before: beforeFinding.before, baselineFindings: beforeFinding.findings, baselineComplete: beforeFinding.complete, lastRetest: null, appliedAt: now() });
       }
       return ok(receipt);
     } catch {

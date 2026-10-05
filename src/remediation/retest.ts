@@ -13,7 +13,7 @@ import { listSecurityReceiptsForFinding, proveSecurityFinding, replaySecurityPro
 import type { SecurityReceipt } from '../proof/types.js';
 import type { RuntimeTarget, TestSession } from '../runtime/types.js';
 import { MISSING_RUNTIME_TARGET } from '../audit/environment.js';
-import { getControlledRemediationRecord, type ControlledBeforeFinding } from './engine.js';
+import { getControlledRemediationRecord, recordControlledRetest, type ControlledBeforeFinding } from './engine.js';
 
 export type RetestResult = 'resolved' | 'still_present' | 'inconclusive' | 'blocked' | 'not_verifiable';
 export interface RetestFindingInput {
@@ -67,7 +67,7 @@ function sameCondition<T extends SecurityFinding>(before: ControlledBeforeFindin
   return candidates.length === 0 ? null : 'ambiguous';
 }
 
-export async function retestFinding(config: AppConfig, input: RetestFindingInput): Promise<ToolOutcome<RetestFindingReceipt>> {
+async function retestFindingInner(config: AppConfig, input: RetestFindingInput): Promise<ToolOutcome<RetestFindingReceipt>> {
   const record = getControlledRemediationRecord(config.projectRoot, input.findingId);
   if (!record) return err('REMEDIATION_NOT_FOUND', 'No validated controlled remediation is recorded for this finding and canonical project root.');
   const before = record.before;
@@ -144,8 +144,15 @@ export async function retestFinding(config: AppConfig, input: RetestFindingInput
         response.verification.completed = true;
         response.result = 'still_present'; response.securityStatus = 'finding_present';
       } else if (proof.data.status === 'not_reproduced' && before.originalReceiptId && proof.data.replayOfReceiptId === before.originalReceiptId && proof.data.targetOrigin === input.target.allowedOrigin) {
-        response.verification.completed = true; response.verification.verified = true;
-        response.result = 'resolved'; response.securityStatus = 'finding_resolved';
+        response.verification.completed = true;
+        const contract = proof.data.replayContract;
+        const routes = discoverRoutes(config);
+        const routeExists = Boolean(contract && routes.ok && routes.data.entries.some((entry) => entry.method === contract.method && entry.path === contract.relativeRoute));
+        const responseSucceeded = proof.data.responseFacts.length > 0 && proof.data.responseFacts.every((fact) => fact.status >= 200 && fact.status < 300);
+        if (routeExists && responseSucceeded) {
+          response.verification.verified = true;
+          response.result = 'resolved'; response.securityStatus = 'finding_resolved';
+        } else response.limitation = 'The replay did not reproduce, but the original route or a successful runtime response could not be established.';
       } else {
         response.verification.completed = true;
         response.limitation = 'The proof did not reproduce, but no trusted original proof at the same target origin establishes a before/after comparison.';
@@ -159,4 +166,10 @@ export async function retestFinding(config: AppConfig, input: RetestFindingInput
     response.limitation = 'The source file changed during retest; no security conclusion is reported.';
   }
   return ok(response);
+}
+
+export async function retestFinding(config: AppConfig, input: RetestFindingInput): Promise<ToolOutcome<RetestFindingReceipt>> {
+  const result = await retestFindingInner(config, input);
+  if (result.ok) recordControlledRetest(config.projectRoot, result.data.remediationId, result.data.result, result.data.timestamp);
+  return result;
 }
