@@ -223,6 +223,12 @@ export const controlledRemediationSchema = z.object({
   ]),
   dryRun: z.boolean(),
 }).strict();
+export const retestFindingSchema = z.object({
+  findingId: z.string().min(1).max(256).regex(/^[A-Za-z0-9_.:-]+$/),
+  target: runtimeTargetSchema.optional(),
+  sessions: z.array(testSessionSchema).max(10).default([]),
+  sessionParams: sessionParamsSchema.default({}),
+}).strict();
 export type ProposeRemediationInput = z.infer<typeof proposeRemediationSchema>;
 export type RemediationIdInput = z.infer<typeof remediationIdSchema>;
 

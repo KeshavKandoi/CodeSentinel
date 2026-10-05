@@ -15,6 +15,14 @@ import { listFiles } from '../fs/fsOperations.js';
 import { authorizeRemediation, type RemediationAuthorization } from './authorization.js';
 import { execFileSync } from 'node:child_process';
 import ts from 'typescript';
+import { scanProject } from '../security/scanner.js';
+import { discoverRoutes } from '../routes/engine.js';
+import { analyzeAccessControl } from '../access/engine.js';
+import { fromAccessFinding, fromSecurityFinding } from '../audit/identity.js';
+import { resolveProofSupport, isTrustedVerifiedReceipt } from '../proof/engine.js';
+import type { ProofCaseType } from '../proof/types.js';
+import type { SecurityFinding } from '../security/types.js';
+import type { AccessControlFinding } from '../access/types.js';
 
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_TOTAL_BYTES = 2_000_000;
@@ -404,7 +412,58 @@ export async function rollbackRemediation(config: AppConfig, remediationId: stri
   });
 }
 
-export function resetRemediationsForTests(): void { records.clear(); locks.clear(); }
+export function resetRemediationsForTests(): void { records.clear(); locks.clear(); controlledRecords.clear(); }
+
+export interface ControlledBeforeFinding {
+  origin: 'security_scan' | 'access_control' | 'unsupported';
+  sourceId: string | null;
+  ruleId: string | null;
+  category: string | null;
+  candidateType: string | null;
+  file: string;
+  line: number | null;
+  route: string | null;
+  severity: string | null;
+  confidence: string | null;
+  evidenceHash: string | null;
+  proofSupport: 'runtime' | 'requires-adapter' | 'static-only';
+  adapterType: ProofCaseType | null;
+  originalReceiptId: string | null;
+}
+
+export interface ControlledRemediationRecord {
+  remediationId: string;
+  findingId: string;
+  projectRoot: string;
+  file: string;
+  appliedHash: string;
+  before: ControlledBeforeFinding;
+  appliedAt: string;
+}
+
+const controlledRecords = new Map<string, ControlledRemediationRecord>();
+
+export function getControlledRemediationRecord(projectRoot: string, findingId: string): ControlledRemediationRecord | null {
+  return [...controlledRecords.values()].reverse().find((record) => record.projectRoot === projectRoot && record.findingId === findingId) ?? null;
+}
+
+async function captureBeforeFinding(config: AppConfig, findingId: string, file: string): Promise<ControlledBeforeFinding> {
+  const unsupported: ControlledBeforeFinding = { origin: 'unsupported', sourceId: null, ruleId: null, category: null, candidateType: null, file, line: null, route: null, severity: null, confidence: null, evidenceHash: null, proofSupport: 'static-only', adapterType: null, originalReceiptId: null };
+  const scan = await scanProject(config);
+  const source = scan.ok ? scan.data.findings.find((finding: SecurityFinding) => finding.file === file && (finding.id === findingId || fromSecurityFinding(finding).id === findingId)) : null;
+  if (source) {
+    const support = resolveProofSupport({ origin: 'security_scan', category: source.category, candidateType: '', ruleId: source.ruleId });
+    const prior = listSecurityReceiptsForFinding(source.id, config.projectRoot).find((receipt) => receipt.status === 'verified' && isTrustedVerifiedReceipt(receipt, support.adapterType, receipt.targetOrigin, config.projectRoot));
+    return { origin: 'security_scan', sourceId: source.id, ruleId: source.ruleId, category: source.category, candidateType: null, file, line: source.line ?? null, route: null, severity: source.severity, confidence: source.confidence, evidenceHash: sha256(source.evidence.map((item) => item.matchedText ?? item.reason).join('|')), proofSupport: support.supportClass, adapterType: support.adapterType, originalReceiptId: prior?.receiptId ?? null };
+  }
+  const routes = discoverRoutes(config);
+  const access = routes.ok ? analyzeAccessControl(config, routes.data.entries) : null;
+  const found = access?.findings.find((finding: AccessControlFinding) => finding.file === file && (finding.id === findingId || fromAccessFinding(finding).id === findingId));
+  if (!found) return unsupported;
+  const support = resolveProofSupport({ origin: 'access_control', category: found.category, candidateType: found.candidateType, ruleId: found.ruleId });
+  const prior = listSecurityReceiptsForFinding(found.id, config.projectRoot).find((receipt) => receipt.status === 'verified' && isTrustedVerifiedReceipt(receipt, support.adapterType, receipt.targetOrigin, config.projectRoot));
+  return { origin: 'access_control', sourceId: found.id, ruleId: found.ruleId, category: found.category, candidateType: found.candidateType, file, line: found.line ?? null, route: found.path, severity: found.severity, confidence: found.confidence, evidenceHash: sha256(found.evidence.map((item) => item.reason).join('|')), proofSupport: support.supportClass, adapterType: support.adapterType, originalReceiptId: prior?.receiptId ?? null };
+}
 
 export type ControlledRemediationStatus = 'not_authorized' | 'authorization_rejected' | 'dry_run' | 'applying' | 'applied_pending_validation' | 'validated_pending_retest' | 'validation_failed' | 'rolled_back' | 'rollback_failed' | 'completed';
 export type ControlledRemediationStrategy = { kind: 'patch'; oldText: string; newText: string } | { kind: 'replace'; content: string };
@@ -416,6 +475,7 @@ export interface ControlledRemediationInput {
   dryRun: boolean;
 }
 export interface ControlledRemediationReceipt {
+  remediationId: string | null;
   findingId: string;
   projectRoot: string;
   authorizationStatus: 'missing' | 'rejected' | 'authorized';
@@ -462,6 +522,7 @@ function readControlledFile(config: AppConfig, file: string): Buffer {
 export async function remediateFinding(config: AppConfig, input: ControlledRemediationInput): Promise<ToolOutcome<ControlledRemediationReceipt>> {
   const file = input.finding.file;
   const receipt: ControlledRemediationReceipt = {
+    remediationId: null,
     findingId: input.finding.id, projectRoot: input.projectRoot, authorizationStatus: 'missing', dryRun: input.dryRun,
     filesChanged: [], preChangeHashes: {}, postChangeHashes: {}, proposedHashes: {}, strategy: input.strategy.kind,
     patchSummary: '', gitStatusBefore: null, validationStatus: 'not_run', validationScope: 'none', rollbackStatus: 'not_needed',
@@ -497,6 +558,7 @@ export async function remediateFinding(config: AppConfig, input: ControlledRemed
   if (Buffer.byteLength(proposed, 'utf8') > MAX_FILE_BYTES || changedLines(before, proposed) > MAX_CHANGED_LINES) { receipt.remediationStatus = 'validation_failed'; receipt.validationStatus = 'failed'; receipt.reason = 'The proposed change exceeds remediation bounds.'; return ok(receipt); }
   const originalHash = sha256(before);
   const proposedHash = sha256(proposed);
+  const beforeFinding = input.dryRun ? null : await captureBeforeFinding(config, input.finding.id, file);
   receipt.preChangeHashes[file] = originalHash;
   receipt.postChangeHashes[file] = originalHash;
   receipt.proposedHashes[file] = proposedHash;
@@ -530,6 +592,13 @@ export async function remediateFinding(config: AppConfig, input: ControlledRemed
       receipt.validationStatus = valid === null ? 'not_applicable' : valid ? 'passed' : 'failed';
       if (valid === false || receipt.postChangeHashes[file] !== proposedHash) throw new Error('validation failed');
       receipt.remediationStatus = valid === null ? 'applied_pending_validation' : 'validated_pending_retest';
+      if (valid !== null && beforeFinding) {
+        const remediationId = `controlled-${crypto.randomUUID()}`;
+        receipt.remediationId = remediationId;
+        if (beforeFinding.originalReceiptId && beforeFinding.sourceId) linkSecurityReceiptToRemediation(beforeFinding.sourceId, beforeFinding.originalReceiptId, remediationId, config.projectRoot);
+        if (controlledRecords.size >= MAX_RECORDS) controlledRecords.delete(controlledRecords.keys().next().value!);
+        controlledRecords.set(remediationId, { remediationId, findingId: input.finding.id, projectRoot: config.projectRoot, file, appliedHash: proposedHash, before: beforeFinding, appliedAt: now() });
+      }
       return ok(receipt);
     } catch {
       receipt.remediationStatus = 'validation_failed';

@@ -25,6 +25,7 @@ import {
   verifyRemediationSchema,
   rollbackRemediationSchema,
   controlledRemediationSchema,
+  retestFindingSchema,
   safeValidate,
   deepSecurityAuditSchema,
   proveSecurityFindingSchema,
@@ -54,6 +55,7 @@ import {
 import { generateSecurityReport, getSecurityFinding } from '../report/engine.js';
 import { detachedRedacted } from '../report/redaction.js';
 import { applyRemediation, getRemediation, proposeRemediation, remediateFinding, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
+import { retestFinding } from '../remediation/retest.js';
 import { runDeepSecurityAudit } from '../intelligence/engine.js';
 import { buildSecurityGraph, listSecurityProofCases, proveSecurityFinding } from '../proof/engine.js';
 import { runFullSecurityAuditSchema } from '../validation/schemas.js';
@@ -474,6 +476,16 @@ const coreToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'retest_finding',
+    description: 'Independently retest a validated controlled remediation against the current project state, with optional authorized runtime proof. Read-only for source files.',
+    inputSchema: { type: 'object', properties: { findingId: { type: 'string' }, target: { type: 'object' }, sessions: { type: 'array' }, sessionParams: { type: 'object' } }, required: ['findingId'] },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(retestFindingSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(await retestFinding(config, validation.data));
+    },
+  },
+  {
     name: 'apply_remediation',
     description: 'Apply one validated, hash-checked remediation proposal using bounded filesystem writes. The result remains pending verification.',
     inputSchema: { type: 'object', properties: { remediationId: { type: 'string' }, authorization: { type: 'object' } }, required: ['remediationId'] },
@@ -534,7 +546,7 @@ const coreToolDefinitions: ToolDefinition[] = [
 export const toolDefinitions: ToolDefinition[] = [...coreToolDefinitions, ...orchestrationToolDefinitions];
 
 const PROJECT_ROOT_TOOLS = new Set([
-  'run_full_security_audit', 'start_security_audit', 'start_security_investigation', 'remediate_finding',
+  'run_full_security_audit', 'start_security_audit', 'start_security_investigation', 'remediate_finding', 'retest_finding',
   'get_project_info', 'scan_project', 'analyze_project', 'list_files', 'read_file', 'search_files',
   'get_security_graph', 'discover_routes', 'analyze_access_control', 'run_deep_security_audit',
   'list_verification_cases', 'list_security_proof_cases',
