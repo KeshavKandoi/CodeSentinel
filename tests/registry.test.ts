@@ -217,7 +217,7 @@ describe('phase 1 MCP boundary', () => {
     ['list_files', { path: '.', allowSensitive: true }],
     ['list_files', { root: '/' }],
     ['read_file', { path: 'README.md', allowSensitive: true }],
-    ['read_file', { path: 'README.md', projectRoot: '/' }],
+    ['read_file', { path: 'README.md', cwd: '/' }],
     ['search_files', { query: 'x', allowSensitive: true }],
     ['run_command', { command: 'ls', args: [], cwd: '/' }],
     ['run_command', { command: 'ls', env: { PATH: '/tmp' } }],
@@ -225,6 +225,18 @@ describe('phase 1 MCP boundary', () => {
     const result = await call(name, input);
     expect(result.isError).toBe(true);
     expect(result.body.error).toBe('INVALID_INPUT');
+  });
+
+  it('treats projectRoot on read_file as a root selector, not a way to escape it', async () => {
+    const rootFile = await call('read_file', { path: 'README.md', projectRoot: '/' });
+    expect(rootFile.isError).toBe(true);
+    expect(rootFile.body.error).toBe('NOT_FOUND');
+    const relative = await call('read_file', { path: 'README.md', projectRoot: '.' });
+    expect(relative.isError).toBe(true);
+    expect(relative.body.error).toBe('INVALID_INPUT');
+    const traversal = await call('read_file', { path: '../etc/passwd', projectRoot: fx.root });
+    expect(traversal.isError).toBe(true);
+    expect(traversal.raw).not.toContain('root:');
   });
 
   it.each([
