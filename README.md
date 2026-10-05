@@ -78,6 +78,20 @@ CodeSentinel provides a rich set of discovery, static, and orchestration tools. 
 
 - `analyze_project`: Detects the programming language, framework, database, and ecosystem. (STATIC-ONLY)
 - `scan_project`: Runs deterministic security rules to detect static code issues. (STATIC-ONLY)
+
+### Phase 2 Node and WebSocket detection
+
+`scan_project` keeps the original CS-NODE-001 through CS-NODE-021 rules and adds three bounded AST-based rules:
+
+| Rule | Detection |
+| --- | --- |
+| CS-NODE-022 | A parsed WebSocket message supplies an identity directly to connection registration, without a visible verification call. |
+| CS-NODE-023 | A `/metrics` HTTP handler returns runtime metrics without a visible authentication guard. |
+| CS-NODE-024 | A WebSocket server has no explicit `maxPayload` while its message handler parses incoming data and passes it to sensitive processing. |
+
+For example, a message handler that parses `data`, then calls `manager.registerUser(info.id, parsed.userId)`, can yield a high-severity CS-NODE-022 finding at the registration line. Results include a rule ID, severity, category, file and line, redacted source evidence, impact in the description, and remediation. A protected metrics handler or a server with an explicit `maxPayload` does not trigger the corresponding rule.
+
+These are static candidates. The analyzer does not prove that an upstream proxy lacks authentication or payload limits, and it cannot resolve every custom verifier or alias. It does not report missing Origin checks, generic rate limits, or `ws://` from absence alone; those require deployment context or stronger source evidence. The scanner reads bounded source files locally and does not execute or alter the target project.
 - `discover_routes`: Generates an inventory of externally reachable API routes. (METADATA-ONLY)
 - `analyze_access_control`: Classifies route authentication (public/authenticated/roles) and surfaces IDOR/BOLA candidates. (STATIC-ONLY)
 - `run_full_security_audit`: Runs the unified read-only audit pipeline with stable finding IDs and an optional loopback proof stage. (STATIC + RUNTIME-PROVEN when a target is supplied)
