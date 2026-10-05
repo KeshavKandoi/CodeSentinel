@@ -1,3 +1,4 @@
+import { testCredential } from './testCredentials.js';
 import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -269,9 +270,9 @@ describe('phase 1 filesystem hardening', () => {
   const fx = makeFixtureProject();
   const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-audit-outside-'));
   fs.writeFileSync(path.join(outsideDir, 'outside.txt'), 'needle-outside\n');
-  fs.writeFileSync(path.join(fx.root, '.env'), 'API_KEY=hunter2topsecret\n');
+  fs.writeFileSync(path.join(fx.root, '.env'), `API_KEY=${testCredential('API_KEY')}\n`);
   fs.mkdirSync(path.join(fx.root, '.ssh'));
-  fs.writeFileSync(path.join(fx.root, '.ssh', 'id_rsa'), 'hunter2topsecret\n');
+  fs.writeFileSync(path.join(fx.root, '.ssh', 'id_rsa'), `${testCredential('DB_PASSWORD')}\n`);
   fs.mkdirSync(path.join(fx.root, 'dist'));
   fs.writeFileSync(path.join(fx.root, 'dist', 'x.js'), 'zzmatch\n');
   fs.mkdirSync(path.join(fx.root, 'build'));
@@ -304,7 +305,7 @@ describe('phase 1 filesystem hardening', () => {
   it('readFile exposes sensitive files only to trusted internal callers', () => {
     const result = readFile(fx.config, { filePath: '.env', allowSensitive: true });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.data.content).toContain('hunter2topsecret');
+    if (result.ok) expect(result.data.content).toContain(testCredential('API_KEY'));
   });
 
   it('readFile rejects sibling-prefix, mixed-separator, absolute, and null-byte paths', () => {
@@ -389,16 +390,16 @@ describe('phase 1 filesystem hardening', () => {
   });
 
   it('searchFiles never returns content from sensitive files or sensitive directories', () => {
-    const result = search('hunter2');
+    const result = search(testCredential('DB_PASSWORD').slice(0, 12));
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.data).toEqual([]);
-    const direct = searchFiles(fx.config, { query: 'hunter2', dirPath: '.ssh', caseSensitive: false, isRegex: false, maxResults: 10 });
+    const direct = searchFiles(fx.config, { query: testCredential('DB_PASSWORD').slice(0, 12), dirPath: '.ssh', caseSensitive: false, isRegex: false, maxResults: 10 });
     expect(direct.ok).toBe(false);
     if (!direct.ok) expect(direct.error.code).toBe('INVALID_INPUT');
   });
 
   it('searchFiles exposes sensitive files only to trusted internal callers', () => {
-    const result = search('hunter2', { allowSensitive: true });
+    const result = search(testCredential('API_KEY').slice(2, 12), { allowSensitive: true });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.data.some((match) => match.path === '.env')).toBe(true);
   });

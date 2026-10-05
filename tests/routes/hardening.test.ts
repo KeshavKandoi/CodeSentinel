@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { discoverRoutes } from '../../src/routes/engine.js';
 import type { AppConfig } from '../../src/config.js';
+import { testCredential } from '../testCredentials.js';
 
 const made: string[] = [];
 afterEach(() => {
@@ -44,11 +45,11 @@ app.get('/real', (req, res) => res.send('ok'));
     const config = project({
       'src/app.ts': `import express from 'express';
 const app = express();
-app.get('/m', basicAuth({ users: { admin: 'hunter2pw-secret' } }), (req, res) => res.send('m'));
+app.get('/m', basicAuth({ users: { admin: '${testCredential('DB_PASSWORD')}' } }), (req, res) => res.send('m'));
 `,
     });
     const result = discoverRoutes(config);
-    expect(JSON.stringify(result)).not.toContain('hunter2pw-secret');
+    expect(JSON.stringify(result)).not.toContain(testCredential('DB_PASSWORD').slice(0, 12));
     expect(routes(config)).toEqual(['GET /m']);
   });
 

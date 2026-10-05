@@ -1,3 +1,4 @@
+import { testCredential } from '../testCredentials.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
@@ -56,31 +57,33 @@ describe('Phase 6 target boundary', () => {
 
 describe('Phase 6 request controls and evidence', () => {
   it('redacts sensitive headers and body fields and enforces the response cap', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ token: 'Bearer abcdefghijklmnop', password: 'secret' }), {
+    const bearer = testCredential('BEARER_TOKEN');
+    const password = testCredential('DB_PASSWORD');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ token: `Bearer ${bearer}`, password }), {
       status: 200,
-      headers: { 'X-Api-Key': 'key-value', 'X-Trace': 'safe' },
+      headers: { 'X-Api-Key': testCredential('API_KEY'), 'X-Trace': 'safe' },
     })));
     const result = await issueRuntimeRequest(
       { ...target, maxResponseBytes: 20 },
-      new Map([['user', { id: 'user', kind: 'authenticated', headers: { Authorization: 'Bearer abcdefghijklmnop' } }]]),
+      new Map([['user', { id: 'user', kind: 'authenticated', headers: { Authorization: `Bearer ${bearer}` } }]]),
       { method: 'GET', path: '/safe', sessionId: 'user' },
       new RuntimeClientState({ ...target, maxResponseBytes: 20 })
     );
     expect(result.response.headers['x-api-key']).toBe('[REDACTED]');
-    expect(result.response.bodySnippet).not.toContain('abcdefghijklmnop');
-    expect(result.response.bodySnippet).not.toContain('secret');
+    expect(result.response.bodySnippet).not.toContain(bearer.slice(0, 12));
+    expect(result.response.bodySnippet).not.toContain(password.slice(0, 12));
     expect(result.response.bodyTruncated).toBe(true);
   });
 
   it('retains only cookie security attributes, never cookie names or values', async () => {
+    const cookie = testCredential('COOKIE_TOKEN');
     vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', {
       status: 200,
-      headers: { 'Set-Cookie': 'session=super-secret; Secure; HttpOnly; SameSite=Lax' },
+      headers: { 'Set-Cookie': `session=${cookie}; Secure; HttpOnly; SameSite=Lax` },
     })));
     const result = await issueRuntimeRequest(target, new Map(), { method: 'GET', path: '/cookie', sessionId: null }, new RuntimeClientState(target));
     expect(result.response.headers['set-cookie']).toBe('cookie-attributes:httponly,samesite,secure');
-    expect(JSON.stringify(result)).not.toContain('super-secret');
-    expect(JSON.stringify(result)).not.toContain('super-secret');
+    expect(JSON.stringify(result)).not.toContain(cookie.slice(0, 12));
   });
 
   it('blocks unsafe methods unless the exact path is explicitly vetted', async () => {

@@ -114,9 +114,6 @@ describe('runCommand', () => {
   });
 
   it('does not interpret shell metacharacters in args', async () => {
-    // If a shell were involved, this would execute two commands. Since
-    // shell:false, the whole string is passed as a single literal arg to
-    // echo, so we should see the pipe/semicolon in the output verbatim.
     const result = await runCommand(config, { command: 'echo', args: ['a; echo b'] });
     expect(result.ok).toBe(true);
     if (!result.ok) return;

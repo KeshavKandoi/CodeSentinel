@@ -1,11 +1,5 @@
 import { z } from 'zod';
 
-/**
- * Every tool's raw MCP input is parsed through one of these schemas before
- * it touches any filesystem or process logic. Schemas are intentionally
- * strict: unknown keys rejected, sane bounds on sizes/lengths, no coercion
- * that could hide a type-confusion bug.
- */
 
 const relativePathSchema = z
   .string()
@@ -53,9 +47,6 @@ export type SearchFilesInput = z.infer<typeof searchFilesSchema>;
 export type GetProjectInfoInput = z.infer<typeof getProjectInfoSchema>;
 export type RunCommandInput = z.infer<typeof runCommandSchema>;
 
-/** Parses `raw` against `schema`, returning a typed, structured result
- * instead of throwing — callers turn the failure branch into an
- * INVALID_INPUT tool error with the readable Zod message. */
 export function safeValidate<T>(
   schema: z.ZodType<T>,
   raw: unknown
@@ -70,45 +61,19 @@ export function safeValidate<T>(
   return { ok: false, message };
 }
 
-/**
- * Phase 2: analyze_project takes no input beyond the configured
- * PROJECT_ROOT (same pattern as get_project_info) — analysis always runs
- * against the whole sandboxed project.
- */
 export const analyzeProjectSchema = z.object({}).strict();
 export type AnalyzeProjectInput = z.infer<typeof analyzeProjectSchema>;
 
-/**
- * Phase 3: scan_project takes no input beyond PROJECT_ROOT. It performs
- * deterministic, read-only static security analysis over the authorized
- * project and returns structured findings with evidence.
- */
 export const scanProjectSchema = z.object({}).strict();
 export type ScanProjectInput = z.infer<typeof scanProjectSchema>;
 
-/**
- * Phase 4: discover_routes takes no input beyond PROJECT_ROOT. It statically
- * inventories the application's externally reachable attack surface.
- */
 export const discoverRoutesSchema = z.object({}).strict();
 export type DiscoverRoutesInput = z.infer<typeof discoverRoutesSchema>;
 
-/**
- * Phase 5: analyze_access_control takes no input beyond PROJECT_ROOT. It
- * runs the Phase 4 route discovery engine internally and performs
- * deterministic, read-only static access-control analysis over the
- * resulting routes.
- */
 export const analyzeAccessControlSchema = z.object({}).strict();
 export type AnalyzeAccessControlInput = z.infer<typeof analyzeAccessControlSchema>;
 
 
-/**
- * Phase 6: verify_finding requires an explicit findingId and an explicit
- * RuntimeTarget -- there is no default target, and localhost is not
- * automatically authorized. Test sessions/credentials are supplied only
- * through this explicit input, never read from project files.
- */
 export const runtimeTargetSchema = z
   .object({
     allowedOrigin: z.string().min(1).max(512).refine((value) => { try { const parsed = new URL(value); return parsed.protocol === 'http:' || parsed.protocol === 'https:'; } catch { return false; } }, 'allowedOrigin must be an http(s) URL'),
@@ -161,9 +126,6 @@ export type VerifyFindingInput = z.infer<typeof verifyFindingSchema>;
 export const listVerificationCasesSchema = z.object({}).strict();
 export type ListVerificationCasesInput = z.infer<typeof listVerificationCasesSchema>;
 
-/** Phase 7: bounded, external-agent-driven investigation inputs. The agent
- * supplies reasoning and evidence references; deterministic engines remain
- * responsible for analysis and runtime safety. */
 export const investigationScopeSchema = z.enum([
   'authentication',
   'authorization',
@@ -248,9 +210,6 @@ export const rollbackRemediationSchema = remediationIdSchema;
 export type ProposeRemediationInput = z.infer<typeof proposeRemediationSchema>;
 export type RemediationIdInput = z.infer<typeof remediationIdSchema>;
 
-// ---------------------------------------------------------------------------
-// Phase 10: AI Security Orchestration
-// ---------------------------------------------------------------------------
 import { AUDIT_FOCUSES } from '../orchestration/types.js';
 import { ORCHESTRATION_ACTIONS } from '../orchestration/types.js';
 

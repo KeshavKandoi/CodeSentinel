@@ -100,7 +100,7 @@ export function getProjectInfo(config: AppConfig): ToolOutcome<ProjectInfo> {
   const detectedTypes = Object.entries(MARKER_FILES)
     .filter(([marker]) => fs.existsSync(path.join(root, marker)))
     .map(([, type]) => type)
-    .filter((v, i, arr) => arr.indexOf(v) === i); // de-dupe (java-maven/gradle etc.)
+    .filter((v, i, arr) => arr.indexOf(v) === i);
 
   const hasGit = fs.existsSync(path.join(root, '.git'));
   const { files, dirs } = countEntries(root);

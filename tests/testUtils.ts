@@ -3,9 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AppConfig } from '../src/config.js';
 
-/** Creates a throwaway directory tree under the OS tmp dir, populated with
- * a small fixture project, and returns a ready-to-use AppConfig pointed at
- * it. Callers should call cleanup() in an afterEach/afterAll. */
 export function makeFixtureProject(): { config: AppConfig; root: string; cleanup: () => void } {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sec-audit-test-')));
 
@@ -20,7 +17,6 @@ export function makeFixtureProject(): { config: AppConfig; root: string; cleanup
   fs.mkdirSync(path.join(root, '.git'));
   fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
 
-  // A file just over a small size threshold, useful for truncation tests.
   fs.writeFileSync(path.join(root, 'big.txt'), 'x'.repeat(50_000));
 
   const config: AppConfig = {
@@ -38,8 +34,6 @@ export function makeFixtureProject(): { config: AppConfig; root: string; cleanup
   return { config, root, cleanup };
 }
 
-/** A sibling directory to a fixture project, used to prove traversal
- * attempts cannot reach outside the sandbox. */
 export function makeOutsideSecretFile(root: string): { secretPath: string; cleanup: () => void } {
   const parent = path.dirname(root);
   const secretPath = path.join(parent, `secret-${path.basename(root)}.txt`);
@@ -50,7 +44,6 @@ export function makeOutsideSecretFile(root: string): { secretPath: string; clean
       try {
         fs.rmSync(secretPath, { force: true });
       } catch {
-        /* ignore */
       }
     },
   };

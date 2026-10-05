@@ -58,11 +58,8 @@ describe('pathGuard', () => {
   });
 
   it('a sibling directory that merely starts with the same prefix is not "inside" the root', () => {
-    // e.g. root = /tmp/foo, candidate = /tmp/foo-evil — naive startsWith
-    // (without separator) would wrongly allow this.
     const evilSibling = root + '-evil';
     expect(() => {
-      // simulate by constructing a path string manually and checking guard
       const rel = path.relative(root, evilSibling);
       resolveWithinRoot(root, rel);
     }).toThrow(PathOutsideRootError);

@@ -73,8 +73,6 @@ export function makeFinding(rule: SecurityRule, evidence: SecurityEvidence): Sec
   };
 }
 
-/** Static scanner evidence is returned directly by an MCP tool, so it must
- * not echo literal credentials merely because a rule matched their source. */
 export function redactSecurityText(value: string): string {
   return value
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, '[REDACTED]')

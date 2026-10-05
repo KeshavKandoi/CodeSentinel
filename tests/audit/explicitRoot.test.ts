@@ -1,3 +1,4 @@
+import { testCredential } from '../testCredentials.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,7 +27,7 @@ afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursiv
 
 describe('explicit deep-audit root', () => {
   it('runs the complete pipeline with PROJECT_ROOT unset and separates heuristic signals', async () => {
-    const root = fixture("const secret = 'abcdefghijklmno';\nconst hash = require('crypto').createHash('md5');\n");
+    const root = fixture(`const secret = '${testCredential('GENERIC_SECRET')}';\nconst hash = require('crypto').createHash('md5');\n`);
     const before = fs.readFileSync(path.join(root, 'index.js'), 'utf8');
     const result = await call('run_full_security_audit', config(), { projectRoot: root });
     expect(result.isError).toBe(false);

@@ -1,3 +1,4 @@
+import { testCredential } from './testCredentials.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
@@ -38,7 +39,7 @@ describe('MCP stdio with PROJECT_ROOT unset', () => {
         try {
           const message = JSON.parse(line);
           if (typeof message.id === 'number') pending.get(message.id)?.(message);
-        } catch { /* non-json */ }
+        } catch {  }
       }
     });
     child.stderr.on('data', () => undefined);
@@ -71,7 +72,7 @@ describe('MCP stdio with PROJECT_ROOT unset', () => {
 
   it('audits the explicit project through the built server without PROJECT_ROOT or target writes', async () => {
     const source = path.join(project, 'audit-marker.js');
-    fs.writeFileSync(source, "const password = 'unique-audit-fixture-secret';\n");
+    fs.writeFileSync(source, `const password = '${testCredential('DB_PASSWORD')}';\n`);
     const before = fs.readFileSync(source, 'utf8');
     const response = await request('tools/call', { name: 'run_full_security_audit', arguments: { projectRoot: project } });
     expect(response.result.isError).toBe(false);

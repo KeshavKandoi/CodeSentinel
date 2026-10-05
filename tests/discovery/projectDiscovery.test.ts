@@ -255,9 +255,6 @@ describe('runProjectDiscovery: malformed package.json fixture', () => {
 
 describe('runProjectDiscovery: unknown/empty ecosystem', () => {
   it('reports ecosystem "unknown" and a warning for a directory with no recognizable markers', () => {
-    // The malformed-package fixture's sibling test dir has files, but for
-    // a true "nothing here" case we use a scratch dir with a single
-    // unrelated file.
     const emptyDir = fs.mkdtempSync(path.join(FIXTURES_ROOT, 'empty-'));
     fs.writeFileSync(path.join(emptyDir, 'README.md'), '# nothing to see here\n');
     try {

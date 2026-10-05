@@ -1,3 +1,4 @@
+import { testCredential } from '../testCredentials.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -237,7 +238,7 @@ describe('Phase 10 analysis, bounds and traceability', () => {
     const state = (await call('get_security_audit_state', { investigationId: id })).body;
     expect(state.status).toBe('blocked');
     expect(state.blockedOperations.some((b: any) => b.tool === 'record_audit_hypothesis' && b.code === 'BUDGET_EXCEEDED')).toBe(true);
-    expect((await call('run_audit_analysis', { investigationId: id })).isError).toBe(false); // idempotent, already done
+    expect((await call('run_audit_analysis', { investigationId: id })).isError).toBe(false);
     expect((await call('record_audit_hypothesis', hypothesis(id, 'h9', { description: 'z', affectedLocation: 'z' }))).body.error).toBe('INVALID_TRANSITION');
   });
 
@@ -259,12 +260,15 @@ describe('Phase 10 analysis, bounds and traceability', () => {
 
   it('redacts secrets from recorded hypotheses and state', async () => {
     const id = await readyAudit();
-    const r = await call('record_audit_hypothesis', hypothesis(id, 'h1', { description: 'Token Bearer abcdef.SECRETVALUE99 and key sk-live_ABCDEF123456 appear in a header' }));
-    expect(r.text).not.toContain('SECRETVALUE99');
+    const bearer = testCredential('BEARER_TOKEN');
+    const openai = testCredential('OPENAI_KEY');
+    const r = await call('record_audit_hypothesis', hypothesis(id, 'h1', { description: `Token Bearer ${bearer} and key ${openai} appear in a header` }));
+    expect(r.text).not.toContain(bearer.slice(0, 12));
     const state = await call('get_security_audit_state', { investigationId: id });
-    expect(state.text).not.toContain('SECRETVALUE99');
-    expect(state.text).not.toContain('sk-live_ABCDEF123456');
+    expect(state.text).not.toContain(bearer.slice(0, 12));
+    expect(state.text).not.toContain(openai.slice(3, 15));
     expect(state.text).toContain('[REDACTED]');
+
   });
 });
 

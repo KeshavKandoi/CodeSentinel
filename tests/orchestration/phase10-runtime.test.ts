@@ -131,7 +131,6 @@ describe('Phase 10 end-to-end (local synthetic fixture only)', () => {
     expect(inv.ok).toBe(true);
     if (!inv.ok) return;
 
-    // The standalone read-only tools agree with what the audit executed.
     const routes = await call('discover_routes', {});
     const access = await call('analyze_access_control', {});
     expect(routes.body.entries.length).toBe(inv.data.analysis!.routes.total);

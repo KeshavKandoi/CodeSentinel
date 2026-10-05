@@ -1,3 +1,4 @@
+import { testCredential } from '../testCredentials.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -93,7 +94,7 @@ describe('Phase 3 static security scanner', () => {
   it('redacts literal credentials from scanner evidence returned through the MCP surface', async () => {
     const findings = await runScan();
     const serialized = JSON.stringify(findings);
-    expect(serialized).not.toContain('sk_live_abcdef1234567890');
+    expect(serialized.includes(testCredential('STRIPE_KEY').slice(8, 20))).toBe(false);
     expect(serialized).not.toContain('real-prod-password-12345');
     expect(serialized).toContain('[REDACTED]');
   });
@@ -128,7 +129,7 @@ describe('Phase 3 static security scanner', () => {
 
   it('handles malformed and oversized files without crashing or reporting noise', async () => {
     const largeFile = path.join(fixtureRoot, 'src', 'large-generated.js');
-    fs.writeFileSync(largeFile, `const apiKey = 'sk_live_large_file_should_be_skipped_12345';\n${'x'.repeat(2_100_000)}`);
+    fs.writeFileSync(largeFile, `const apiKey = '${testCredential('API_KEY')}_file_should_be_skipped';\n${'x'.repeat(2_100_000)}`);
     try {
       const findings = await runScan();
       expect(findings.some((finding) => finding.file === 'src/malformed.ts')).toBe(false);
@@ -150,23 +151,23 @@ describe('Phase 3 static security scanner', () => {
 
 describe('Phase 3 evidence redaction and bounds', () => {
   it.each([
-    ["res.cookie('session', 'cookie-literal-xyz', { secure: false })", 'cookie-literal-xyz'],
-    ["res.setHeader('Authorization', 'Basic dXNlcjpwYXNzd29yZA==')", 'dXNlcjpwYXNzd29yZA'],
-    ['const t = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.c2lnbmF0dXJl";', 'eyJhbGci'],
-    ['postgres://admin:hunter2pw@db.internal/app', 'hunter2pw'],
-    ['-----BEGIN RSA PRIVATE KEY-----\nMIIEabc123\n-----END RSA PRIVATE KEY-----', 'MIIEabc123'],
-  ])('redacts secret-bearing text: %s', (input, secret) => {
+    ['cookie literal', `res.cookie('session', '${testCredential('COOKIE_TOKEN')}', { secure: false })`, testCredential('COOKIE_TOKEN').slice(0, 12)],
+    ['Basic header', `res.setHeader('Authorization', 'Basic ${testCredential('BASIC_CREDENTIAL')}')`, testCredential('BASIC_CREDENTIAL').slice(0, 12)],
+    ['JWT', `const t = "${testCredential('JWT')}";`, testCredential('JWT').split('.')[1]!.slice(0, 12)],
+    ['database URL', `postgres://admin:${testCredential('DB_PASSWORD')}@db.local/app`, testCredential('DB_PASSWORD').slice(0, 12)],
+    ['private key', `-----BEGIN RSA PRIVATE KEY-----\n${testCredential('PEM_BODY')}\n-----END RSA PRIVATE KEY-----`, testCredential('PEM_BODY').slice(0, 12)],
+  ])('redacts secret-bearing text: %s', (_label, input, secret) => {
     const redacted = redactSecurityText(input);
-    expect(redacted).not.toContain(secret);
+    expect(redacted.includes(secret)).toBe(false);
     expect(redacted).toContain('[REDACTED]');
-  });
-
-  it('keeps non-sensitive configuration text readable', () => {
-    expect(redactSecurityText("res.setHeader('Access-Control-Allow-Origin', '*')")).toContain("'*'");
   });
 
   it('does not return literal cookie values in scanner output', async () => {
     expect(JSON.stringify(await runScan())).not.toContain('fixture-secret');
+  });
+
+  it('keeps non-sensitive configuration text readable', () => {
+    expect(redactSecurityText("res.setHeader('Access-Control-Allow-Origin', '*')")).toContain("'*'");
   });
 
   it('applies the same redaction to audit evidence text', () => {
@@ -183,14 +184,14 @@ describe('Phase 3 evidence redaction and bounds', () => {
 
 describe('Phase 5 quoted-key and header redaction', () => {
   it.each([
-    ['{"password": "hunter2hunter2"}', 'hunter2hunter2'],
-    ["'apiKey': 'abcdefgh12345678'", 'abcdefgh12345678'],
-    ['Cookie: session=abc123def456', 'abc123def456'],
-  ])('redacts %s', (input, secret) => {
-    expect(redactSecurityText(input)).not.toContain(secret);
+    ['password', JSON.stringify({ password: testCredential('DB_PASSWORD') }), testCredential('DB_PASSWORD').slice(0, 12)],
+    ['API key', `'apiKey': '${testCredential('API_KEY')}'`, testCredential('API_KEY').slice(2, 14)],
+    ['Cookie', `Cookie: session=${testCredential('COOKIE_TOKEN')}`, testCredential('COOKIE_TOKEN').slice(0, 12)],
+  ])('redacts %s', (_label, input, secret) => {
+    expect(redactSecurityText(input).includes(secret)).toBe(false);
   });
-
   it('keeps object-style cookie configuration readable', () => {
     expect(redactSecurityText('cookie: { secure: false }')).toContain('secure: false');
   });
+
 });

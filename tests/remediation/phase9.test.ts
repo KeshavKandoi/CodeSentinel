@@ -1,3 +1,4 @@
+import { testCredential } from '../testCredentials.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,9 +15,6 @@ function tool(name: string) { const item = toolDefinitions.find((entry) => entry
 function body(response: { content: Array<{ text: string }> }) { return JSON.parse(response.content[0]!.text) as any; }
 function makeProject(): { root: string; config: AppConfig } {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codesentinel-phase9-'))); roots.push(root);
-  // The intelligence suite creates a temporary baseline in the shared
-  // fixture directory. Do not copy that transient test artifact while Vitest
-  // runs files concurrently.
   fs.cpSync(path.resolve(process.cwd(), 'tests/fixtures/security-cases'), root, {
     recursive: true,
     filter: (source) => !source.endsWith(`${path.sep}deep-baseline.json`),
@@ -321,9 +319,13 @@ describe('Phase 9 proposal integrity', () => {
 
   it('redacts credential-like text in proposal output', async () => {
     const s = await setup();
-    const response = await tool('propose_remediation').handler(s.config, s.input('export const safe = true;\n', { description: 'Rotate sk_live_abcdef1234567890 and password=fixture-secret', rationale: 'Authorization: Bearer abc.def.ghi leaked' }));
+    const stripe = testCredential('STRIPE_KEY');
+    const password = testCredential('DB_PASSWORD');
+    const bearer = testCredential('BEARER_TOKEN');
+    const response = await tool('propose_remediation').handler(s.config, s.input('export const safe = true;\n', { description: `Rotate ${stripe} and password=${password}`, rationale: `Authorization: Bearer ${bearer} leaked` }));
     const text = response.content[0]!.text;
-    for (const leak of ['sk_live_abcdef', 'fixture-secret', 'abc.def.ghi']) expect(text).not.toContain(leak);
+    for (const leak of [stripe.slice(8, 20), password.slice(0, 12), bearer.slice(0, 12)]) expect(text).not.toContain(leak);
+
   });
 });
 

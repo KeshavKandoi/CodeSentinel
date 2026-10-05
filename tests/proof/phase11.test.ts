@@ -15,7 +15,7 @@ let origin = '';
 
 async function waitForServer(port: number): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt++) {
-    try { const response = await fetch(`http://127.0.0.1:${port}/cors`); if (response.status > 0) return; } catch { /* starting */ }
+    try { const response = await fetch(`http://127.0.0.1:${port}/cors`); if (response.status > 0) return; } catch {  }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error('Phase 11 fixture did not start');

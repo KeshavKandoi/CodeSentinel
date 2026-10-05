@@ -24,7 +24,6 @@ function run(root: string): DiscoverRoutesResult {
   return outcome.data;
 }
 
-/** Temp projects are created at test time so ignored-dir fixtures (node_modules, dist, ...) never depend on .gitignore. */
 function makeTempProject(files: Record<string, string>): string {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cs-routes-')));
   tempDirs.push(root);
@@ -59,7 +58,6 @@ describe('Express adapter: detection and counts', () => {
   });
 
   it('finds every statically declared route in the fixture', () => {
-    // app: 4, users: 4, admin: 3, api: 3, dynamic: 2
     expect(data.summary.total).toBe(16);
   });
 

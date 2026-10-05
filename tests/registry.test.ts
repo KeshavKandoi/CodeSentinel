@@ -1,3 +1,4 @@
+import { testCredential } from './testCredentials.js';
 import { describe, it, expect, afterAll } from 'vitest';
 import { toolDefinitions } from '../src/tools/registry.js';
 import { makeFixtureProject } from './testUtils.js';
@@ -172,7 +173,7 @@ describe('analyze_project handler', () => {
 
   it('never throws even if called with null input', async () => {
     const response = await getTool('analyze_project').handler(config, null);
-    expect(response.isError).toBe(false); // null coerces to {} default, same as get_project_info's pattern
+    expect(response.isError).toBe(false);
   });
 });
 
@@ -202,10 +203,10 @@ import { logger } from '../src/logger.js';
 
 describe('phase 1 MCP boundary', () => {
   const fx = makeFixtureProject();
-  fs.writeFileSync(path.join(fx.root, '.env'), 'API_KEY=hunter2topsecret\n');
+  fs.writeFileSync(path.join(fx.root, '.env'), `API_KEY=${testCredential('API_KEY')}\n`);
   fs.symlinkSync(path.join(fx.root, '.env'), path.join(fx.root, 'envlink.txt'));
   fs.mkdirSync(path.join(fx.root, '.ssh'));
-  fs.writeFileSync(path.join(fx.root, '.ssh', 'id_rsa'), 'hunter2topsecret\n');
+  fs.writeFileSync(path.join(fx.root, '.ssh', 'id_rsa'), `${testCredential('DB_PASSWORD')}\n`);
   afterAll(() => fx.cleanup());
 
   const call = async (name: string, input: unknown) => {
@@ -276,16 +277,16 @@ describe('phase 1 MCP boundary', () => {
     ['read_file', { path: '.ENV' }],
     ['read_file', { path: 'envlink.txt' }],
     ['list_files', { path: '.ssh' }],
-    ['search_files', { query: 'hunter2', path: '.ssh' }],
+    ['search_files', { query: testCredential('DB_PASSWORD').slice(0, 12), path: '.ssh' }],
   ])('refuses sensitive paths on %s', async (name, input) => {
     const result = await call(name, input);
     expect(result.isError).toBe(true);
     expect(result.body.error).toBe('INVALID_INPUT');
-    expect(result.raw).not.toContain('hunter2topsecret');
+    expect(result.raw).not.toContain(testCredential('DB_PASSWORD').slice(0, 12));
   });
 
   it('never surfaces sensitive content through search_files, list_files, or run_command', async () => {
-    const search = await call('search_files', { query: 'hunter2' });
+    const search = await call('search_files', { query: testCredential('DB_PASSWORD').slice(0, 12) });
     expect(search.isError).toBe(false);
     expect(search.body).toEqual([]);
     const listing = await call('list_files', { path: '.', recursive: true });
@@ -296,17 +297,17 @@ describe('phase 1 MCP boundary', () => {
     const command = await call('run_command', { command: 'cat', args: ['.env'] });
     expect(command.isError).toBe(true);
     expect(command.body.error).toBe('COMMAND_NOT_ALLOWED');
-    expect(command.raw).not.toContain('hunter2topsecret');
+    expect(command.raw).not.toContain(testCredential('DB_PASSWORD').slice(0, 12));
   });
 
   it('writes diagnostics to stderr only and never to stdout', () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      logger.info('phase1_probe', { token: 'sk-abcdefghijklmnop1234' });
+      logger.info('phase1_probe', { token: testCredential('OPENAI_KEY') });
       expect(stdout).not.toHaveBeenCalled();
       expect(stderr).toHaveBeenCalledTimes(1);
-      expect(String(stderr.mock.calls[0]?.[0])).not.toContain('sk-abcdefghijklmnop1234');
+      expect(String(stderr.mock.calls[0]?.[0])).not.toContain(testCredential('OPENAI_KEY').slice(3, 15));
     } finally {
       stdout.mockRestore();
       stderr.mockRestore();

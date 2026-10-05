@@ -6,7 +6,6 @@ import { resetInvestigationsForTests } from '../../src/investigation/orchestrato
 import { resetAuditSessionsForTests } from '../../src/orchestration/engine.js';
 import type { AppConfig } from '../../src/config.js';
 
-// Synthetic fault injection: route discovery fails, so the deterministic analysis fails.
 vi.mock('../../src/routes/engine.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/routes/engine.js')>();
   return { ...actual, discoverRoutes: () => ({ ok: false, error: { code: 'INTERNAL_ERROR', message: 'synthetic route discovery failure' } }) };

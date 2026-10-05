@@ -64,7 +64,6 @@ describe('Fastify adapter: detection and counts', () => {
   });
 
   it('finds every statically declared route in the fixture', () => {
-    // server: 6, users: 4, admin: 2, v2: 2, inline /api: 1, secure: 2, dynamic: 2, orphan: 1
     expect(data.summary.total).toBe(20);
   });
 

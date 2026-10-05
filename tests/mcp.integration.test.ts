@@ -1,3 +1,4 @@
+import { testCredential } from './testCredentials.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn } from 'child_process';
 import path from 'path';
@@ -26,7 +27,6 @@ describe('MCP Server Integration', () => {
           try {
             responses.push(JSON.parse(line));
           } catch (e) {
-            // Ignore non-json or malformed
             responses.push({ unparsed: line });
           }
         }
@@ -129,7 +129,7 @@ describe('MCP Server Integration', () => {
   });
   
   it('redacts secrets echoed in unknown-tool errors', async () => {
-    const hostile = 'Authorization: Basic dXNlcjpwYXNzd29yZA==';
+    const hostile = `Authorization: Basic ${testCredential('BASIC_CREDENTIAL')}`;
     const res = await sendRequest({
       jsonrpc: '2.0',
       id: 7,
@@ -140,12 +140,12 @@ describe('MCP Server Integration', () => {
     expect(res.result.isError).toBe(true);
     const text = JSON.stringify(res);
     expect(text).toContain('UNKNOWN_TOOL');
-    expect(text).not.toContain('dXNlcjpwYXNzd29yZA');
+    expect(text).not.toContain(testCredential('BASIC_CREDENTIAL').slice(0, 12));
   });
 
   it('keeps hostile, oversized and malformed tool calls structured and secret-free', async () => {
-    const secret = 'dXNlcjpwYXNzd29yZA';
-    const hostile = `Authorization: Basic ${secret}==`;
+    const secret = testCredential('BASIC_CREDENTIAL');
+    const hostile = `Authorization: Basic ${secret}`;
     const calls: Array<[string, unknown]> = [
       [hostile, {}],
       ['verify_finding', { findingId: hostile.repeat(10), target: { allowedOrigin: 'http://127.0.0.1:1' } }],

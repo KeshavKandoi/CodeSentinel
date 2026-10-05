@@ -1,3 +1,4 @@
+import { testCredential } from '../testCredentials.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -85,13 +86,14 @@ describe('Phase 7 state machine and budgets', () => {
     const id = started.id as string;
     const analysis = payload(await tool('run_security_analysis').handler(config, { investigationId: id }));
     const evidenceRef = `project`;
-    const input = { investigationId: id, title: 'Bearer token hypothesis', description: 'Bearer supersecret-token', evidenceRefs: [evidenceRef] };
+    const bearer = testCredential('BEARER_TOKEN');
+    const input = { investigationId: id, title: `Bearer ${bearer} hypothesis`, description: `Bearer ${bearer}`, evidenceRefs: [evidenceRef] };
     const first = await tool('record_security_hypothesis').handler(config, input);
     expect(first.isError).toBe(false);
     const second = await tool('record_security_hypothesis').handler(config, input);
     expect(payload(second).error).toBe('BUDGET_EXCEEDED');
     const state = payload(await tool('get_investigation').handler(config, { investigationId: id }));
-    expect(JSON.stringify(state)).not.toContain('supersecret-token');
+    expect(JSON.stringify(state)).not.toContain(bearer.slice(0, 12));
     expect(analysis.status).toBe('awaiting_verification');
   });
 

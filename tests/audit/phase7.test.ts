@@ -1,3 +1,4 @@
+import { testCredential } from '../testCredentials.js';
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -179,7 +180,7 @@ describe('Phase 7 correlation', () => {
   });
 
   it('keeps secret-like evidence out of correlation metadata', () => {
-    const deep = mk('deep_analysis', 'd-1', { evidence: ['token = ghp_abcdefghijklmnopqrstuvwxyz123456'] });
+    const deep = mk('deep_analysis', 'd-1', { evidence: [`token = ${testCredential('GITHUB_CLASSIC_TOKEN')}`] });
     const result = merged(mk('security_scan', 's-1'), deep);
     expect(JSON.stringify(result.correlation)).not.toContain('ghp_');
     expect(synthesizeEvidence(result)).not.toContain('ghp_');
@@ -223,9 +224,9 @@ describe('Phase 7 evidence synthesis', () => {
   });
 
   it('redacts secrets and stays bounded', () => {
-    const finding = mk('security_scan', 's-1', { file: `src/ghp_abcdefghijklmnopqrstuvwxyz123456.ts` });
+    const finding = mk('security_scan', 's-1', { file: `src/${testCredential('GITHUB_CLASSIC_TOKEN')}.ts` });
     const text = synthesizeEvidence(finding);
-    expect(text).not.toContain('ghp_abcdef');
+    expect(text.includes(testCredential('GITHUB_CLASSIC_TOKEN').slice(4, 16))).toBe(false);
     expect(text.length).toBeLessThanOrEqual(600);
   });
 

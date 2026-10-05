@@ -1,3 +1,4 @@
+import { testCredential } from '../testCredentials.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
@@ -116,9 +117,11 @@ describe('Phase 8 evidence-backed report generation', () => {
   });
 
   it('redacts nested credentials and bounds report values', () => {
-    const value = detachedRedacted({ nested: { Authorization: 'Bearer super-secret', Cookie: 'session=secret' }, body: 'x'.repeat(10_000) }) as any;
-    expect(JSON.stringify(value)).not.toContain('super-secret');
-    expect(JSON.stringify(value)).not.toContain('session=secret');
+    const bearer = testCredential('BEARER_TOKEN');
+    const cookie = testCredential('COOKIE_TOKEN');
+    const value = detachedRedacted({ nested: { Authorization: `Bearer ${bearer}`, Cookie: `session=${cookie}` }, body: 'x'.repeat(10_000) }) as any;
+    expect(JSON.stringify(value).includes(bearer.slice(0, 12))).toBe(false);
+    expect(JSON.stringify(value).includes(cookie.slice(0, 12))).toBe(false);
     expect(value.body.length).toBeLessThanOrEqual(2_000);
   });
 });
@@ -152,18 +155,26 @@ describe('Phase 8 report completeness and integrity', () => {
   });
 
   it('redacts the full credential set while keeping benign evidence readable', () => {
-    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop';
-    const input = { notes: ['password=fixture-secret', 'key sk_live_abcdef1234567890', 'Authorization: Bearer abc.def.ghi', jwt, 'Authorization: Basic dXNlcjpwYXNzd29yZA==', 'postgres://admin:hunter2@db.local/app', 'Cookie: sid=abc123; theme=dark', 'Set-Cookie: session=zzz999; HttpOnly', '-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY-----', 'Access-Control-Allow-Origin: *'] };
+    const jwt = testCredential('JWT');
+    const password = testCredential('DB_PASSWORD');
+    const stripe = testCredential('STRIPE_KEY');
+    const bearer = testCredential('BEARER_TOKEN');
+    const basic = testCredential('BASIC_CREDENTIAL');
+    const cookie = testCredential('COOKIE_TOKEN');
+    const pemBody = testCredential('PEM_BODY');
+    const input = { notes: [`password=${password}`, `key ${stripe}`, `Authorization: Bearer ${bearer}`, jwt, `Authorization: Basic ${basic}`, `postgres://admin:${password}@db.local/app`, `Cookie: sid=${cookie}; theme=dark`, `Set-Cookie: session=${cookie}; HttpOnly`, `-----BEGIN PRIVATE KEY-----\n${pemBody}\n-----END PRIVATE KEY-----`, 'Access-Control-Allow-Origin: *'] };
     const out = JSON.stringify(detachedRedacted(input));
-    for (const leak of ['fixture-secret', 'sk_live_abcdef', 'abc.def.ghi', 'eyJzdWIi', 'dXNlcjpw', 'hunter2', 'sid=abc123', 'session=zzz999', 'MIIabc']) expect(out).not.toContain(leak);
+    for (const leak of [password.slice(0, 12), stripe.slice(8, 20), bearer.slice(0, 12), jwt.split('.')[1]!.slice(0, 12), basic.slice(0, 12), cookie.slice(0, 12), pemBody.slice(0, 12)]) expect(out.includes(leak)).toBe(false);
     expect(out).toContain('Access-Control-Allow-Origin: *');
   });
 
   it('redacts credentials in investigation views with the shared redactor', async () => {
-    const started = payload(await tool('start_security_investigation').handler(config, { projectPath: FIXTURE, scope: ['authentication'], hypothesis: 'Check Authorization: Basic dXNlcjpwYXNzd29yZA== and key sk_live_abcdef1234567890 for exposure.' }));
+    const basic = testCredential('BASIC_CREDENTIAL');
+    const stripe = testCredential('STRIPE_KEY');
+    const started = payload(await tool('start_security_investigation').handler(config, { projectPath: FIXTURE, scope: ['authentication'], hypothesis: `Check Authorization: Basic ${basic} and key ${stripe} for exposure.` }));
     const view = JSON.stringify(payload(await tool('get_investigation').handler(config, { investigationId: started.id })));
-    expect(view).not.toContain('dXNlcjpw');
-    expect(view).not.toContain('sk_live_abcdef');
+    expect(view.includes(basic.slice(0, 12))).toBe(false);
+    expect(view.includes(stripe.slice(8, 20))).toBe(false);
   });
 
   it('rejects forged lifecycle fields and malformed references safely', async () => {
@@ -209,8 +220,13 @@ describe('Phase 9 hardening regressions', () => {
 });
 
 describe('Phase 9 report boundary redaction', () => {
-  const hostile = 'Authorization: Digest username="bob", response="abcdef0123456789abcdef" Authorization: Basic dXNlcjpwYXNz Authorization: Token tok-abc123xyz postgres://admin:hunter2secret@db.local/x client_secret=fixture-secret-value Access-Control-Allow-Origin: *';
-  const secrets = ['abcdef0123456789abcdef', 'dXNlcjpwYXNz', 'tok-abc123xyz', 'hunter2secret', 'fixture-secret-value'];
+  const digest = testCredential('DIGEST_RESPONSE');
+  const basic = testCredential('BASIC_CREDENTIAL');
+  const token = testCredential('AUTH_TOKEN');
+  const password = testCredential('DB_PASSWORD');
+  const generic = testCredential('GENERIC_SECRET');
+  const hostile = `Authorization: Digest username="bob", response="${digest}" Authorization: Basic ${basic} Authorization: Token ${token} postgres://admin:${password}@db.local/x client_secret=${generic} Access-Control-Allow-Origin: *`;
+  const secrets = [digest.slice(0, 12), basic.slice(0, 12), token.slice(4, 14), password.slice(0, 12), generic.slice(0, 12)];
 
   it('generates a completed report and finding view without any injected secret', async () => {
     const started = payload(await tool('start_security_investigation').handler(config, { projectPath: FIXTURE, scope: ['authentication', 'authorization'], hypothesis: hostile }));
@@ -239,7 +255,7 @@ describe('Phase 9 report boundary redaction', () => {
     const state = await tool('get_investigation').handler(config, { investigationId });
     for (const response of [report, finding, state]) {
       const text = JSON.stringify(response);
-      for (const secret of secrets) expect(text, secret).not.toContain(secret);
+      for (const secret of secrets) expect(text.includes(secret)).toBe(false);
     }
   });
 });

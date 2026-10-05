@@ -1,3 +1,4 @@
+import { testCredential } from '../testCredentials.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -116,12 +117,15 @@ describe('Phase 5 deep analysis precision, redaction and merging', () => {
   });
 
   it('redacts credentials on scanned source lines and still completes the audit', async () => {
+    const bearer = testCredential('BEARER_TOKEN');
+    const password = testCredential('DB_PASSWORD');
+    const jwt = testCredential('JWT');
     const root = await phase5Project({
       'package.json': JSON.stringify({ name: 't', dependencies: { express: '^4.19.2' } }),
       'src/a.js': [
-        "const h = 'Authorization: Bearer abcdefghij12345'; // jwt verify",
-        "const u = 'postgres://admin:hunter2pw@db.internal/app'; // process.env fallback",
-        "const t = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.c2lnbmF0dXJl'; // jwt verify",
+        `const h = 'Authorization: Bearer ${bearer}';`,
+        `const u = 'postgres://admin:${password}@db.local/app';`,
+        `const t = '${jwt}';`,
         '',
       ].join('\n'),
     });
@@ -130,7 +134,7 @@ describe('Phase 5 deep analysis precision, redaction and merging', () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       const text = JSON.stringify(result.data);
-      for (const secret of ['abcdefghij12345', 'hunter2pw', 'eyJhbGci']) expect(text).not.toContain(secret);
+      for (const secret of [bearer.slice(0, 12), password.slice(0, 12), jwt.split('.')[1]!.slice(0, 12)]) expect(text.includes(secret)).toBe(false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

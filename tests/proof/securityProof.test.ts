@@ -17,6 +17,7 @@ import { toolDefinitions } from '../../src/tools/registry.js';
 import { listFiles } from '../../src/fs/fsOperations.js';
 import type { AuditFinding } from '../../src/audit/types.js';
 import { verifyFindingSchema } from '../../src/validation/schemas.js';
+import { testCredential } from '../testCredentials.js';
 
 const root = fs.realpathSync(fileURLToPath(new URL('../fixtures/access-control-express', import.meta.url)));
 const securityRoot = fs.realpathSync(fileURLToPath(new URL('../fixtures/security-cases', import.meta.url)));
@@ -34,7 +35,7 @@ let secureProofOrigin = '';
 function createProofServer(secure: boolean): http.Server {
   return http.createServer((request, response) => {
     const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
-    response.setHeader('authorization', 'Bearer proof-fixture-secret');
+    response.setHeader('authorization', `Bearer ${testCredential('BEARER_TOKEN')}`);
     if (secure) {
       response.writeHead(pathname === '/proxy' ? 403 : pathname === '/redirect' || pathname === '/path' ? 400 : 200, { 'content-type': 'text/plain' });
       response.end(pathname === '/hello' ? 'safe escaped response' : 'safe fixture response');
@@ -312,18 +313,22 @@ describe('security proof engine', () => {
     expect(verifyFindingSchema.safeParse({ ...base, target: { allowedOrigin: 'http://127.0.0.1:3000', vettedTestPaths: ['/transfer'] } }).success).toBe(true);
   });
   it('redacts JWTs, PEM keys, URL credentials and embedded secret fields but keeps the inert probe token', () => {
+    const password = testCredential('DB_PASSWORD');
+    const apiKey = testCredential('API_KEY');
+    const pemBody = testCredential('PEM_BODY');
     const out = JSON.stringify(detachedRedacted({
-      a: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz123456',
-      b: '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----',
-      c: 'http://admin:hunter2@127.0.0.1:3000/x',
-      d: '{"password":"hunter2","api_key":"k-12345678901234"}',
-      e: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjb2Rlc2VudGluZWwifQ.invalid-signature',
+      a: testCredential('JWT'),
+      b: `-----BEGIN PRIVATE KEY-----\n${pemBody}\n-----END PRIVATE KEY-----`,
+      c: `http://admin:${password}@127.0.0.1:3000/x`,
+      d: JSON.stringify({ password, api_key: apiKey }),
+      e: 'invalid-signature',
       f: 'plain evidence text',
     }));
-    for (const leaked of ['hunter2', 'abcdefghijklmnopqrstuvwxyz123456', 'MIIEvQ', 'k-12345678901234']) expect(out).not.toContain(leaked);
+    for (const leaked of [password.slice(0, 10), pemBody.slice(0, 10), apiKey.slice(2, 12)]) expect(out).not.toContain(leaked);
     expect(out).toContain('invalid-signature');
     expect(out).toContain('plain evidence text');
   });
+
   it('rejects remote and look-alike hosts but accepts loopback forms', async () => {
     for (const allowedOrigin of ['http://example.com', 'http://93.184.216.34', 'http://127.attacker.com', 'http://localhost.evil.test']) {
       expect(await validateTarget({ allowedOrigin }), allowedOrigin).not.toBeNull();
@@ -514,24 +519,33 @@ describe('Phase 9 unknown finding id', () => {
 });
 
 describe('Phase 9 redaction coverage', () => {
-  const secrets: Array<[string, string]> = [
-    ['sent Bearer QWxhZGRpbjpvcGVuIHNlc2FtZQ+x/y== here', 'x/y'],
-    ['token ghs_16C7e42F292c6912E7710c838347Ae178B4a', '16C7e42F'],
-    ['github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwxyz0123456789', '11ABCDEFG0'],
-    ['AIzaSyA1234567890abcdefghijklmnopqrstuv', 'A1234567890'],
-    ['eyJhbGciOiJub25lIn0.eyJzdWIiOiIxMjM0NTY3ODkwIn0.', 'eyJzdWIi'],
-    ['Authorization: abcdef123456secret', 'abcdef123456'],
-    ['Proxy-Authorization: Basic dXNlcjpwYXNz', 'dXNlcjpw'],
-    ['https://abcd1234efgh5678@github.com/org/repo.git', 'abcd1234efgh5678'],
-    ['postgres://admin:hunter2pass@db.local:5432/app', 'hunter2pass'],
-    ['AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY', 'wJalrXUtn'],
-    ['auth_token=abcd1234efgh5678', 'abcd1234efgh'],
-    ['private_key: "abcd1234efgh5678"', 'abcd1234efgh'],
-    ['Cookie: sid=abc123def456; theme=dark', 'abc123def456'],
-    ['Set-Cookie: session=s3cr3tvalue; HttpOnly', 's3cr3tvalue'],
-    ['{"password":"Sup3rS3cret!"}', 'Sup3rS3cret'],
+  const bearer = testCredential('BEARER_TOKEN');
+  const github = testCredential('GITHUB_TOKEN');
+  const pat = testCredential('GITHUB_PAT');
+  const google = testCredential('GOOGLE_API_KEY');
+  const basic = testCredential('BASIC_CREDENTIAL');
+  const generic = testCredential('GENERIC_SECRET');
+  const cookie = testCredential('COOKIE_TOKEN');
+  const password = testCredential('DB_PASSWORD');
+  const cases: Array<[string, string, string]> = [
+    ['Bearer', `sent Bearer ${bearer} here`, bearer.slice(4, 14)],
+    ['GitHub token', `token ${github}`, github.slice(4, 14)],
+    ['GitHub PAT', pat, pat.slice(12, 22)],
+    ['Google API key', google, google.slice(5, 15)],
+    ['JWT', testCredential('JWT'), testCredential('JWT').split('.')[1]!.slice(2, 12)],
+    ['Authorization', `Authorization: ${generic}`, generic.slice(0, 10)],
+    ['Proxy Basic', `Proxy-Authorization: Basic ${basic}`, basic.slice(2, 12)],
+    ['URL userinfo', `https://${generic}@github.com/org/repo.git`, generic.slice(0, 10)],
+    ['database URL', `postgres://admin:${password}@db.local/app`, password.slice(0, 10)],
+    ['AWS secret', `AWS_SECRET_ACCESS_KEY=${testCredential('AWS_SECRET_ACCESS_KEY')}`, testCredential('AWS_SECRET_ACCESS_KEY').slice(0, 10)],
+    ['AWS access key', testCredential('AWS_ACCESS_KEY_ID'), testCredential('AWS_ACCESS_KEY_ID').slice(0, 12)],
+    ['auth token', `auth_token=${testCredential('AUTH_TOKEN')}`, testCredential('AUTH_TOKEN').slice(4, 14)],
+    ['private key field', `private_key: "${generic}"`, generic.slice(0, 10)],
+    ['Cookie', `Cookie: sid=${cookie}; theme=dark`, cookie.slice(0, 10)],
+    ['Set-Cookie', `Set-Cookie: session=${cookie}; HttpOnly`, cookie.slice(0, 10)],
+    ['JSON password', JSON.stringify({ password }), password.slice(0, 10)],
   ];
-  it.each(secrets)('redacts %s', (input, fragment) => {
+  it.each(cases)('redacts %s', (_label, input, fragment) => {
     expect(JSON.stringify(detachedRedacted({ text: input }))).not.toContain(fragment);
   });
   it('keeps benign security evidence readable', () => {
@@ -741,24 +755,34 @@ describe('Phase 9 secure and inconclusive end-to-end proofs', () => {
 });
 
 describe('Phase 9 sensitive value redaction boundary', () => {
-  const forbidden = ['abcdef1234567890', 'abc123def456ghi789', 'dXNlcjpwYXNz', 'c2lnbmF0dXJlMTIzNDU2', 'hunter2', 'fixturecookie123', 'fixture-secret', 'tok-abc123', 'p4ss', 'MIIBOgIBAAJBAKj34'];
-  const leakBody = 'CODESENTINEL_PROOF_XSS_SENTINEL sk_live_abcdef1234567890 Bearer abc123def456ghi789 Basic dXNlcjpwYXNz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMxMjMifQ.c2lnbmF0dXJlMTIzNDU2 postgres://admin:hunter2@db.local/app Cookie: sid=fixturecookie123 api_secret=fixture-secret {"token":"tok-abc123","password":"p4ss"} -----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END RSA PRIVATE KEY-----';
+  const bearer = testCredential('BEARER_TOKEN');
+  const basic = testCredential('BASIC_CREDENTIAL');
+  const jwt = testCredential('JWT');
+  const stripe = testCredential('STRIPE_KEY');
+  const password = testCredential('DB_PASSWORD');
+  const cookie = testCredential('COOKIE_TOKEN');
+  const token = testCredential('AUTH_TOKEN');
+  const generic = testCredential('GENERIC_SECRET');
+  const pemBody = testCredential('PEM_BODY');
+  const pem = `-----BEGIN RSA PRIVATE KEY-----\n${pemBody}\n-----END RSA PRIVATE KEY-----`;
+  const forbidden = [stripe.slice(8, 20), bearer.slice(2, 14), basic.slice(2, 14), jwt.split('.')[2]!.slice(2, 14), password.slice(0, 12), cookie.slice(0, 12), generic.slice(0, 12), token.slice(4, 15), pemBody.slice(0, 12)];
+  const leakBody = `CODESENTINEL_PROOF_XSS_SENTINEL ${stripe} Bearer ${bearer} Basic ${basic} ${jwt} postgres://admin:${password}@db.local/app Cookie: sid=${cookie} api_secret=${generic} ${JSON.stringify({ token, password })} ${pem}`;
 
   it.each([
-    ['bare unpadded Basic credential', 'sent Basic dXNlcjpwYXNz here', 'dXNlcjpwYXNz'],
-    ['padded Basic credential', 'sent Basic dXNlcjpwYXNzd29yZA== here', 'dXNlcjpwYXNzd29yZA'],
-    ['Authorization Basic header', 'Authorization: Basic dXNlcjpwYXNz', 'dXNlcjpwYXNz'],
-    ['JSON token field', '{"token":"tok-abc123","ok":true}', 'tok-abc123'],
-    ['JSON access token field', '{"access_token":"tok-abc123"}', 'tok-abc123'],
-    ['JSON password and secret fields', '{"password":"p4ss","secret":"s3cr3t"}', 'p4ss'],
-    ['sk_live key', 'key sk_live_abcdef1234567890 end', 'abcdef1234567890'],
-    ['JWT', 'tok eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMxMjMifQ.c2lnbmF0dXJlMTIzNDU2 end', 'c2lnbmF0dXJlMTIzNDU2'],
-    ['Bearer', 'sent Bearer abc123def456ghi789 here', 'abc123def456ghi789'],
-    ['URL credentials', 'connect postgres://admin:hunter2@db.local/app', 'hunter2'],
-    ['Cookie header', 'Cookie: sid=fixturecookie123; theme=dark', 'fixturecookie123'],
-    ['Set-Cookie header', 'Set-Cookie: sid=fixturecookie123; HttpOnly', 'fixturecookie123'],
-    ['PEM private key', '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END RSA PRIVATE KEY-----', 'MIIBOgIBAAJBAKj34'],
-    ['keyed fixture-secret', 'api_secret=fixture-secret&x=1', 'fixture-secret'],
+    ['bare unpadded Basic credential', `sent Basic ${basic.replace(/=+$/, '')} here`, basic.slice(2, 12)],
+    ['padded Basic credential', `sent Basic ${basic} here`, basic.slice(2, 12)],
+    ['Authorization Basic header', `Authorization: Basic ${basic}`, basic.slice(2, 12)],
+    ['JSON token field', JSON.stringify({ token, ok: true }), token.slice(4, 14)],
+    ['JSON access token field', JSON.stringify({ access_token: token }), token.slice(4, 14)],
+    ['JSON password and secret fields', JSON.stringify({ password, secret: generic }), password.slice(0, 12)],
+    ['Stripe key', `key ${stripe} end`, stripe.slice(8, 20)],
+    ['JWT', `tok ${jwt} end`, jwt.split('.')[2]!.slice(2, 14)],
+    ['Bearer', `sent Bearer ${bearer} here`, bearer.slice(2, 14)],
+    ['URL credentials', `connect postgres://admin:${password}@db.local/app`, password.slice(0, 12)],
+    ['Cookie header', `Cookie: sid=${cookie}; theme=dark`, cookie.slice(0, 12)],
+    ['Set-Cookie header', `Set-Cookie: sid=${cookie}; HttpOnly`, cookie.slice(0, 12)],
+    ['PEM private key', pem, pemBody.slice(0, 12)],
+    ['keyed generic secret', `api_secret=${generic}&x=1`, generic.slice(0, 12)],
   ])('redacts %s', (_label, input, secret) => {
     expect(JSON.stringify(detachedRedacted(input))).not.toContain(secret);
   });
@@ -776,7 +800,7 @@ describe('Phase 9 sensitive value redaction boundary', () => {
     expect(finding).toBeDefined();
     if (!finding) return;
     const leakServer = http.createServer((_request, response) => {
-      response.writeHead(200, { 'content-type': 'text/plain', 'set-cookie': 'connect.sid=fixturecookie123; HttpOnly', 'x-api-key': 'sk_live_abcdef1234567890', authorization: 'Basic dXNlcjpwYXNz' });
+      response.writeHead(200, { 'content-type': 'text/plain', 'set-cookie': `connect.sid=${cookie}; HttpOnly`, 'x-api-key': testCredential('API_KEY'), authorization: `Basic ${basic}` });
       response.end(leakBody);
     });
     const leakOrigin = await listen(leakServer);
@@ -787,7 +811,7 @@ describe('Phase 9 sensitive value redaction boundary', () => {
       const response = await tool.handler(vulnerableProofConfig, { findingId: finding.id, target: { allowedOrigin: leakOrigin, minRequestIntervalMs: 0 } });
       const text = JSON.stringify(response);
       expect(text).toContain('receipt-');
-      for (const secret of forbidden) expect(text, secret).not.toContain(secret);
+      for (const secret of forbidden) expect(text).not.toContain(secret);
     } finally {
       await new Promise<void>((resolve) => leakServer.close(() => resolve()));
       resetSecurityProofsForTests();
@@ -800,11 +824,15 @@ describe('Phase 9 logger redaction and concurrent proof budget', () => {
     const { vi } = await import('vitest');
     const { logger } = await import('../../src/logger.js');
     const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const bearer = testCredential('BEARER_TOKEN');
+    const basic = testCredential('BASIC_CREDENTIAL');
+    const jwt = testCredential('JWT');
+    const password = testCredential('DB_PASSWORD');
     try {
-      logger.error('probe', { message: 'failed Bearer abc123def456ghi789 Basic dXNlcjpwYXNz eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMxMjMifQ.c2lnbmF0dXJlMTIzNDU2 postgres://admin:hunter2@db.local/app' });
+      logger.error('probe', { message: `failed Bearer ${bearer} Basic ${basic} ${jwt} postgres://admin:${password}@db.local/app` });
       const written = spy.mock.calls.map((call) => String(call[0])).join('');
       expect(written).toContain('probe');
-      for (const secret of ['abc123def456ghi789', 'dXNlcjpwYXNz', 'c2lnbmF0dXJlMTIzNDU2', 'hunter2']) expect(written).not.toContain(secret);
+      for (const secret of [bearer.slice(0, 12), basic.slice(0, 12), jwt.split('.')[2]!.slice(0, 12), password.slice(0, 12)]) expect(written).not.toContain(secret);
     } finally { spy.mockRestore(); }
   });
 
@@ -947,8 +975,11 @@ describe('Phase 9 Digest credential redaction', () => {
 });
 
 describe('Phase 9 error response redaction at the MCP boundary', () => {
-  const hostile = 'Authorization: Digest username="bob", response="abcdef0123456789abcdef" Authorization: Basic dXNlcjpwYXNz Authorization: Token tok-abc123xyz';
-  const secrets = ['abcdef0123456789abcdef', 'dXNlcjpwYXNz', 'tok-abc123xyz'];
+  const digest = testCredential('DIGEST_RESPONSE');
+  const basic = testCredential('BASIC_CREDENTIAL');
+  const token = testCredential('AUTH_TOKEN');
+  const hostile = `Authorization: Digest username="bob", response="${digest}" Authorization: Basic ${basic} Authorization: Token ${token}`;
+  const secrets = [digest.slice(0, 12), basic.slice(0, 12), token.slice(4, 14)];
   it.each([
     ['get_security_finding', { investigationId: hostile.slice(0, 120), findingId: hostile }],
     ['verify_remediation', { remediationId: hostile.slice(0, 120) }],
@@ -961,7 +992,7 @@ describe('Phase 9 error response redaction at the MCP boundary', () => {
     const response = await tool!.handler(securityConfig, input);
     expect(response.isError).toBe(true);
     const text = JSON.stringify(response);
-    for (const secret of secrets) expect(text, `${name}:${secret}`).not.toContain(secret);
+    for (const secret of secrets) expect(text).not.toContain(secret);
   });
 });
 
