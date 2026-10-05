@@ -21,6 +21,7 @@ import { extendGraphWithAudit, findNearDuplicates } from './graph.js';
 import { accessCategory, addOrMerge, canonicalCategory, compareBySeverity, compareFindings, createFinding, findingIdentity, fromAccessFinding, fromDeepFinding, fromSecurityFinding, normalizeFile, safeText, synthesizeEvidence } from './identity.js';
 import { calculateRiskScore } from './scoring.js';
 import { advance, advanceToVerified } from './lifecycle.js';
+import { assessVerification } from './verification.js';
 import type { AuditContext, AuditFinding, AuditGraphSummary, AuditResult, AuditStage, AuditSummary, FinalVerification, NamedCount, StageStatus, TreeFingerprint } from './types.js';
 
 interface StageOutput {
@@ -255,7 +256,10 @@ function summarizeGraph(graph: SecurityGraph | null, include: boolean): AuditGra
 
 function buildResult(ctx: AuditContext, input: RunFullSecurityAuditInput): AuditResult {
   const findings = [...ctx.findings.values()].sort(compareFindings);
-  for (const finding of findings) finding.sources.sort((a, b) => a.origin.localeCompare(b.origin) || a.sourceId.localeCompare(b.sourceId));
+  for (const finding of findings) {
+    finding.sources.sort((a, b) => a.origin.localeCompare(b.origin) || a.sourceId.localeCompare(b.sourceId));
+    finding.verification = assessVerification(finding);
+  }
   const count = (predicate: (finding: AuditFinding) => boolean): number => findings.filter(predicate).length;
   const summary: AuditSummary = {
     total: findings.length,

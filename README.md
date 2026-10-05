@@ -234,6 +234,10 @@ Each finding gets a deterministic ID `cs-<hash>` derived from the canonical cate
 
 ### Proof classification
 
+Phase 4 adds a per-finding `verification` assessment to `run_full_security_audit`. It reports the audit finding ID, source rule IDs, original severity and confidence, `verificationStatus`, existing `proofStatus`, proof method, bounded source evidence, limitations, safety constraints, and receipt IDs. The scanner still emits `suspected` / `not_verified`; the assessment does not mutate scanner findings. `verificationStatus` is `not_verified` for an eligible candidate or a safe negative result, `not_verifiable` when no registered adapter can test the claim, `verification_failed` when an attempted proof is blocked or inconclusive, and `verified` only after the existing receipt and semantic oracle checks pass. The detailed `proofStatus` distinguishes `eligible`, `not_reproduced`, `blocked`, and `inconclusive`.
+
+For example, a CS-NODE-022 source trace from a parsed WebSocket message into `registerUser` reports `static_source_to_sink_trace` but remains `not_verifiable` without an authorized adapter that can prove the deployed identity boundary. CS-NODE-023 may be protected by a proxy or network policy, and CS-NODE-024 may be bounded by the `ws` default payload limit. Neither finding is promoted from source evidence alone.
+
 The proof adapter registry is the single source of truth, queried through `resolveProofSupport`. Each finding reports:
 
 - `proofSupport`: `runtime` (a registered adapter handles this class), `requires-adapter` (a proof type exists but no executable adapter), or `static-only`.

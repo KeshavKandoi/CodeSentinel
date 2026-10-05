@@ -62,6 +62,7 @@ export interface AuditFinding {
   stages: AuditStage[];
   sources: FindingSource[];
   evidence: string[];
+  verification?: VerificationAssessment;
   classification: ProofClassification;
   proof: { receiptIds: string[]; status: ProofStatus | null; attempted: boolean; fromPriorReceipt: boolean; note: string | null };
   remediation: { status: RemediationLifecycle | null; remediationIds: string[] };
@@ -70,6 +71,20 @@ export interface AuditFinding {
   correlation?: FindingCorrelation;
   riskScore?: number;
   evidenceSynthesis?: string;
+}
+
+export interface VerificationAssessment {
+  findingId: string;
+  ruleIds: string[];
+  originalSeverity: Severity;
+  confidence: Confidence;
+  verificationStatus: 'not_verified' | 'verified' | 'not_verifiable' | 'verification_failed';
+  proofStatus: ProofClassStatus | null;
+  proofMethod: string;
+  evidence: string[];
+  limitations: string[];
+  safetyConstraints: string[];
+  receiptIds: string[];
 }
 
 export interface AuditIssue {
