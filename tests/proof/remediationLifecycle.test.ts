@@ -357,3 +357,42 @@ describe('Phase 10 remediation failure cleanup', () => {
     }
   });
 });
+
+describe('Phase 10 access-control replay origin binding', () => {
+  it('refuses to replay an access-control remediation when no verified original origin is recorded', async () => {
+    const accessFixture = fs.realpathSync(new URL('../fixtures/access-control-express', import.meta.url).pathname);
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codesentinel-access-origin-')));
+    roots.push(root);
+    fs.cpSync(accessFixture, root, { recursive: true });
+    const config: AppConfig = { projectRoot: root, commandTimeoutMs: 5000, maxOutputBytes: 1_000_000, maxReadFileBytes: 2_000_000, maxListResults: 2_000 };
+    const started = body(await tool('start_security_investigation').handler(config, { projectPath: root, scope: ['authentication', 'authorization'], hypothesis: 'Bind replay origin.' }));
+    const analyzed = body(await tool('run_security_analysis').handler(config, { investigationId: started.id }));
+    const finding = analyzed.findings.find((item: { origin: string }) => item.origin === 'access_control');
+    expect(finding).toBeDefined();
+    if (!finding) return;
+    const original = fs.readFileSync(path.join(root, 'src/app.ts'), 'utf8');
+    const proposal = body(await tool('propose_remediation').handler(config, {
+      investigationId: started.id,
+      findingId: finding.findingId,
+      description: 'Touch the file to exercise replay origin binding.',
+      rationale: 'The replay target must match a verified original origin.',
+      files: [{ path: 'src/app.ts', originalContentHash: crypto.createHash('sha256').update(original).digest('hex'), proposedContent: `${original}\nexport const reviewed = true;\n`, description: 'Marker export.' }],
+      expectedSecurityEffect: 'None; origin binding test.',
+      requiresRuntimeVerification: true,
+      runtimeVerification: { findingId: finding.findingId, target: { allowedOrigin: origin, minRequestIntervalMs: 0 }, sessions: [], sessionParams: {} },
+    }));
+    const applied = body(await tool('apply_remediation').handler(config, { remediationId: proposal.proposalId }));
+    expect(applied.status).toBe('applied_pending_verification');
+    const response = await tool('verify_remediation').handler(config, { remediationId: proposal.proposalId });
+    expect(response.isError).toBe(true);
+    expect(body(response).error).toBe('VERIFICATION_INCONCLUSIVE');
+    expect(body(response).message).toMatch(/origin of the original verified runtime result/);
+    const { getRemediation } = await import('../../src/remediation/engine.js');
+    const record = getRemediation(proposal.proposalId);
+    expect(record.ok).toBe(true);
+    if (record.ok) {
+      expect(record.data.status).toBe('verification_inconclusive');
+      expect(record.data.status).not.toBe('verified_resolved');
+    }
+  }, 30_000);
+});
