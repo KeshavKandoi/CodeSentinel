@@ -89,7 +89,7 @@ const SAFE_SOURCE_ADAPTERS: SourceProofAdapter[] = [
   { type: 'ssrf', categories: ['ssrf'], marker: 'CODESENTINEL_PROOF_SSRF_SENTINEL', requestValue: 'codesentinel-inert-probe', parameter: 'url', title: 'SSRF proof', notes: 'Requires a local fixture-controlled SSRF oracle; no external or metadata target is used.' },
   { type: 'sql_injection', categories: ['injection'], marker: 'CODESENTINEL_PROOF_SQLI_SENTINEL', requestValue: 'codesentinel-inert-probe', parameter: 'query', title: 'SQL injection proof', notes: 'Requires a local fixture-controlled semantic marker, never a generic SQL error.' },
   { type: 'command_injection', categories: ['command_injection'], marker: 'CODESENTINEL_PROOF_COMMAND_SENTINEL', requestValue: 'codesentinel-inert-probe', parameter: 'command', title: 'Command injection proof', notes: 'Requires a local fixture-controlled marker; CodeSentinel never executes the supplied value.' },
-  { type: 'xss_reflected', categories: ['xss'], marker: 'CODESENTINEL_PROOF_XSS_SENTINEL', parameter: 'q', title: 'Reflected XSS proof', notes: 'Verifies exact unencoded reflection of a unique inert marker, not script execution.' },
+  { type: 'xss_reflected', categories: ['xss'], marker: 'CODESENTINEL_PROOF_XSS_SENTINEL', requestValue: '<CODESENTINEL_PROOF_XSS_SENTINEL>', parameter: 'q', title: 'Reflected XSS proof', notes: 'Verifies exact unencoded reflection of a unique inert marker, not script execution.' },
   { type: 'jwt_verification', categories: ['authentication'], marker: 'invalid-signature-authorization', requestValue: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjb2Rlc2VudGluZWwifQ.invalid-signature', parameter: 'token', title: 'JWT verification proof', notes: 'Uses a deterministic invalid signature token and verifies the protected authorization behavior; decoded claims and markers are never treated as proof.', oracleKind: 'authorization_behavior', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-016' },
   { type: 'session_cookie_flags', categories: ['security_configuration'], marker: 'httponly,samesite,secure', parameter: 'probe', title: 'Session cookie flags proof', notes: 'Inspects only a redacted cookie-attribute summary; cookie names and values are never retained.', oracleKind: 'cookie_flags_incomplete', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-017' },
   { type: 'permissive_cors', categories: ['cors'], marker: 'access-control-allow-origin:*', parameter: 'origin', title: 'Permissive CORS proof', notes: 'Requires the actual response header to allow every origin; status alone is insufficient.', oracleKind: 'header_contains' },
@@ -361,7 +361,7 @@ async function executeSafeSourceProofCase(
     ? headerText.includes(adapter.marker.toLowerCase())
     : adapter.type === 'open_redirect'
       ? response.status >= 300 && response.status < 400 && location.includes(adapter.marker)
-      : response.bodySnippet.includes(adapter.marker);
+      : response.bodySnippet.includes(adapter.type === 'xss_reflected' ? contract.inertProbeValue : adapter.marker);
   if (proved) return { status: 'verified', proofCase, evidence, summary: `${adapter.title} genuine local behavioral/state oracle demonstrated the vulnerable behavior.` };
   if (response.status >= 200 && response.status < 300) return { status: 'not_reproduced', proofCase, evidence, summary: `${adapter.title} received a response without the required semantic oracle marker.` };
   return { status: 'not_reproduced', proofCase, evidence, summary: `${adapter.title} did not produce the required semantic oracle.` };
