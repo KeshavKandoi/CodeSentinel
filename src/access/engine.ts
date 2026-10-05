@@ -24,15 +24,6 @@ import type {
   ResourceOwnershipCheck,
 } from './types.js';
 
-/**
- * Phase 5 entry point: orchestrates the existing access/* building blocks
- * (controls.ts, identity.ts, ownership.ts, globals.ts, text.ts) into a
- * single normalized AnalyzeAccessControlResult. Consumes the Phase 4
- * AttackSurfaceEntry[] rather than rediscovering routes. Static and
- * read-only: never starts the application, sends requests, or executes
- * project code. Never asserts a finding is confirmed -- everything
- * produced here is `status: 'suspected'`, left for Phase 6 to verify.
- */
 
 const CONFIDENCE_RANK: Record<Confidence, number> = { low: 0, medium: 1, high: 2 };
 

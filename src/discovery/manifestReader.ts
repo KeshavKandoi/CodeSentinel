@@ -3,12 +3,6 @@ import { openRegularFileWithinRoot, resolveExistingWithinRoot } from '../fs/path
 
 export const MAX_MANIFEST_BYTES = 2_000_000;
 
-/**
- * All discovery file access goes through these helpers rather than raw
- * fs calls, so every read stays inside the Phase 1 sandbox (pathGuard) and
- * never throws — a missing or unreadable file just means "not detected",
- * never a crash.
- */
 
 export function fileExists(root: string, relPath: string): boolean {
   try {
@@ -53,9 +47,6 @@ export function readTextFile(root: string, relPath: string): string | null {
 
 export interface JsonReadResult<T> {
   data: T | null;
-  /** Set only when the file exists but failed to parse — a genuine
-   * problem worth surfacing as a ProjectProfile warning. A simply-missing
-   * file is not a warning: data is null and warning is null. */
   warning: string | null;
 }
 
@@ -65,7 +56,7 @@ export function readJsonFile<T = unknown>(root: string, relPath: string): JsonRe
     try {
       const abs = resolveExistingWithinRoot(root, relPath);
       if (fs.statSync(abs).size > MAX_MANIFEST_BYTES) return { data: null, warning: `${relPath} exceeds the ${MAX_MANIFEST_BYTES}-byte discovery limit; manifest metadata was not parsed.` };
-    } catch { /* missing or unreadable manifest */ }
+    } catch {  }
     return { data: null, warning: null };
   }
   try {

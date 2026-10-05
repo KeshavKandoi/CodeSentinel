@@ -1,17 +1,8 @@
-/**
- * Normalized, evidence-backed description of a project, produced by the
- * Phase 2 discovery module. Every detected technology carries the
- * confidence level and the concrete evidence that led to it, rather than
- * being asserted as a bare fact — callers (including an LLM consuming this
- * JSON) can see exactly why something was detected and how sure we are.
- */
 
 export type Confidence = 'high' | 'medium' | 'low';
 
 export interface Evidence {
-  /** Where this evidence came from, e.g. "package.json dependencies", "file:next.config.js", "content-match". */
   source: string;
-  /** Human-readable detail of what was found. */
   detail: string;
 }
 
@@ -40,8 +31,6 @@ export interface DockerInfo {
   evidence: Evidence[];
 }
 
-/** Broad project ecosystem. Node security rules are implemented; Python,
- * Go, and Rust markers are recognized but have no static security rules. */
 export type Ecosystem = 'node' | 'python' | 'go' | 'rust' | 'unknown';
 
 export interface ProjectProfile {
@@ -63,11 +52,7 @@ export interface ProjectProfile {
   docker: DockerInfo;
   configFiles: string[];
   envFiles: string[];
-  /** Authentication-related dependencies detected (e.g. jsonwebtoken,
-   * passport, next-auth). Presence only — no vulnerability analysis. */
   authIndicators: DetectedItem[];
-  /** Non-fatal issues encountered during discovery (e.g. malformed
-   * package.json). Discovery never throws; problems surface here instead. */
   warnings: string[];
 }
 

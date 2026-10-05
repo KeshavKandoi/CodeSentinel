@@ -1,12 +1,3 @@
-/**
- * Minimal structured logger.
- *
- * All MCP servers talking over stdio MUST NOT write logs to stdout, since
- * stdout is the JSON-RPC transport channel. Everything goes to stderr.
- *
- * Logger also redacts values that look like secrets (API keys, tokens,
- * passwords, bearer headers) before they are ever serialized.
- */
 
 import { redactReportValue } from './report/redaction.js';
 
@@ -50,7 +41,6 @@ function write(level: LogLevel, message: string, meta?: Record<string, unknown>)
     message,
     ...(meta ? { meta: redactObject(meta) } : {}),
   };
-  // Always stderr — never stdout (reserved for MCP JSON-RPC transport).
   process.stderr.write(JSON.stringify(entry) + '\n');
 }
 

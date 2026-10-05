@@ -1,5 +1,3 @@
-/** Result envelope every tool implementation returns internally, before
- * being adapted into the MCP tool response format. */
 export interface ToolResult<T> {
   ok: true;
   data: T;
@@ -54,7 +52,7 @@ export function err<T>(code: ToolErrorCode, message: string): ToolOutcome<T> {
 }
 
 export interface FileEntry {
-  path: string; // relative to project root, POSIX-style separators
+  path: string;
   type: 'file' | 'directory';
   sizeBytes?: number;
 }

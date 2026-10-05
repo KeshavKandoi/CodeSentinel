@@ -11,8 +11,6 @@ export interface NodeAnalysisContext {
   root: string;
   pkg: PackageJsonShape | null;
   pkgWarning: string | null;
-  /** dependencies + devDependencies merged into one lookup, tagged with
-   * whether each came from devDependencies. dependencies wins on conflict. */
   allDeps: Record<string, { version: string; dev: boolean }>;
 }
 

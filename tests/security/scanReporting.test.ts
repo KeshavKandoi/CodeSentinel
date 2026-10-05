@@ -1,3 +1,4 @@
+import { testCredential } from '../testCredentials.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -34,7 +35,7 @@ it('reports an honest clean Node scan with coverage, rule counts, and no target 
 it('serializes a source-backed finding with impact, remediation, and static verification state', async () => {
   const project = makeFixtureProject();
   projects.push(project);
-  fs.writeFileSync(path.join(project.root, 'src/config.ts'), 'const apiKey = "sk_live_X7d2pN8qR4vK6mT9wY3z";\n');
+  fs.writeFileSync(path.join(project.root, 'src/config.ts'), `const apiKey = "${testCredential('STRIPE_KEY')}";\n`);
   const scan = await scanProject(project.config);
   if (!scan.ok) throw new Error(scan.error.message);
   const finding = scan.data.findings.find(item => item.ruleId === 'CS-NODE-001');

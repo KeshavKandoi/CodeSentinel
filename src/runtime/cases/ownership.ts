@@ -4,17 +4,6 @@ import { issueRuntimeRequest, RuntimeClientState } from '../httpClient.js';
 import type { RuntimeTarget, TestSession, VerificationCase, VerificationResult } from '../types.js';
 import { blockedResult, buildResult, hasUnresolvedSegment, isAuthRejection, isNotFound, isSuccessStatus, writeChangedState } from './common.js';
 
-/**
- * Case 4: Ownership candidate.
- *
- * Distinct from Case 2 (IDOR/BOLA -- "can a stranger reach this resource at
- * all") in intent: this case exists for routes Phase 5 classified as
- * ownership-relevant where the finding is about confirming ownership
- * restrictions are actually enforced end-to-end (used to positively confirm
- * `ownership_protected` classifications hold at runtime, not only to catch
- * their absence). Mechanically the request/response evaluation is the same
- * conservative shape as Case 2.
- */
 
 export function buildOwnershipCase(
   finding: AccessControlFinding,

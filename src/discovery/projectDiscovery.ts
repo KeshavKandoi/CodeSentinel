@@ -3,17 +3,6 @@ import { emptyProjectProfile } from './types.js';
 import { dirExists, fileExists, listTopLevelNames } from './manifestReader.js';
 import { runNodeDiscovery } from './node/nodeDiscovery.js';
 
-/**
- * Top-level entry point for Phase 2 discovery. Determines which ecosystem
- * a project belongs to using cheap, deterministic marker-file checks, then
- * dispatches to an ecosystem-specific discovery pipeline.
- *
- * Adding a new ecosystem (e.g. Python) means: (1) add its marker files to
- * detectEcosystem, (2) implement a sibling `runPythonDiscovery(root)` under
- * `src/discovery/python/` mirroring the shape of `runNodeDiscovery`, and
- * (3) add one dispatch branch below. No changes to existing Node detectors,
- * types, or the MCP tool layer are required.
- */
 
 function detectEcosystem(root: string): Ecosystem {
   if (fileExists(root, 'package.json')) return 'node';
@@ -38,9 +27,6 @@ export function runProjectDiscovery(root: string): ProjectProfile {
   }
 
   if (ecosystem === 'python') {
-    // Python/FastAPI/Django support is intentionally deferred to a later
-    // phase. We still report ecosystem detection honestly rather than
-    // silently returning an empty/misleading profile.
     const profile = emptyProjectProfile();
     profile.ecosystem = 'python';
     profile.warnings.push(
