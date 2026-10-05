@@ -29,10 +29,12 @@ function isIgnoredSourceFile(rel: string): boolean {
 export function createAdapterContext(config: AppConfig, profile: ProjectProfile, warnings: string[]): AdapterContext {
   const root = config.projectRoot;
   let allFiles: string[] | null = null;
+  let depthLimited = false;
   const cache = new Map<string, SourceFile | null>();
 
   const walk = (rel: string, depth: number, out: string[]): void => {
-    if (depth > MAX_DEPTH || out.length >= MAX_FILES) return;
+    if (depth > MAX_DEPTH) { depthLimited = true; return; }
+    if (out.length >= MAX_FILES) return;
     const names = listTopLevelNames(root, rel === '' ? '.' : rel).slice().sort();
     for (const name of names) {
       if (out.length >= MAX_FILES) return;
@@ -63,6 +65,7 @@ export function createAdapterContext(config: AppConfig, profile: ProjectProfile,
         if (out.length >= MAX_FILES) {
           warnings.push(`File walk stopped after ${MAX_FILES} files; some source files were not analyzed.`);
         }
+        if (depthLimited) warnings.push(`File walk reached the ${MAX_DEPTH}-directory depth limit; deeper source files were not analyzed.`);
         allFiles = out.filter((f) => !isIgnoredSourceFile(f));
       }
       return allFiles.filter((f) => extensions.some((ext) => f.endsWith(ext)));

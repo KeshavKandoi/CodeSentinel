@@ -57,6 +57,7 @@ export interface SecurityProofCase {
 export interface SecurityReceipt {
   receiptId: string;
   findingId: string;
+  projectKey?: string;
   proofCase: SecurityProofCase;
   status: ProofStatus;
   redactedRequest: { method: string; path: string; sessionId: string | null } | null;

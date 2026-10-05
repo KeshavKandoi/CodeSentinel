@@ -151,6 +151,7 @@ export async function runSecurityAnalysis(config: AppConfig, investigationId: st
   return withInvestigationLock(investigationId, async () => {
     const state = get(investigationId);
     if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${investigationId}" was not found.`);
+    if (boundary(config, state.investigation.projectPath)) return err('PATH_OUTSIDE_ROOT', 'The investigation belongs to another project root.');
     if (state.investigation.execution.operations.includes('static-analysis')) {
       if (state.investigation.status === 'failed') return err('ANALYSIS_FAILED', 'Deterministic security analysis previously failed for this investigation.');
       if (state.investigation.status === 'blocked') return err('BUDGET_EXCEEDED', 'Investigation analysis was previously blocked by its budget.');
@@ -220,6 +221,7 @@ export async function recordHypothesis(config: AppConfig, input: { investigation
   return withInvestigationLock(input.investigationId, async () => {
     const state = get(input.investigationId);
     if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${input.investigationId}" was not found.`);
+    if (boundary(config, state.investigation.projectPath)) return err('PATH_OUTSIDE_ROOT', 'The investigation belongs to another project root.');
     if (state.investigation.status !== 'awaiting_verification') return err('INVALID_TRANSITION', `A hypothesis cannot be recorded from status "${state.investigation.status}".`);
     const elapsed = checkTime(state);
     if (elapsed) return err('BUDGET_EXCEEDED', elapsed);
@@ -250,6 +252,7 @@ export async function requestRuntimeVerification(config: AppConfig, input: Verif
   return withInvestigationLock(input.investigationId, async () => {
     const state = get(input.investigationId);
     if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${input.investigationId}" was not found.`);
+    if (boundary(config, state.investigation.projectPath)) return err('PATH_OUTSIDE_ROOT', 'The investigation belongs to another project root.');
     if (state.investigation.status !== 'awaiting_verification') return err('INVALID_TRANSITION', `Runtime verification cannot start from status "${state.investigation.status}".`);
     const hypothesis = state.investigation.hypotheses.find((item) => item.id === input.hypothesisId);
     if (!hypothesis) return err('HYPOTHESIS_NOT_FOUND', `Hypothesis "${input.hypothesisId}" was not found in this investigation.`);
@@ -300,9 +303,10 @@ export async function requestRuntimeVerification(config: AppConfig, input: Verif
   });
 }
 
-export function getInvestigation(investigationId: string): ToolOutcome<SecurityInvestigation> {
+export function getInvestigation(investigationId: string, config?: AppConfig): ToolOutcome<SecurityInvestigation> {
   const state = get(investigationId);
   if (!state) return err('INVESTIGATION_NOT_FOUND', `Investigation "${investigationId}" was not found.`);
+  if (config && boundary(config, state.investigation.projectPath)) return err('PATH_OUTSIDE_ROOT', 'The investigation belongs to another project root.');
   return ok(detachedRedacted(state.investigation));
 }
 

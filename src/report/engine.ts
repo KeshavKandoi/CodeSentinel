@@ -9,6 +9,7 @@ import { canonicalCategory, createFinding, normalizeFile, safeText, synthesizeEv
 import { calculateRiskScore } from '../audit/scoring.js';
 import type { AuditFinding, FindingStatus } from '../audit/types.js';
 import type { RemediationRecord } from '../remediation/types.js';
+import type { AppConfig } from '../config.js';
 
 const SEVERITY_ORDER: Record<SecurityReportFinding['severity'], number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 const STATUS_ORDER: Record<ReportFindingStatus, number> = { runtime_verified: 0, static_candidate: 1, inconclusive: 2, blocked: 3, not_reproduced: 4 };
@@ -149,20 +150,20 @@ function buildReport(investigation: SecurityInvestigation): ToolOutcome<Security
     runtimeVerificationSummary: { attempted: runtime.length, verified: runtime.filter((item) => item.status === 'verified').length, notReproduced: runtime.filter((item) => item.status === 'not_reproduced').length, inconclusive: runtime.filter((item) => item.status === 'inconclusive').length, blocked: runtime.filter((item) => item.status === 'blocked').length },
     limitations: ['Static findings are candidates unless runtime evidence directly establishes the security condition.', 'Generic successful reads and unresolved dynamic resources remain inconclusive or blocked.', 'Remediation status is included only after controlled validation, re-analysis, and authorized runtime verification; source edits alone are not proof.'],
     remediations: records,
-    securityReceipts: findings.flatMap((finding) => listSecurityReceiptsForFinding(finding.findingId)),
+    securityReceipts: findings.flatMap((finding) => listSecurityReceiptsForFinding(finding.findingId, investigation.projectPath)),
   };
   return ok(detachedRedacted(report));
 }
 
-export function generateSecurityReport(investigationId: string): ToolOutcome<SecurityReport> {
-  const result = getInvestigation(investigationId);
+export function generateSecurityReport(investigationId: string, config?: AppConfig): ToolOutcome<SecurityReport> {
+  const result = getInvestigation(investigationId, config);
   if (!result.ok) return result;
   if (result.data.status !== 'completed') return err('INVESTIGATION_INCOMPLETE', `Investigation "${investigationId}" is "${result.data.status}"; complete the required workflow before generating a final report.`);
   return buildReport(result.data);
 }
 
-export function getSecurityFinding(investigationId: string, findingId: string): ToolOutcome<SecurityReportFinding> {
-  const result = getInvestigation(investigationId);
+export function getSecurityFinding(investigationId: string, findingId: string, config?: AppConfig): ToolOutcome<SecurityReportFinding> {
+  const result = getInvestigation(investigationId, config);
   if (!result.ok) return result;
   const finding = result.data.findings.find((item) => item.findingId === findingId);
   if (!finding) return err('REPORT_FINDING_NOT_FOUND', `Finding "${findingId}" was not found in investigation "${investigationId}".`);

@@ -1,5 +1,7 @@
 import fs from 'node:fs';
-import { resolveExistingWithinRoot } from '../fs/pathGuard.js';
+import { openRegularFileWithinRoot, resolveExistingWithinRoot } from '../fs/pathGuard.js';
+
+export const MAX_MANIFEST_BYTES = 2_000_000;
 
 /**
  * All discovery file access goes through these helpers rather than raw
@@ -29,8 +31,21 @@ export function dirExists(root: string, relPath: string): boolean {
 export function readTextFile(root: string, relPath: string): string | null {
   try {
     const abs = resolveExistingWithinRoot(root, relPath);
-    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
-    return fs.readFileSync(abs, 'utf-8');
+    const opened = openRegularFileWithinRoot(root, abs);
+    if (!opened.ok) return null;
+    try {
+      if (opened.size > MAX_MANIFEST_BYTES) return null;
+      const buffer = Buffer.alloc(opened.size);
+      let offset = 0;
+      while (offset < buffer.length) {
+        const read = fs.readSync(opened.fd, buffer, offset, buffer.length - offset, offset);
+        if (read === 0) return null;
+        offset += read;
+      }
+      return buffer.toString('utf8');
+    } finally {
+      fs.closeSync(opened.fd);
+    }
   } catch {
     return null;
   }
@@ -47,6 +62,10 @@ export interface JsonReadResult<T> {
 export function readJsonFile<T = unknown>(root: string, relPath: string): JsonReadResult<T> {
   const text = readTextFile(root, relPath);
   if (text === null) {
+    try {
+      const abs = resolveExistingWithinRoot(root, relPath);
+      if (fs.statSync(abs).size > MAX_MANIFEST_BYTES) return { data: null, warning: `${relPath} exceeds the ${MAX_MANIFEST_BYTES}-byte discovery limit; manifest metadata was not parsed.` };
+    } catch { /* missing or unreadable manifest */ }
     return { data: null, warning: null };
   }
   try {

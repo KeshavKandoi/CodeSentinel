@@ -114,7 +114,12 @@ function safeRecord(record: RemediationRecord): RemediationRecord {
     snapshots: record.snapshots.map((snapshot) => ({ ...snapshot, originalContent: '[SNAPSHOT CONTENT NOT RETURNED]' })),
   });
 }
-function currentInvestigation(id: string): ToolOutcome<SecurityInvestigation> { return getInvestigation(id); }
+function currentInvestigation(config: AppConfig, id: string): ToolOutcome<SecurityInvestigation> {
+  const result = getInvestigation(id);
+  if (!result.ok) return result;
+  if (path.resolve(result.data.projectPath) !== path.resolve(config.projectRoot)) return err('PATH_OUTSIDE_ROOT', 'The remediation belongs to another project root.');
+  return result;
+}
 
 function freezeProposal(proposal: RemediationProposal): RemediationProposal {
   for (const file of proposal.files) Object.freeze(file);
@@ -124,7 +129,7 @@ function freezeProposal(proposal: RemediationProposal): RemediationProposal {
 
 export async function proposeRemediation(config: AppConfig, input: ProposeRemediationInput): Promise<ToolOutcome<RemediationProposal>> {
   return withLock(proposalLockKey(input), async () => {
-    const investigationResult = currentInvestigation(input.investigationId);
+    const investigationResult = currentInvestigation(config, input.investigationId);
     if (!investigationResult.ok) return investigationResult;
     const investigation = investigationResult.data;
     const finding = findingFor(investigation, input.findingId);
@@ -168,7 +173,7 @@ export async function applyRemediation(config: AppConfig, remediationId: string)
   return withLock(lockKey(existing), async () => {
     const record = records.get(remediationId)!;
     if (record.status !== 'validated' && record.status !== 'proposed') return err('INVALID_TRANSITION', `Remediation cannot be applied from status "${record.status}".`);
-    const investigation = currentInvestigation(record.proposal.investigationId);
+    const investigation = currentInvestigation(config, record.proposal.investigationId);
     if (!investigation.ok) return investigation;
     if (!findingFor(investigation.data, record.proposal.findingId)) return err('REPORT_FINDING_NOT_FOUND', `Finding "${record.proposal.findingId}" is no longer present in the authorized investigation.`);
     const checked: Array<{ change: RemediationFileChange; absolute: string; content: string; proposedHash: string; mode: number }> = [];
@@ -256,8 +261,8 @@ export async function applyRemediation(config: AppConfig, remediationId: string)
     record.status = 'applied_pending_verification'; record.updatedAt = now();
     const appliedFinding = findingFor(investigation.data, record.proposal.findingId);
     if (record.proposal.requiresRuntimeVerification && appliedFinding?.origin === 'security_scan') {
-      const originalReceipt = listSecurityReceiptsForFinding(record.proposal.findingId).find((receipt) => receipt.status === 'verified');
-      if (originalReceipt) linkSecurityReceiptToRemediation(record.proposal.findingId, originalReceipt.receiptId, remediationId);
+      const originalReceipt = listSecurityReceiptsForFinding(record.proposal.findingId, config.projectRoot).find((receipt) => receipt.status === 'verified');
+      if (originalReceipt) linkSecurityReceiptToRemediation(record.proposal.findingId, originalReceipt.receiptId, remediationId, config.projectRoot);
     }
     record.updatedAt = now();
     return ok(safeRecord(record));
@@ -292,6 +297,8 @@ async function verifyRemediationInner(config: AppConfig, remediationId: string):
   if (!existing) return err('REMEDIATION_NOT_FOUND', `Remediation "${remediationId}" was not found.`);
   return withLock(lockKey(existing), () => guardVerification(remediationId, async () => {
     const record = records.get(remediationId)!;
+    const before = currentInvestigation(config, record.proposal.investigationId);
+    if (!before.ok) return before;
     if (record.status !== 'applied_pending_verification' && record.status !== 'verification_inconclusive' && record.status !== 'changed_finding' && record.status !== 'still_vulnerable') return err('INVALID_TRANSITION', `Remediation cannot be verified from status "${record.status}".`);
     const drifted = Object.entries(record.appliedContentHashes).some(([file, expected]) => { try { return sha256(fs.readFileSync(resolveExistingWithinRoot(config.projectRoot, file))) !== expected; } catch { return true; } });
     if (drifted || record.integrity === null) {
@@ -299,8 +306,6 @@ async function verifyRemediationInner(config: AppConfig, remediationId: string):
       return err('VERIFICATION_INCONCLUSIVE', 'The applied files no longer match the recorded post-remediation fingerprint; verification cannot justify resolution.');
     }
     record.status = 'verifying'; record.updatedAt = now();
-    const before = currentInvestigation(record.proposal.investigationId);
-    if (!before.ok) return before;
     const started = startInvestigation(config, { projectPath: config.projectRoot, scope: before.data.scope, hypothesis: `Re-analysis for remediation ${remediationId}` });
     if (!started.ok) return started;
     const analyzed = await runSecurityAnalysis(config, started.data.id);
@@ -313,7 +318,7 @@ async function verifyRemediationInner(config: AppConfig, remediationId: string):
     let runtimeReceiptId: string | null = null;
     if (record.proposal.requiresRuntimeVerification && record.proposal.runtimeVerification) {
       if (originalFinding.origin === 'security_scan') {
-        const priorReceipt = listSecurityReceiptsForFinding(record.proposal.findingId).find((receipt) => receipt.status === 'verified');
+        const priorReceipt = listSecurityReceiptsForFinding(record.proposal.findingId, config.projectRoot).find((receipt) => receipt.status === 'verified');
         if (!priorReceipt) {
           record.status = 'verification_inconclusive';
           record.updatedAt = now();
@@ -338,7 +343,7 @@ async function verifyRemediationInner(config: AppConfig, remediationId: string):
         runtimeStatus = runtime.data.result.status;
       }
     }
-    const originalVerified = originalFinding.lifecycle === 'runtime_verified' || listSecurityReceiptsForFinding(record.proposal.findingId).some((receipt) => receipt.status === 'verified' && receipt.replayOfReceiptId === null);
+    const originalVerified = originalFinding.lifecycle === 'runtime_verified' || listSecurityReceiptsForFinding(record.proposal.findingId, config.projectRoot).some((receipt) => receipt.status === 'verified' && receipt.replayOfReceiptId === null);
     const replaySafe = runtimeStatus === 'not_reproduced' && originalVerified;
     const replayResult: ReplayResult = originalPresent || runtimeStatus === 'verified' ? 'still_present' : runtimeStatus === 'blocked' ? 'blocked' : related.length === 0 && replaySafe && record.proposal.requiresRuntimeVerification ? 'resolved' : 'inconclusive';
     const status: RemediationLifecycle = originalPresent ? 'still_vulnerable' : related.length > 0 ? 'changed_finding' : !record.proposal.requiresRuntimeVerification ? 'verification_inconclusive' : !replaySafe ? 'verification_inconclusive' : 'verified_resolved';
@@ -351,6 +356,8 @@ export async function rollbackRemediation(config: AppConfig, remediationId: stri
   const existing = records.get(remediationId); if (!existing) return err('REMEDIATION_NOT_FOUND', `Remediation "${remediationId}" was not found.`);
   return withLock(lockKey(existing), async () => {
     const record = records.get(remediationId)!;
+    const investigation = currentInvestigation(config, record.proposal.investigationId);
+    if (!investigation.ok) return investigation;
     if (record.status === 'rolled_back') return err('INVALID_TRANSITION', 'This remediation has already been rolled back.');
     if (record.snapshots.length === 0 || Object.keys(record.appliedContentHashes).length !== record.snapshots.length) return err('REMEDIATION_INVALID', 'No complete remediation snapshot is available for rollback.');
     for (const snapshot of record.snapshots) {

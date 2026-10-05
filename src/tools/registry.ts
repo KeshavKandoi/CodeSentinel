@@ -376,10 +376,10 @@ const coreToolDefinitions: ToolDefinition[] = [
     name: 'get_investigation',
     description: 'Return bounded, redacted state and evidence for one Phase 7 security investigation.',
     inputSchema: { type: 'object', properties: { investigationId: { type: 'string' } }, required: ['investigationId'] },
-    handler: async (_config, rawInput) => {
+    handler: async (config, rawInput) => {
       const validation = safeValidate(getInvestigationSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
-      return toMcpResponse(getInvestigation(validation.data.investigationId));
+      return toMcpResponse(getInvestigation(validation.data.investigationId, config));
     },
   },
   {
@@ -426,11 +426,11 @@ const coreToolDefinitions: ToolDefinition[] = [
     name: 'generate_security_report',
     description: 'Generate a bounded, deterministic, evidence-traceable Phase 8 security report and remediation plan for a completed investigation. It never modifies source code or calls an LLM.',
     inputSchema: { type: 'object', properties: { investigationId: { type: 'string' } }, required: ['investigationId'] },
-    handler: async (_config, rawInput) => {
+    handler: async (config, rawInput) => {
       const validation = safeValidate(generateSecurityReportSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
       try {
-        return toMcpResponse(generateSecurityReport(validation.data.investigationId));
+        return toMcpResponse(generateSecurityReport(validation.data.investigationId, config));
       } catch (e) {
         logger.error('generate_security_report_failed', { message: (e as Error).message });
         return toMcpResponse(err('INTERNAL_ERROR', 'Security report generation failed unexpectedly.'));
@@ -441,11 +441,11 @@ const coreToolDefinitions: ToolDefinition[] = [
     name: 'get_security_finding',
     description: 'Return one bounded finding-focused view from an investigation, including traceable evidence and deterministic remediation guidance.',
     inputSchema: { type: 'object', properties: { investigationId: { type: 'string' }, findingId: { type: 'string' } }, required: ['investigationId', 'findingId'] },
-    handler: async (_config, rawInput) => {
+    handler: async (config, rawInput) => {
       const validation = safeValidate(getSecurityFindingSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
       try {
-        return toMcpResponse(getSecurityFinding(validation.data.investigationId, validation.data.findingId));
+        return toMcpResponse(getSecurityFinding(validation.data.investigationId, validation.data.findingId, config));
       } catch (e) {
         logger.error('get_security_finding_failed', { message: (e as Error).message });
         return toMcpResponse(err('INTERNAL_ERROR', 'Security finding retrieval failed unexpectedly.'));

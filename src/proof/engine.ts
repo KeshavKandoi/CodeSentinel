@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import type { AppConfig } from '../config.js';
 import { analyzeAccessControl } from '../access/engine.js';
 import { discoverRoutes } from '../routes/engine.js';
@@ -20,14 +21,16 @@ import type { ProofCaseType, ProofReplayContract, SecurityGraph, SecurityGraphEd
 import { PROOF_CASE_TYPES } from './types.js';
 
 const hash = (value: string): string => crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
+const projectKeyFor = (root: string): string => hash(fs.realpathSync(root));
 const receipts = new Map<string, import('./types.js').SecurityReceipt>();
 const MAX_PROOF_ATTEMPTS_PER_FINDING = 10;
 const MAX_PROOF_ATTEMPTS_TOTAL = 500;
 const proofAttempts = new Map<string, number>();
 let totalProofAttempts = 0;
 const MAX_STORED_RECEIPTS = 2000;
-function storeReceipt(receipt: SecurityReceipt): SecurityReceipt {
-  const stored = detachedRedacted(receipt);
+function storeReceipt(receipt: SecurityReceipt, projectRoot: string, targetOrigin = receipt.targetOrigin ?? ''): SecurityReceipt {
+  const projectKey = projectKeyFor(projectRoot);
+  const stored = detachedRedacted({ ...receipt, receiptId: `${receipt.receiptId}-${hash(`${projectKey}|${targetOrigin}`)}`, projectKey });
   if (!receipts.has(stored.receiptId) && receipts.size >= MAX_STORED_RECEIPTS) {
     const oldest = receipts.keys().next().value;
     if (oldest !== undefined) receipts.delete(oldest);
@@ -178,22 +181,24 @@ function receiptForBlocked(findingId: string, proofCase: SecurityProofCase, reas
   return { receiptId: `receipt-${hash(`${findingId}|${proofCase.id}|${reason}`)}`, findingId, proofCase, status: 'blocked', redactedRequest: null, responseFacts: [], oracle: 'blocked', whyProven: '', sourceRefs, evidenceRefs: [], remediationRef: null, reVerification: { status: null, receiptId: null }, replayContract: null, replayOfReceiptId: null, beforeAfter: null, limitation: reason };
 }
 
-export function listSecurityReceiptsForFinding(findingId: string): SecurityReceipt[] {
-  return [...receipts.values()].filter((receipt) => receipt.findingId === findingId).map((receipt) => detachedRedacted(receipt));
+export function listSecurityReceiptsForFinding(findingId: string, projectRoot?: string): SecurityReceipt[] {
+  const projectKey = projectRoot === undefined ? null : projectKeyFor(projectRoot);
+  return [...receipts.values()].filter((receipt) => receipt.findingId === findingId && (projectKey === null || receipt.projectKey === projectKey)).map((receipt) => detachedRedacted(receipt));
 }
 
-export function linkSecurityReceiptToRemediation(findingId: string, receiptId: string, remediationId: string): ToolOutcome<SecurityReceipt> {
+export function linkSecurityReceiptToRemediation(findingId: string, receiptId: string, remediationId: string, projectRoot?: string): ToolOutcome<SecurityReceipt> {
   const receipt = receipts.get(receiptId);
-  if (!receipt || receipt.findingId !== findingId || receipt.status !== 'verified') return err('VERIFICATION_INCONCLUSIVE', 'A verified original receipt is required before it can be bound to remediation.');
+  if (!receipt || receipt.findingId !== findingId || receipt.status !== 'verified' || (projectRoot !== undefined && receipt.projectKey !== projectKeyFor(projectRoot))) return err('VERIFICATION_INCONCLUSIVE', 'A verified original receipt is required before it can be bound to remediation.');
   if (receipt.remediationRef && receipt.remediationRef !== remediationId) return err('VERIFICATION_INCONCLUSIVE', 'The original receipt is already bound to a different remediation.');
   const linked = detachedRedacted({ ...receipt, remediationRef: remediationId });
   receipts.set(receiptId, linked);
   return ok(detachedRedacted(linked));
 }
 
-export function isTrustedVerifiedReceipt(receipt: SecurityReceipt, adapterType: ProofCaseType | null, targetOrigin?: string): boolean {
+export function isTrustedVerifiedReceipt(receipt: SecurityReceipt, adapterType: ProofCaseType | null, targetOrigin?: string, projectRoot?: string): boolean {
   const stored = receipts.get(receipt.receiptId);
   if (!stored || stored.status !== 'verified' || stored.findingId !== receipt.findingId) return false;
+  if (!stored.projectKey || receipt.projectKey !== stored.projectKey || (projectRoot !== undefined && stored.projectKey !== projectKeyFor(projectRoot))) return false;
   if (stored.targetOrigin === undefined || receipt.targetOrigin !== stored.targetOrigin) return false;
   if (targetOrigin !== undefined && stored.targetOrigin !== targetOrigin) return false;
   if (stored.proofCase.id !== receipt.proofCase.id || stored.proofCase.type !== receipt.proofCase.type || stored.whyProven !== receipt.whyProven) return false;
@@ -412,15 +417,17 @@ export async function replaySecurityProof(
   const adapter = registered && !('execute' in registered) ? registered : null;
   const original = receipts.get(originalReceipt.receiptId);
   if (!adapter || !original || original.status !== 'verified' || originalReceipt.status !== 'verified') return err('UNSUPPORTED_CANDIDATE_TYPE', 'Only a previously verified source proof receipt can be replayed by the proof engine.');
+  if (original.projectKey !== projectKeyFor(config.projectRoot) || originalReceipt.projectKey !== original.projectKey) return err('VERIFICATION_INCONCLUSIVE', 'The original receipt belongs to another project.');
   if (original.findingId !== originalReceipt.findingId || original.findingId !== request.findingId || original.remediationRef !== originalReceipt.remediationRef || original.remediationRef !== remediationId) return err('VERIFICATION_INCONCLUSIVE', 'The replay requires a verified original receipt already bound to this remediation.');
   if (!original.replayContract || JSON.stringify(original.replayContract) !== JSON.stringify(originalReceipt.replayContract)) return err('VERIFICATION_INCONCLUSIVE', 'The supplied original receipt replay contract does not match the persisted contract.');
   if (original.targetOrigin === undefined || original.targetOrigin !== request.target.allowedOrigin) return err('VERIFICATION_INCONCLUSIVE', 'The original receipt was not created for this target origin.');
   const execution = await executeSafeSourceProofCase(request, original.proofCase, adapter, original.replayContract);
   const replay = sourceReceipt(request.findingId, execution, original.sourceRefs, [...original.evidenceRefs, `remediation:${remediationId}`], remediationId, original.replayContract, original.receiptId, { beforeStatus: original.status, afterStatus: execution.status });
+  const storedReplay = storeReceipt({ ...replay, targetOrigin: request.target.allowedOrigin, executedAt: new Date().toISOString() }, config.projectRoot);
   if (original) {
-    receipts.set(original.receiptId, detachedRedacted({ ...original, remediationRef: remediationId, reVerification: { status: replay.status, receiptId: replay.receiptId } }));
+    receipts.set(original.receiptId, detachedRedacted({ ...original, remediationRef: remediationId, reVerification: { status: storedReplay.status, receiptId: storedReplay.receiptId } }));
   }
-  return ok(storeReceipt({ ...replay, targetOrigin: request.target.allowedOrigin, executedAt: new Date().toISOString() }));
+  return ok(storedReplay);
 }
 
 export async function proveSecurityFinding(config: AppConfig, request: VerifyFindingRequest): Promise<ToolOutcome<SecurityReceipt>> {
@@ -438,33 +445,34 @@ async function proveSecurityFindingInner(config: AppConfig, request: VerifyFindi
   const proofCase = cases.find((item) => item.findingId === request.findingId);
   const candidate = proofCase ? null : await findStaticCandidate(config, request.findingId);
   if (!proofCase && !candidate && !(await isKnownFinding(config, request.findingId))) return err('NOT_FOUND', 'No finding was found for the supplied finding id.');
-  const used = proofAttempts.get(request.findingId) ?? 0;
+  const attemptKey = `${projectKeyFor(config.projectRoot)}:${request.findingId}`;
+  const used = proofAttempts.get(attemptKey) ?? 0;
   if (used >= MAX_PROOF_ATTEMPTS_PER_FINDING || totalProofAttempts >= MAX_PROOF_ATTEMPTS_TOTAL) return err('BUDGET_EXCEEDED', 'The bounded proof attempt budget for this finding or process has been exhausted.');
-  proofAttempts.set(request.findingId, used + 1);
+  proofAttempts.set(attemptKey, used + 1);
   totalProofAttempts += 1;
   if (!proofCase) {
     if (!candidate) {
       const receipt = receiptForBlocked(request.findingId, metadata('sql_injection', request.findingId), 'No executable proof adapter was established from the current route/static inventory.');
-      return ok(storeReceipt(receipt));
+      return ok(storeReceipt(receipt, config.projectRoot, request.target.allowedOrigin));
     }
     const execution = await executeSafeSourceProof(config, request, candidate);
     const safe = sourceReceipt(request.findingId, execution, [`${candidate.finding.file}:${candidate.finding.line ?? 0}`, `${candidate.entry.file}:${candidate.entry.line}`], [`static:${candidate.finding.id}`, `route:${candidate.entry.id}`], null, replayContractFor(execution.proofCase, candidate.adapter, request.target, proofParameter(candidate.entry, candidate.adapter), candidate.adapter.requestValue ?? candidate.adapter.marker));
-    return ok(storeReceipt(safe));
+    return ok(storeReceipt(safe, config.projectRoot, request.target.allowedOrigin));
   }
   const adapter = registeredAdapter(proofCase.type);
   if (!adapter || !('execute' in adapter)) {
     const receipt = receiptForBlocked(request.findingId, proofCase, `No executable adapter is registered for proof type "${proofCase.type}".`);
-    return ok(storeReceipt(receipt));
+    return ok(storeReceipt(receipt, config.projectRoot, request.target.allowedOrigin));
   }
-  if (!isLocalProofTarget(request.target)) return ok(storeReceipt(receiptForBlocked(request.findingId, proofCase, 'Proof adapters only execute against localhost or loopback targets.', [request.findingId])));
+  if (!isLocalProofTarget(request.target)) return ok(storeReceipt(receiptForBlocked(request.findingId, proofCase, 'Proof adapters only execute against localhost or loopback targets.', [request.findingId]), config.projectRoot, request.target.allowedOrigin));
   const result = await adapter.execute(config, request);
-  if (!result.ok) { const receipt = receiptForBlocked(request.findingId, proofCase, result.error.message, [request.findingId]); return ok(storeReceipt(receipt)); }
+  if (!result.ok) { const receipt = receiptForBlocked(request.findingId, proofCase, result.error.message, [request.findingId]); return ok(storeReceipt(receipt, config.projectRoot, request.target.allowedOrigin)); }
   const verification = result.data.result;
   const status = verification.status === 'verified' || verification.status === 'not_reproduced' || verification.status === 'inconclusive' || verification.status === 'blocked' ? verification.status : 'inconclusive';
   const responseFacts = verification.evidence.map((item) => ({ status: item.response.status, headers: item.response.headers, bodySnippet: item.response.bodySnippet, finalUrl: item.response.finalUrl }));
   const receipt: SecurityReceipt = { receiptId: `receipt-${hash(`${request.findingId}|${verification.status}|${JSON.stringify(responseFacts)}`)}`, findingId: request.findingId, proofCase, status, redactedRequest: verification.evidence[0] ? { ...verification.evidence[0].request } : null, responseFacts, oracle: verification.status, whyProven: verification.status === 'verified' ? verification.summary : '', sourceRefs: [result.data.finding.file, result.data.finding.path].filter(Boolean), evidenceRefs: verification.evidence.map((_, index) => `runtime:${request.findingId}:${index}`), remediationRef: null, reVerification: { status: null, receiptId: null }, replayContract: null, replayOfReceiptId: null, beforeAfter: null, limitation: verification.status === 'verified' ? null : verification.summary };
   const safe = detachedRedacted(receipt);
-  return ok(storeReceipt(safe));
+  return ok(storeReceipt(safe, config.projectRoot, request.target.allowedOrigin));
 }
 
 export interface GraphInputs {

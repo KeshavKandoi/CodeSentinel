@@ -144,7 +144,7 @@ function scopeReceipts(list: SecurityReceipt[], target: { allowedOrigin: string 
   return list.filter((receipt) => receipt.targetOrigin === target.allowedOrigin);
 }
 
-function applyReceipts(finding: AuditFinding, receipts: SecurityReceipt[], ranNow: boolean, expectedOrigin?: string): void {
+function applyReceipts(finding: AuditFinding, receipts: SecurityReceipt[], ranNow: boolean, expectedOrigin?: string, projectRoot?: string): void {
   finding.proof.receiptIds = receipts.map((receipt) => receipt.receiptId).slice(0, 10);
   const originals = receipts.filter((receipt) => receipt.replayOfReceiptId === null);
   const replays = receipts.filter((receipt) => receipt.replayOfReceiptId !== null);
@@ -156,7 +156,7 @@ function applyReceipts(finding: AuditFinding, receipts: SecurityReceipt[], ranNo
   finding.proof.fromPriorReceipt = !ranNow;
   finding.proof.note = chosen.status === 'verified' ? null : chosen.limitation ? safeText(chosen.limitation) : null;
   finding.classification.proofStatus = chosen.status;
-  if (chosen.status === 'verified') advanceToVerified(finding, chosen, expectedOrigin);
+  if (chosen.status === 'verified') advanceToVerified(finding, chosen, expectedOrigin, projectRoot);
   else if (chosen.status === 'not_reproduced') advance(finding, 'not_reproduced');
   else if (chosen.status === 'inconclusive') advance(finding, 'inconclusive');
   else advance(finding, 'blocked');
@@ -183,8 +183,8 @@ function reconcileRemediation(ctx: AuditContext): void {
   }
 }
 
-function collectResolved(ctx: AuditContext, investigationId: string): void {
-  const inv = getInvestigation(investigationId);
+function collectResolved(ctx: AuditContext, investigationId: string, config: AppConfig): void {
+  const inv = getInvestigation(investigationId, config);
   if (!inv.ok) return;
   const current = new Set([...ctx.findings.values()].flatMap((finding) => finding.sources.map((source) => source.sourceId)));
   for (const record of ctx.remediationRecords) {
@@ -192,7 +192,7 @@ function collectResolved(ctx: AuditContext, investigationId: string): void {
     if (record.status !== 'verified_resolved' || record.verification?.replayResult !== 'resolved' || current.has(sourceId)) continue;
     const view = inv.data.findings.find((item) => item.findingId === sourceId);
     if (!view) continue;
-    const receipts = listSecurityReceiptsForFinding(sourceId);
+    const receipts = listSecurityReceiptsForFinding(sourceId, config.projectRoot);
     const original = receipts.find((receipt) => receipt.replayOfReceiptId === null && receipt.status === 'verified');
     const replay = [...receipts].reverse().find((receipt) => original !== undefined && receipt.replayOfReceiptId === original.receiptId && receipt.status === 'not_reproduced');
     if (!original || !replay || original.targetOrigin === undefined || original.targetOrigin !== replay.targetOrigin) continue;
@@ -217,7 +217,7 @@ function collectResolved(ctx: AuditContext, investigationId: string): void {
     try {
       advance(finding, 'analyzed');
       advance(finding, 'proof_eligible');
-      advanceToVerified(finding, original, original.targetOrigin);
+      advanceToVerified(finding, original, original.targetOrigin, config.projectRoot);
       advance(finding, 'remediation_applied');
       advance(finding, 'verified_resolved');
     } catch {
@@ -404,7 +404,7 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
     for (const finding of eligible) {
       const sourceId = finding.classification.proofSourceId;
       if (!sourceId) continue;
-      let receipts = scopeReceipts(listSecurityReceiptsForFinding(sourceId), target);
+      let receipts = scopeReceipts(listSecurityReceiptsForFinding(sourceId, config.projectRoot), target);
       const hasVerified = receipts.some((receipt) => receipt.replayOfReceiptId === null && receipt.status === 'verified');
       let ranNow = false;
       if (!hasVerified && target) {
@@ -416,7 +416,7 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
           try {
             const outcome = await proveSecurityFinding(config, { findingId: sourceId, target, sessions: input.sessions, sessionParams: input.sessionParams });
             if (outcome.ok) {
-              receipts = scopeReceipts(listSecurityReceiptsForFinding(sourceId), target);
+              receipts = scopeReceipts(listSecurityReceiptsForFinding(sourceId, config.projectRoot), target);
               ranNow = true;
             } else {
               addIssue(ctx, 'runtime_proof', 'PROOF_DISPATCH_FAILED', outcome.error.message, true, [finding.id]);
@@ -430,16 +430,21 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
       else if (receipts.length > 0) reused += 1;
       ctx.receipts.set(finding.id, receipts);
       try {
-        applyReceipts(finding, receipts, ranNow, target?.allowedOrigin);
+        applyReceipts(finding, receipts, ranNow, target?.allowedOrigin, config.projectRoot);
       } catch {
         addIssue(ctx, 'runtime_proof', 'LIFECYCLE_VIOLATION', 'A proof receipt could not be applied to the finding lifecycle.', true, [finding.id]);
       }
     }
     if (notAttempted.length > 0) addIssue(ctx, 'runtime_proof', 'PROOF_ATTEMPT_LIMIT', `${notAttempted.length} eligible finding(s) were not attempted because of the proof attempt or time limit.`, true, notAttempted);
     if (input.investigationId) {
-      ctx.remediationRecords = listRemediationsForInvestigation(input.investigationId).slice(0, 100);
-      reconcileRemediation(ctx);
-      collectResolved(ctx, input.investigationId);
+      const investigation = getInvestigation(input.investigationId, config);
+      if (investigation.ok) {
+        ctx.remediationRecords = listRemediationsForInvestigation(input.investigationId).slice(0, 100);
+        reconcileRemediation(ctx);
+        collectResolved(ctx, input.investigationId, config);
+      } else {
+        addIssue(ctx, 'runtime_proof', 'INVESTIGATION_UNAVAILABLE', investigation.error.message, true, []);
+      }
     }
     const idle = !target && reused === 0;
     return {
