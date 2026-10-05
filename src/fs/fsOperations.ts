@@ -200,6 +200,8 @@ export interface SearchFilesOptions {
   maxResults: number;
   isRegex: boolean;
   allowSensitive?: boolean;
+  /** Internal scan accounting; never changes which files search returns. */
+  onFileRead?: (filePath: string) => void;
 }
 
 function readSearchableText(config: AppConfig, absPath: string): string | null {
@@ -296,6 +298,7 @@ export function searchFiles(config: AppConfig, opts: SearchFilesOptions): ToolOu
 
       const text = readSearchableText(config, entryAbs);
       if (text === null) continue;
+      opts.onFileRead?.(relPosix);
 
       const lines = text.split('\n');
       for (let i = 0; i < lines.length; i++) {

@@ -40,14 +40,14 @@ export interface DockerInfo {
   evidence: Evidence[];
 }
 
-/** The broad technology ecosystem the project belongs to. Node is fully
- * implemented in Phase 2; Python is recognized but deferred (see
- * projectDiscovery.ts) so it can be added later without restructuring. */
-export type Ecosystem = 'node' | 'python' | 'unknown';
+/** Broad project ecosystem. Node security rules are implemented; Python,
+ * Go, and Rust markers are recognized but have no static security rules. */
+export type Ecosystem = 'node' | 'python' | 'go' | 'rust' | 'unknown';
 
 export interface ProjectProfile {
   projectName: string | null;
   ecosystem: Ecosystem;
+  nestedProjects: string[];
   languages: DetectedItem[];
   packageManager: DetectedItem | null;
   frameworks: {
@@ -75,6 +75,7 @@ export function emptyProjectProfile(): ProjectProfile {
   return {
     projectName: null,
     ecosystem: 'unknown',
+    nestedProjects: [],
     languages: [],
     packageManager: null,
     frameworks: { frontend: [], backend: [] },

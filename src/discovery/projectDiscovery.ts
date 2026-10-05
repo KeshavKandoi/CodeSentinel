@@ -25,6 +25,8 @@ function detectEcosystem(root: string): Ecosystem {
   ) {
     return 'python';
   }
+  if (fileExists(root, 'go.mod')) return 'go';
+  if (fileExists(root, 'Cargo.toml')) return 'rust';
   return 'unknown';
 }
 
@@ -48,6 +50,13 @@ export function runProjectDiscovery(root: string): ProjectProfile {
     return profile;
   }
 
+  if (ecosystem === 'go' || ecosystem === 'rust') {
+    const profile = emptyProjectProfile();
+    profile.ecosystem = ecosystem;
+    profile.warnings.push(`${ecosystem === 'go' ? 'Go' : 'Rust'} project marker detected, but security rules for this ecosystem are not implemented.`);
+    return profile;
+  }
+
   const profile = emptyProjectProfile();
   profile.ecosystem = 'unknown';
   profile.warnings.push('Could not determine project ecosystem: no package.json, requirements.txt, pyproject.toml, setup.py, or Pipfile found.');
@@ -55,6 +64,7 @@ export function runProjectDiscovery(root: string): ProjectProfile {
     .filter((name) => !name.startsWith('.') && name !== 'node_modules' && dirExists(root, name) && fileExists(root, `${name}/package.json`))
     .slice(0, 5);
   if (nestedNodeProjects.length > 0) {
+    profile.nestedProjects = nestedNodeProjects;
     profile.warnings.push(`Node package manifest(s) found in ${nestedNodeProjects.join(', ')}. Pass projectRoot for the intended application; nested projects were not scanned automatically.`);
   }
   return profile;

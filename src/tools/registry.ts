@@ -262,7 +262,7 @@ const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'scan_project',
     description:
-      'Run deterministic Phase 3 static security analysis against the authorized project. Returns normalized SecurityFinding objects with rule IDs, severity, confidence, status, source evidence, remediation, and verification status. Read-only; does not exploit, modify, or retest code.',
+      'Run a read-only deterministic security scan of the selected project. Returns source-backed suspected findings, severity and confidence summaries, rule execution and file coverage, warnings, and static-analysis limitations. It does not execute or modify target code and does not perform runtime verification.',
     inputSchema: { type: 'object', properties: {} },
     handler: async (config, rawInput) => {
       const validation = safeValidate(scanProjectSchema, rawInput ?? {});

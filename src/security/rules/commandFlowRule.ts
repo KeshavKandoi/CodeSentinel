@@ -47,7 +47,11 @@ export const commandFlowRule: SecurityRule = {
       const source = index.readSource(file);
       if (!source) continue;
       const ast = ts.createSourceFile(file, source.content, ts.ScriptTarget.Latest, true, /\.tsx?$/.test(file) ? ts.ScriptKind.TS : ts.ScriptKind.JS);
-      if ((ast as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics?.length) continue;
+      if ((ast as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics?.length) {
+        warnings.push(`Skipped malformed source for AST analysis: ${file}.`);
+        continue;
+      }
+      context.recordFile(file);
       const shellNames = childProcessNames(ast);
       if (!shellNames.size) continue;
       walk(ast, node => {

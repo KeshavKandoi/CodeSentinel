@@ -89,7 +89,11 @@ function rule(definition: Definition): SecurityRule {
         if (!source) continue;
         const kind = /\.tsx?$/.test(file) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
         const ast = ts.createSourceFile(file, source.content, ts.ScriptTarget.Latest, true, kind);
-        if ((ast as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics?.length) continue;
+        if ((ast as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics?.length) {
+          warnings.push(`Skipped malformed source for AST analysis: ${file}.`);
+          continue;
+        }
+        context.recordFile(file);
         for (const node of inspect(ast, definition)) {
           const line = ast.getLineAndCharacterOfPosition(node.getStart(ast)).line + 1;
           findings.push(makeFinding(result, { file, line, matchedText: source.content.split('\n')[line - 1]?.trim().slice(0, 240), context: contextFor(source.content, line), reason: definition.evidenceRequirements }));

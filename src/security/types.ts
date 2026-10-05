@@ -77,19 +77,36 @@ export interface SecurityScanContext {
   search(query: string, options?: Partial<{ path: string; caseSensitive: boolean; isRegex: boolean; maxResults: number }>): Promise<SearchMatch[]>;
   readFile(path: string): Promise<ReadFileResult | null>;
   warn(message: string): void;
+  recordFile(path: string): void;
 }
+
+export interface ScanRuleIssue { ruleId: string; reason: string; }
+export interface ScanFileSkip { file: string; reason: string; }
 
 export interface SecurityScanResult {
   project: {
+    root: string;
     name: string | null;
     ecosystem: ProjectProfile['ecosystem'];
+    support: 'supported' | 'unsupported' | 'unknown';
+    nestedProjects: string[];
+    packageManager: string | null;
+    gitStatus: 'not_checked';
   };
   summary: {
     total: number;
     bySeverity: Record<SecuritySeverity, number>;
     byCategory: Partial<Record<SecurityCategory, number>>;
+    byConfidence: Record<Confidence, number>;
   };
   rulesRun: string[];
+  rulesSkipped: ScanRuleIssue[];
+  rulesFailed: ScanRuleIssue[];
+  ruleExecution: { executed: number; skipped: number; failed: number };
+  fileAnalysis: { discovered: number; analyzed: number; skipped: number; unsupportedExtensions: number; inventoryTruncated: boolean; skippedFiles: ScanFileSkip[] };
+  message: string;
+  limitations: string[];
+  runtimeVerificationPerformed: false;
   findings: SecurityFinding[];
   warnings: string[];
 }
