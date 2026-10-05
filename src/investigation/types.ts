@@ -87,6 +87,7 @@ export interface InvestigationRuntimeResult {
   requestsIssued: number;
   blockedReason: string | null;
   evidenceRef: string;
+  targetOrigin?: string;
 }
 
 export interface SecurityInvestigation {
