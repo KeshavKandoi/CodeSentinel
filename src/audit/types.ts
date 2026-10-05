@@ -180,9 +180,10 @@ export interface AuditResult {
   runId: string;
   readOnly: { enforced: true; sourceTreeUnchanged: boolean | null; filesChecked: number; truncated: boolean };
   securityStatus: 'no_findings' | 'suspected' | 'verified_vulnerability' | 'verified_safe' | 'inconclusive';
-  executionStatus: 'completed' | 'partially_completed' | 'blocked' | 'failed' | 'skipped';
+  executionStatus: 'completed' | 'partially_completed' | 'blocked' | 'failed' | 'not_required';
   verification: { attempted: boolean; completed: boolean; blocked: boolean; reason: string | null; verifiedVulnerabilities: number; staticCandidatesUnverified: number };
   blocker: EnvironmentBlocker | null;
+  nextStep: { action: string; safeToRerun: boolean } | null;
   targetActivity: { targetModifications: 'none' | 'unknown'; dependenciesInstalled: false; commandsExecutedInsideTarget: false; runtimeStartedByCodeSentinel: false; networkRequestsSent: boolean; databaseAccessed: boolean | null };
   guidance: { checked: string[]; couldNotVerify: string[]; nextSteps: string[] };
   project: { name: string | null; ecosystem: string; root: string };

@@ -1,4 +1,4 @@
-export type EnvironmentBlockerKind = 'npm_cache_permissions' | 'filesystem_permissions' | 'missing_executable' | 'missing_dependency' | 'missing_runtime' | 'missing_variable' | 'port_in_use' | 'database_unavailable' | 'docker_unavailable' | 'module_resolution' | 'invalid_configuration' | 'unknown';
+export type EnvironmentBlockerKind = 'runtime_target_missing' | 'npm_cache_permissions' | 'filesystem_permissions' | 'missing_executable' | 'missing_dependency' | 'missing_runtime' | 'missing_variable' | 'port_in_use' | 'database_unavailable' | 'docker_unavailable' | 'module_resolution' | 'invalid_configuration' | 'unknown';
 
 export interface EnvironmentBlocker {
   kind: EnvironmentBlockerKind;
@@ -6,6 +6,13 @@ export interface EnvironmentBlocker {
   reason: string;
   recommendedNextStep: string;
 }
+
+export const MISSING_RUNTIME_TARGET: EnvironmentBlocker = {
+  kind: 'runtime_target_missing',
+  responsibility: 'user_environment',
+  reason: 'Runtime verification could not start because no authorized runtime target was supplied.',
+  recommendedNextStep: 'Provide an authorized isolated local runtime target and rerun verification.',
+};
 
 export function classifyRuntimeSetupFailure(command: string, output: string): EnvironmentBlocker {
   const text = `${command}\n${output}`.slice(0, 8_000);
