@@ -154,11 +154,11 @@ describe('Phase 1 explicit projectRoot', () => {
     const root = mk({ 'a.txt': 'a' });
     const unknown = await call('scan_project', cfg(''), { projectRoot: root, bogus: 1 });
     expect(unknown.isError).toBe(true);
-    for (const name of ['verify_finding', 'prove_security_finding', 'run_full_security_audit', 'run_command', 'start_security_investigation']) {
+    for (const name of ['verify_finding', 'prove_security_finding', 'run_command']) {
       const tool = toolDefinitions.find((item) => item.name === name)!;
       expect(Object.keys((tool.inputSchema.properties as Record<string, unknown>) ?? {})).not.toContain('projectRoot');
     }
-    for (const name of ['get_project_info', 'scan_project', 'list_files', 'read_file', 'search_files', 'get_security_graph', 'discover_routes', 'analyze_access_control', 'analyze_project', 'run_deep_security_audit', 'list_verification_cases', 'list_security_proof_cases']) {
+    for (const name of ['get_project_info', 'scan_project', 'list_files', 'read_file', 'search_files', 'get_security_graph', 'discover_routes', 'analyze_access_control', 'analyze_project', 'run_deep_security_audit', 'list_verification_cases', 'list_security_proof_cases', 'run_full_security_audit', 'start_security_audit', 'start_security_investigation']) {
       const tool = toolDefinitions.find((item) => item.name === name)!;
       expect(Object.keys(tool.inputSchema.properties as Record<string, unknown>)).toContain('projectRoot');
     }

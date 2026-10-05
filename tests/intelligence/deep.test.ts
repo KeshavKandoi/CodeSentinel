@@ -102,12 +102,13 @@ describe('Phase 5 deep analysis precision, redaction and merging', () => {
       const result = await runDeepSecurityAudit(config(root));
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      const located = result.data.findings.map((finding) => {
+      const located = result.data.reviewSignals.map((finding) => {
         const evidence = result.data.evidence.find((item) => item.id === finding.evidenceIds[0]);
         return { domain: finding.domain, file: evidence?.file, line: evidence?.line };
       });
       expect(located.some((item) => item.file === 'README.md')).toBe(false);
       expect(located.filter((item) => item.domain === 'command_execution')).toEqual([{ domain: 'command_execution', file: 'src/app.js', line: 7 }]);
+      expect(result.data.findings.every((finding) => finding.signals.some((signal) => signal === 'static_scan' || signal === 'access_control'))).toBe(true);
       expect(located.some((item) => ['injection', 'xss', 'environment_configuration'].includes(item.domain))).toBe(false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
