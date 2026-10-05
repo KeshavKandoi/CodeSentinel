@@ -227,3 +227,25 @@ No stage writes to the project. The result reports `readOnly.sourceTreeUnchanged
 - Receipts and remediation records live in memory only.
 - Remediation and replay status requires the same server process and an `investigationId`.
 - Runtime proof covers only the classes registered in the proof adapter registry.
+
+## Analyze Any Local Project
+
+You do not need to copy or clone your project into CodeSentinel. Install CodeSentinel anywhere and point it at any local directory.
+
+**Option 1: pass `projectRoot` in the tool call (no config edits per project).**
+
+```json
+{ "name": "scan_project", "arguments": { "projectRoot": "/absolute/path/to/your/project" } }
+```
+
+Ask Claude: "Scan this project: /Users/me/my-project". `projectRoot` must be an absolute path to an existing directory and must not be a symbolic link. It is supported by these read-only tools: `get_project_info`, `scan_project`, `analyze_project`, `list_files`, `read_file`, `search_files`, `get_security_graph`, `discover_routes`, `analyze_access_control`, `run_deep_security_audit`, `list_verification_cases`, and `list_security_proof_cases`. File paths inside the project still cannot escape it.
+
+**Option 2: set `PROJECT_ROOT` as a default.**
+
+```json
+{ "mcpServers": { "codesentinel": { "command": "node", "args": ["/path/to/security-auditor-mcp/dist/index.js"], "env": { "PROJECT_ROOT": "/absolute/path/to/your/project" } } } }
+```
+
+An explicit `projectRoot` always overrides `PROJECT_ROOT`. If neither is provided, the tool returns: `Project root is required: pass projectRoot or set PROJECT_ROOT`.
+
+`run_command`, the investigation, remediation, proof and `run_full_security_audit` tools do not accept `projectRoot`. They keep using `PROJECT_ROOT` and return a clear error when it is unset.
