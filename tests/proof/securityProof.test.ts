@@ -55,7 +55,7 @@ function createProofServer(secure: boolean): http.Server {
           : pathname === '/run'
             ? 'CODESENTINEL_PROOF_COMMAND_SENTINEL'
             : 'CODESENTINEL_PROOF_XSS_SENTINEL';
-    response.end(marker);
+    response.end(pathname === '/hello' ? (new URL(request.url ?? '/', 'http://127.0.0.1').searchParams.get('q') ?? '') : marker);
   });
 }
 
@@ -962,5 +962,30 @@ describe('Phase 9 error response redaction at the MCP boundary', () => {
     expect(response.isError).toBe(true);
     const text = JSON.stringify(response);
     for (const secret of secrets) expect(text, `${name}:${secret}`).not.toContain(secret);
+  });
+});
+
+describe('Phase 10 reflected XSS oracle requires unescaped reflection', () => {
+  const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
+  it.each([[false, 'verified'], [true, 'not_reproduced']] as const)('escaping=%s ends %s', async (escaping, expected) => {
+    resetSecurityProofsForTests();
+    const scan = await scanProject(vulnerableProofConfig);
+    if (!scan.ok) throw new Error('scan failed');
+    const finding = scan.data.findings.find((item) => item.category === 'xss');
+    expect(finding).toBeDefined();
+    const server = http.createServer((request, response) => {
+      const q = new URL(request.url ?? '/', 'http://127.0.0.1').searchParams.get('q') ?? '';
+      response.writeHead(200, { 'content-type': 'text/html' });
+      response.end(escaping ? escapeHtml(q) : q);
+    });
+    const reflectOrigin = await listen(server);
+    try {
+      const result = await proveSecurityFinding(vulnerableProofConfig, { findingId: finding!.id, target: { allowedOrigin: reflectOrigin, minRequestIntervalMs: 0 } });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.data.status).toBe(expected);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      resetSecurityProofsForTests();
+    }
   });
 });
