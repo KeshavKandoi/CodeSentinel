@@ -1,7 +1,8 @@
 import type { SecurityRule } from './types.js';
 import { nodeSecurityRules } from './rules/nodeRules.js';
+import { semanticNodeRules } from './rules/semanticNodeRules.js';
 
-const registeredRules: SecurityRule[] = [...nodeSecurityRules];
+const registeredRules: SecurityRule[] = [...nodeSecurityRules, ...semanticNodeRules];
 
 export function getSecurityRules(): SecurityRule[] {
   return [...registeredRules];
