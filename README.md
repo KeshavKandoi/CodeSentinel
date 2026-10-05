@@ -158,6 +158,9 @@ For production deployments, package CodeSentinel into an isolated container alon
 - Redaction is pattern-based; secret formats not covered by the shared redactor may still appear in evidence text.
 - Proof attempt budgets (10 per finding, 500 per process) are held in memory and reset on restart.
 - Reflected-XSS proof verifies only when the server returns the probe value unescaped.
+- Body-marker and open-redirect proof adapters verify only against servers that emit their fixed marker, so real applications may produce false negatives, never false positives from a generic response.
+- The permissive-CORS proof sends no Origin header and does not detect servers that reflect the request origin.
+- Access-control remediation replay is refused unless the replay origin matches the origin of the original verified runtime result; only the refusal path has an end-to-end test.
 - Several guarantees (static rules, route and access analysis) are covered by behavioral tests rather than formal analysis.
 
 ## Unified audit pipeline
