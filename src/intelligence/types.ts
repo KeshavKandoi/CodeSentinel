@@ -7,7 +7,7 @@ export const SECURITY_DOMAINS = [
   'database', 'api_security', 'websocket', 'graphql', 'ai_mcp',
 ] as const;
 export type SecurityDomain = (typeof SECURITY_DOMAINS)[number];
-export type DomainStatus = 'passed' | 'findings' | 'not_applicable' | 'unsupported' | 'skipped' | 'blocked' | 'inconclusive';
+export type DomainStatus = 'analyzed' | 'not_applicable' | 'unsupported' | 'skipped' | 'failed';
 
 export interface RepositoryIndexFile {
   path: string;
@@ -68,6 +68,7 @@ export interface DomainCoverage {
   domain: SecurityDomain;
   status: DomainStatus;
   findings: number;
+  reviewSignals: number;
   filesConsidered: number;
   rulesExecuted: number;
   limitation: string | null;
@@ -88,6 +89,7 @@ export interface DeepSecurityAuditResult {
   repositoryIndex: RepositoryIndex;
   domainCoverage: DomainCoverage[];
   findings: IntelligenceFinding[];
+  reviewSignals: IntelligenceFinding[];
   evidence: IntelligenceEvidence[];
   baseline: BaselineComparison;
   coverage: {

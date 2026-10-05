@@ -20,7 +20,7 @@ export type FindingOrigin = 'security_scan' | 'access_control' | 'deep_analysis'
 export type ProofSupportClass = 'runtime' | 'requires-adapter' | 'static-only';
 export type ProofClassStatus = 'eligible' | 'unsupported' | 'blocked' | ProofStatus;
 export type ReplayStatus = 'not_attempted' | ProofStatus;
-export type FinalVerification = 'no_findings' | 'candidates_unverified' | 'verified_findings_present' | 'all_verified_resolved';
+export type FinalVerification = 'no_findings' | 'coverage_incomplete' | 'review_signals_only' | 'candidates_unverified' | 'verified_findings_present' | 'all_verified_resolved';
 
 export interface FindingSource {
   stage: AuditStage;
@@ -130,6 +130,7 @@ export interface AuditContext {
   scanOutcome: ToolOutcome<SecurityScanResult> | null;
   access: AnalyzeAccessControlResult | null;
   deepCounts: { findings: number; evidence: number } | null;
+  domainCoverage?: Array<{ domain: string; status: 'analyzed' | 'unsupported' | 'skipped' | 'failed' | 'not_applicable'; ruleBackedFindings: number; reviewSignals: number; limitation: string | null }>;
   findings: Map<string, AuditFinding>;
   sourceIndex: Map<string, string>;
   receipts: Map<string, SecurityReceipt[]>;
@@ -149,6 +150,7 @@ export interface NamedCount {
 
 export interface AuditSummary {
   total: number;
+  reviewSignals: number;
   bySeverity: { critical: number; high: number; medium: number; low: number; informational: number };
   runtimeVerified: number;
   staticOnly: number;
@@ -181,6 +183,8 @@ export interface AuditResult {
   stages: StageRecord[];
   summary: AuditSummary;
   findings: AuditFinding[];
+  reviewSignals: AuditFinding[];
+  domainCoverage: Array<{ domain: string; status: 'analyzed' | 'unsupported' | 'skipped' | 'failed' | 'not_applicable'; ruleBackedFindings: number; reviewSignals: number; limitation: string | null }>;
   nearDuplicates: NearDuplicateGroup[];
   graph: AuditGraphSummary;
   remediation: { investigationId: string | null; records: number; resolved: number };

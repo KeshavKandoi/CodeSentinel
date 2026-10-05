@@ -52,7 +52,7 @@ import {
 } from '../investigation/orchestrator.js';
 import { generateSecurityReport, getSecurityFinding } from '../report/engine.js';
 import { detachedRedacted } from '../report/redaction.js';
-import { applyRemediation, proposeRemediation, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
+import { applyRemediation, getRemediation, proposeRemediation, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
 import { runDeepSecurityAudit } from '../intelligence/engine.js';
 import { buildSecurityGraph, listSecurityProofCases, proveSecurityFinding } from '../proof/engine.js';
 import { runFullSecurityAuditSchema } from '../validation/schemas.js';
@@ -364,10 +364,10 @@ const coreToolDefinitions: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: { projectPath: { type: 'string' }, scope: { type: 'array' }, hypothesis: { type: 'string' }, budget: { type: 'object' } },
-      required: ['projectPath', 'scope', 'hypothesis'],
+      required: ['scope', 'hypothesis'],
     },
     handler: async (config, rawInput) => {
-      const validation = safeValidate(startSecurityInvestigationSchema, rawInput ?? {});
+      const validation = safeValidate(startSecurityInvestigationSchema, { ...(rawInput as object ?? {}), projectPath: (rawInput as { projectPath?: string } | undefined)?.projectPath ?? config.projectRoot });
       if (!validation.ok) return invalidInputResponse(validation.message);
       return toMcpResponse(startInvestigation(config, validation.data));
     },
@@ -523,12 +523,49 @@ const coreToolDefinitions: ToolDefinition[] = [
 export const toolDefinitions: ToolDefinition[] = [...coreToolDefinitions, ...orchestrationToolDefinitions];
 
 const PROJECT_ROOT_TOOLS = new Set([
+  'run_full_security_audit', 'start_security_audit', 'start_security_investigation',
   'get_project_info', 'scan_project', 'analyze_project', 'list_files', 'read_file', 'search_files',
   'get_security_graph', 'discover_routes', 'analyze_access_control', 'run_deep_security_audit',
   'list_verification_cases', 'list_security_proof_cases',
 ]);
 
-function withProjectRoot(handler: ToolDefinition['handler']): ToolDefinition['handler'] {
+const INVESTIGATION_TOOLS = new Set([
+  'dispatch_security_action', 'plan_security_investigation', 'get_security_audit_state',
+  'run_audit_analysis', 'record_audit_hypothesis', 'request_audit_verification',
+  'complete_security_audit', 'generate_security_audit_report', 'get_investigation',
+  'run_security_analysis', 'record_security_hypothesis', 'request_runtime_verification',
+  'generate_security_report', 'get_security_finding', 'propose_remediation',
+]);
+const REMEDIATION_TOOLS = new Set(['apply_remediation', 'verify_remediation', 'rollback_remediation']);
+const explicitSessionRoots = new Map<string, string>();
+
+function withStoredRoot(handler: ToolDefinition['handler'], field: 'investigationId' | 'remediationId', allowed: Set<string>): ToolDefinition['handler'] {
+  return async (config, rawInput) => {
+    if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) return handler(config, rawInput);
+    const input = rawInput as Record<string, unknown>;
+    if (Object.keys(input).some((key) => key !== 'projectRoot' && !allowed.has(key))) return handler(config, rawInput);
+    if (typeof input[field] === 'string' && input[field].length > 128) return handler(config, rawInput);
+    if (typeof input[field] !== 'string') return handler(config, rawInput);
+    const record = field === 'remediationId' ? getRemediation(input[field]) : null;
+    if (record && !record.ok) return toMcpResponse(record);
+    const investigationId = record?.ok ? record.data.proposal.investigationId : input[field];
+    const investigation = getInvestigation(investigationId);
+    if (!investigation.ok) return toMcpResponse(investigation);
+    if (config.projectRoot && config.projectRoot !== investigation.data.projectPath && explicitSessionRoots.get(investigationId) !== investigation.data.projectPath && input.projectRoot === undefined) {
+      return toMcpResponse(err('PATH_OUTSIDE_ROOT', 'The investigation belongs to another project root.'));
+    }
+    if (input.projectRoot !== undefined) {
+      if (typeof input.projectRoot !== 'string') return invalidInputResponse('projectRoot: must be a string');
+      const requested = resolveToolRoot(config, input.projectRoot);
+      if (!requested.ok) return toMcpResponse(requested);
+      if (requested.data !== investigation.data.projectPath) return toMcpResponse(err('PATH_OUTSIDE_ROOT', 'The investigation belongs to another project root.'));
+    }
+    const { projectRoot: _projectRoot, ...rest } = input;
+    return handler({ ...config, projectRoot: investigation.data.projectPath }, rest);
+  };
+}
+
+function withProjectRoot(handler: ToolDefinition['handler'], name: string): ToolDefinition['handler'] {
   return async (config, rawInput) => {
     if (rawInput !== undefined && rawInput !== null && (typeof rawInput !== 'object' || Array.isArray(rawInput))) {
       return handler(config, rawInput);
@@ -537,9 +574,21 @@ function withProjectRoot(handler: ToolDefinition['handler']): ToolDefinition['ha
     if (projectRoot !== undefined && (typeof projectRoot !== 'string' || projectRoot.length === 0 || projectRoot.length > 4096)) {
       return invalidInputResponse('projectRoot: must be a non-empty string of at most 4096 characters');
     }
-    const resolved = resolveToolRoot(config, projectRoot as string | undefined);
+    const selectedRoot = projectRoot === undefined && !config.projectRoot && 'projectPath' in rest && typeof rest.projectPath === 'string' ? rest.projectPath : projectRoot;
+    const resolved = resolveToolRoot(config, selectedRoot as string | undefined);
     if (!resolved.ok) return toMcpResponse(resolved);
-    return handler({ ...config, projectRoot: resolved.data }, rest);
+    const response = await handler({ ...config, projectRoot: resolved.data }, rest);
+    if (!response.isError && projectRoot !== undefined && (name === 'start_security_audit' || name === 'start_security_investigation')) {
+      try {
+        const data = JSON.parse(response.content[0]?.text ?? '{}') as { investigationId?: string; id?: string };
+        const id = data.investigationId ?? data.id;
+        if (id) {
+          if (explicitSessionRoots.size >= 100) explicitSessionRoots.delete(explicitSessionRoots.keys().next().value!);
+          explicitSessionRoots.set(id, resolved.data);
+        }
+      } catch { /* response is generated by the existing handler */ }
+    }
+    return response;
   };
 }
 
@@ -552,7 +601,7 @@ function requireConfiguredRoot(handler: ToolDefinition['handler']): ToolDefiniti
 
 for (const tool of toolDefinitions) {
   if (PROJECT_ROOT_TOOLS.has(tool.name)) {
-    tool.handler = withProjectRoot(tool.handler);
+    tool.handler = withProjectRoot(tool.handler, tool.name);
     tool.inputSchema = {
       ...tool.inputSchema,
       properties: {
@@ -560,6 +609,9 @@ for (const tool of toolDefinitions) {
         projectRoot: { type: 'string', description: 'Absolute path of the local project to analyze. Overrides PROJECT_ROOT for this call.' },
       },
     };
+  } else if (INVESTIGATION_TOOLS.has(tool.name) || REMEDIATION_TOOLS.has(tool.name)) {
+    tool.handler = withStoredRoot(tool.handler, REMEDIATION_TOOLS.has(tool.name) ? 'remediationId' : 'investigationId', new Set(Object.keys((tool.inputSchema.properties as Record<string, unknown> | undefined) ?? {})));
+    tool.inputSchema = { ...tool.inputSchema, properties: { ...((tool.inputSchema.properties as Record<string, unknown> | undefined) ?? {}), projectRoot: { type: 'string', description: 'Optional project root; if supplied, must match the audit session root.' } } };
   } else {
     tool.handler = requireConfiguredRoot(tool.handler);
   }

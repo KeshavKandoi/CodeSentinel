@@ -113,10 +113,12 @@ function addFinding(findings: IntelligenceFinding[], evidence: IntelligenceEvide
 }
 
 function markdown(result: Omit<DeepSecurityAuditResult, 'markdown'>): string {
-  const lines = [`# CodeSentinel Deep Security Audit`, '', `Project: ${result.project.name ?? 'unnamed'} (${result.project.ecosystem})`, '', '## Executive Summary', '', `${result.findings.length} evidence-backed candidate(s) were identified. Static candidates are not confirmed vulnerabilities without deterministic runtime proof.`, '', '## Domain Coverage', '', '| Domain | Status | Findings |', '|---|---|---:|'];
-  for (const coverage of result.domainCoverage) lines.push(`| ${coverage.domain} | ${coverage.status} | ${coverage.findings} |`);
+  const lines = [`# CodeSentinel Deep Security Audit`, '', `Project: ${result.project.name ?? 'unnamed'} (${result.project.ecosystem})`, '', '## Executive Summary', '', `${result.findings.length} rule-backed candidate(s) and ${result.reviewSignals.length} heuristic review signal(s) were identified. Static candidates are not confirmed vulnerabilities without deterministic runtime proof.`, '', '## Domain Coverage', '', '| Domain | Status | Rule-backed findings | Review signals |', '|---|---|---:|---:|'];
+  for (const coverage of result.domainCoverage) lines.push(`| ${coverage.domain} | ${coverage.status} | ${coverage.findings} | ${coverage.reviewSignals} |`);
   lines.push('', '## Findings', '');
   for (const finding of result.findings) lines.push(`### ${finding.title} (${finding.severity})\n\n- Domain: ${finding.domain}\n- Status: ${finding.status}\n- Confidence: ${finding.confidence}\n- Convergence: ${finding.convergence.toFixed(2)}\n- Evidence: ${finding.evidenceIds.join(', ')}`);
+  lines.push('', '## Heuristic Review Signals', '', 'These source patterns need manual review and are excluded from rule-backed finding counts.');
+  for (const signal of result.reviewSignals) lines.push(`- ${signal.title} (${signal.domain}): ${signal.sourceRefs.join(', ')}`);
   lines.push('', '## Limitations', '', ...result.limitations.map((item) => `- ${item}`));
   return lines.join('\n').slice(0, 200_000);
 }
@@ -136,9 +138,9 @@ function compareBaseline(findings: IntelligenceFinding[], baselineText: string |
 type DeepAuditBase = Omit<DeepSecurityAuditResult, 'markdown' | 'integrity'>;
 function validateIntegrity(result: DeepAuditBase): DeepSecurityAuditResult['integrity'] {
   const evidenceIds = new Set(result.evidence.map((item) => item.id));
-  const invalidReferences = result.findings.flatMap((finding) => finding.evidenceIds.filter((id) => !evidenceIds.has(id)).map((id) => `${finding.id}:${id}`));
+  const invalidReferences = [...result.findings, ...result.reviewSignals].flatMap((finding) => finding.evidenceIds.filter((id) => !evidenceIds.has(id)).map((id) => `${finding.id}:${id}`));
   const serialized = JSON.stringify(result);
-  return { valid: invalidReferences.length === 0 && !/(Bearer\s+\w+|AKIA[0-9A-Z]{16})/i.test(serialized), checkedFindings: result.findings.length, invalidReferences, redactionPassed: !/(Bearer\s+\w+|AKIA[0-9A-Z]{16})/i.test(serialized) };
+  return { valid: invalidReferences.length === 0 && !/(Bearer\s+\w+|AKIA[0-9A-Z]{16})/i.test(serialized), checkedFindings: result.findings.length + result.reviewSignals.length, invalidReferences, redactionPassed: !/(Bearer\s+\w+|AKIA[0-9A-Z]{16})/i.test(serialized) };
 }
 
 export interface DeepAuditSharedInputs {
@@ -182,10 +184,13 @@ export async function runDeepSecurityAudit(config: AppConfig, options: { baselin
     }
   }
   findings.sort((a, b) => a.domain.localeCompare(b.domain) || a.severity.localeCompare(b.severity) || a.id.localeCompare(b.id));
+  const ruleBackedFindings = findings.filter((finding) => finding.signals.includes('static_scan') || finding.signals.includes('access_control'));
+  const reviewSignals = findings.filter((finding) => !ruleBackedFindings.includes(finding));
   const domainCoverage: DomainCoverage[] = SECURITY_DOMAINS.map((domain) => {
-    const domainFindings = findings.filter((finding) => finding.domain === domain).length;
+    const domainFindings = ruleBackedFindings.filter((finding) => finding.domain === domain).length;
+    const domainSignals = reviewSignals.filter((finding) => finding.domain === domain).length;
     const rules = DOMAIN_RULES.filter((rule) => rule.domain === domain).length;
-    return { domain, status: domainFindings > 0 ? 'findings' : rules > 0 ? 'passed' : 'unsupported', findings: domainFindings, filesConsidered: indexed.texts.length, rulesExecuted: rules, limitation: rules > 0 ? 'Deterministic local pattern coverage; data-flow and framework-specific semantics may require review.' : 'No safe detector is implemented for this domain in the current repository.' };
+    return { domain, status: domainFindings > 0 ? 'analyzed' : rules === 0 ? 'unsupported' : indexed.texts.length === 0 ? 'skipped' : 'analyzed', findings: domainFindings, reviewSignals: domainSignals, filesConsidered: indexed.texts.length, rulesExecuted: indexed.texts.length === 0 ? 0 : rules, limitation: rules > 0 ? 'Deterministic local pattern coverage; data-flow and framework-specific semantics may require review.' : domainFindings > 0 ? 'Covered by a rule-backed static or access-control result; no separate deep pattern detector is implemented.' : 'No safe detector is implemented for this domain in the current repository.' };
   });
   let baselineText: string | null = null;
   if (options.baselinePath) {
@@ -193,8 +198,8 @@ export async function runDeepSecurityAudit(config: AppConfig, options: { baselin
     if (!baseline.ok) return baseline;
     baselineText = baseline.data.content;
   }
-  const baseline = compareBaseline(findings, baselineText);
-  const base = { auditId: stableId(config.projectRoot, ...indexed.texts.map((item) => `${item.path}:${item.hash}`)), project: { name: profile.projectName, ecosystem: profile.ecosystem, root: '[CONFIGURED_PROJECT_ROOT]' }, repositoryIndex, domainCoverage, findings: findings.slice(0, MAX_FINDINGS), evidence: evidence.slice(0, MAX_EVIDENCE), baseline, coverage: { filesAnalyzed: indexed.texts.length, filesSkipped: indexed.skipped, routesDiscovered: routesResult.ok ? routesResult.data.entries.length : 0, accessFindings: accessResult?.findings.length ?? 0, staticFindings: staticResult.ok ? staticResult.data.findings.length : 0, runtimeChecksAttempted: 0, runtimeChecksBlocked: 0, runtimeChecksInconclusive: 0, evidenceItems: evidence.length }, limitations: [...repositoryIndex.coverageLimitations, 'No external vulnerability database or external target was contacted.', 'Runtime verification is not automatically performed by this read-only audit; use the existing Phase 6 workflow for an explicitly authorized local target.'] };
+  const baseline = compareBaseline(ruleBackedFindings, baselineText);
+  const base = { auditId: stableId(config.projectRoot, ...indexed.texts.map((item) => `${item.path}:${item.hash}`)), project: { name: profile.projectName, ecosystem: profile.ecosystem, root: '[CONFIGURED_PROJECT_ROOT]' }, repositoryIndex, domainCoverage, findings: ruleBackedFindings, reviewSignals, evidence: evidence.slice(0, MAX_EVIDENCE), baseline, coverage: { filesAnalyzed: indexed.texts.length, filesSkipped: indexed.skipped, routesDiscovered: routesResult.ok ? routesResult.data.entries.length : 0, accessFindings: accessResult?.findings.length ?? 0, staticFindings: staticResult.ok ? staticResult.data.findings.length : 0, runtimeChecksAttempted: 0, runtimeChecksBlocked: 0, runtimeChecksInconclusive: 0, evidenceItems: evidence.length }, limitations: [...repositoryIndex.coverageLimitations, 'No external vulnerability database or external target was contacted.', 'Runtime verification is not automatically performed by this read-only audit; use the existing Phase 6 workflow for an explicitly authorized local target.'] };
   const integrity = validateIntegrity(base);
   if (!integrity.valid) return err('REPORT_INVALID', `Deep audit integrity validation failed: ${integrity.invalidReferences.join(', ') || 'sensitive material detected'}.`);
   const result = { ...base, integrity, markdown: '' };

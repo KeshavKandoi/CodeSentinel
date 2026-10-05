@@ -8,6 +8,7 @@ import { discoverRoutes } from '../routes/engine.js';
 import { scanProject } from '../security/scanner.js';
 import { analyzeAccessControl } from '../access/engine.js';
 import { runDeepSecurityAudit } from '../intelligence/engine.js';
+import { SECURITY_DOMAINS } from '../intelligence/types.js';
 import { buildSecurityGraph, listSecurityReceiptsForFinding, proveSecurityFinding } from '../proof/engine.js';
 import type { SecurityGraph, SecurityReceipt } from '../proof/types.js';
 import { listRemediationsForInvestigation } from '../remediation/engine.js';
@@ -255,14 +256,17 @@ function summarizeGraph(graph: SecurityGraph | null, include: boolean): AuditGra
 }
 
 function buildResult(ctx: AuditContext, input: RunFullSecurityAuditInput): AuditResult {
-  const findings = [...ctx.findings.values()].sort(compareFindings);
-  for (const finding of findings) {
+  const all = [...ctx.findings.values()].sort(compareFindings);
+  for (const finding of all) {
     finding.sources.sort((a, b) => a.origin.localeCompare(b.origin) || a.sourceId.localeCompare(b.sourceId));
     finding.verification = assessVerification(finding);
   }
+  const findings = all.filter((finding) => finding.sources.some((source) => source.ruleId !== null || source.origin === 'access_control'));
+  const reviewSignals = all.filter((finding) => !findings.includes(finding));
   const count = (predicate: (finding: AuditFinding) => boolean): number => findings.filter(predicate).length;
   const summary: AuditSummary = {
     total: findings.length,
+    reviewSignals: reviewSignals.length,
     bySeverity: {
       critical: count((f) => f.severity === 'critical'),
       high: count((f) => f.severity === 'high'),
@@ -279,8 +283,9 @@ function buildResult(ctx: AuditContext, input: RunFullSecurityAuditInput): Audit
     byStatus: tally(findings.map((f) => f.status)),
     byCategory: tally(findings.map((f) => f.category)),
   };
+  const incompleteCoverage = ctx.domainCoverage?.some((domain) => domain.status === 'unsupported' || domain.status === 'failed' || domain.status === 'skipped') ?? true;
   const finalVerification: FinalVerification =
-    findings.length === 0 ? 'no_findings'
+    findings.length === 0 ? (reviewSignals.length > 0 ? 'review_signals_only' : incompleteCoverage ? 'coverage_incomplete' : 'no_findings')
     : summary.runtimeVerified > 0 ? 'verified_findings_present'
     : summary.resolved === findings.length ? 'all_verified_resolved'
     : 'candidates_unverified';
@@ -299,6 +304,8 @@ function buildResult(ctx: AuditContext, input: RunFullSecurityAuditInput): Audit
     stages: ctx.stages,
     summary,
     findings,
+    reviewSignals,
+    domainCoverage: ctx.domainCoverage ?? [],
     nearDuplicates: findNearDuplicates(findings),
     graph: summarizeGraph(ctx.graph, input.includeGraph === true),
     remediation: { investigationId: input.investigationId ?? null, records: ctx.remediationRecords.length, resolved: summary.resolved },
@@ -307,7 +314,7 @@ function buildResult(ctx: AuditContext, input: RunFullSecurityAuditInput): Audit
       reportId: `report-${auditId}`,
       generatedAt: new Date(finishedMs).toISOString(),
       schemaVersion: 1,
-      summaryNote: 'runtimeVerified counts findings whose status is verified; staticOnly counts findings with no proof adapter class; unsupported counts findings with lifecycle status unsupported; resolved counts verified_resolved.',
+      summaryNote: 'Finding counts include rule-backed static and access-control findings only. Heuristic-only results are reviewSignals. Domain coverage describes detector support, not a security pass.',
     },
     issues: ctx.issues,
     limitations: LIMITATIONS,
@@ -360,18 +367,20 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
     const outcome = await runDeepSecurityAudit(config, { maxFiles: ctx.limits.maxFiles, shared });
     if (!outcome.ok) {
       addIssue(ctx, 'deep_analysis', 'DEEP_ANALYSIS_FAILED', outcome.error.message, true, []);
+      ctx.domainCoverage = SECURITY_DOMAINS.map((domain) => ({ domain, status: 'failed', ruleBackedFindings: 0, reviewSignals: 0, limitation: 'Deep analysis failed before detector coverage could be established.' }));
       return { count: 0, status: 'failed', note: 'Deep analysis returned an error.' };
     }
     ctx.deepCounts = { findings: outcome.data.findings.length, evidence: outcome.data.evidence.length };
+    ctx.domainCoverage = outcome.data.domainCoverage.map((domain) => ({ domain: domain.domain, status: domain.status, ruleBackedFindings: domain.findings, reviewSignals: domain.reviewSignals, limitation: domain.limitation }));
     const evidenceById = new Map(outcome.data.evidence.map((item) => [item.id, item] as const));
     let merged = 0;
     let added = 0;
-    for (const deep of outcome.data.findings) {
+    for (const deep of [...outcome.data.findings, ...outcome.data.reviewSignals]) {
       const converted = fromDeepFinding(deep, evidenceById, ctx.sourceIndex);
       if (!converted) continue;
       if (collect(ctx, converted)) merged += 1; else added += 1;
     }
-    return { count: outcome.data.findings.length, note: `${merged} merged into existing findings, ${added} new.` };
+    return { count: outcome.data.findings.length + outcome.data.reviewSignals.length, note: `${merged} merged into existing findings, ${added} new review candidates.` };
   });
 
   await runStage(ctx, 'candidate_classification', false, false, () => {
