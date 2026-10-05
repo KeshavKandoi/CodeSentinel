@@ -46,7 +46,8 @@ export const commandFlowRule: SecurityRule = {
     for (const file of index.listSourceFiles(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'])) {
       const source = index.readSource(file);
       if (!source) continue;
-      const ast = ts.createSourceFile(file, source.content, ts.ScriptTarget.Latest, true, /\.tsx?$/.test(file) ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+      const kind = file.endsWith('.tsx') ? ts.ScriptKind.TSX : file.endsWith('.jsx') ? ts.ScriptKind.JSX : file.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+      const ast = ts.createSourceFile(file, source.content, ts.ScriptTarget.Latest, true, kind);
       if ((ast as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics?.length) {
         warnings.push(`Skipped malformed source for AST analysis: ${file}.`);
         continue;

@@ -46,6 +46,17 @@ it('serializes a source-backed finding with impact, remediation, and static veri
   expect(scan.data.summary.byConfidence.high).toBeGreaterThan(0);
 });
 
+it('parses valid TSX and JSX without malformed-source warnings', async () => {
+  const project = makeFixtureProject();
+  projects.push(project);
+  fs.writeFileSync(path.join(project.root, 'src/View.tsx'), 'export const View = () => <main>Safe</main>;\n');
+  fs.writeFileSync(path.join(project.root, 'src/Other.jsx'), 'export const Other = () => <div>Safe</div>;\n');
+  const scan = await scanProject(project.config);
+  if (!scan.ok) throw new Error(scan.error.message);
+  expect(scan.data.warnings.join(' ')).not.toMatch(/malformed source/i);
+  expect(scan.data.fileAnalysis.skippedFiles).not.toEqual(expect.arrayContaining([expect.objectContaining({ file: 'src/View.tsx' })]));
+});
+
 it('explains an empty root and skipped Node rules', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codesentinel-empty-')));
   try {
