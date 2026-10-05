@@ -324,6 +324,15 @@ async function verifyRemediationInner(config: AppConfig, remediationId: string):
         runtimeStatus = replay.data.status;
         runtimeReceiptId = replay.data.receiptId;
       } else {
+        const originalOrigins = before.data.hypotheses
+          .filter((hypothesis) => hypothesis.findingId === record.proposal.findingId)
+          .map((hypothesis) => before.data.runtimeResults[hypothesis.id])
+          .filter((result) => result !== undefined && result.status === 'verified')
+          .map((result) => result.targetOrigin);
+        if (!originalOrigins.includes(record.proposal.runtimeVerification.target.allowedOrigin)) {
+          record.status = 'verification_inconclusive'; record.updatedAt = now();
+          return err('VERIFICATION_INCONCLUSIVE', 'The replay target does not match the origin of the original verified runtime result.');
+        }
         const runtime = await verifyFinding(config, record.proposal.runtimeVerification);
         if (!runtime.ok) { record.status = runtime.error.code === 'TARGET_BLOCKED' ? 'verification_blocked' : 'verification_inconclusive'; return err(runtime.error.code, runtime.error.message); }
         runtimeStatus = runtime.data.result.status;
