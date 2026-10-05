@@ -1,7 +1,6 @@
 import type { InvestigationScope } from '../investigation/types.js';
 import type { AuditFocus, AuditSession, CapabilityPlanEntry } from './types.js';
 
-/** Deterministic mapping only. No model is consulted; the external AI decides what to actually investigate. */
 export const FOCUS_SCOPES: Record<AuditFocus, InvestigationScope[]> = {
   general: ['general_application_security'],
   authentication: ['authentication'],

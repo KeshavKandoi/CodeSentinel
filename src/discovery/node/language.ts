@@ -23,8 +23,6 @@ export function detectLanguages(root: string, ctx: NodeAnalysisContext): Detecte
     });
   }
 
-  // Based on file existence, not successful parse: a malformed package.json
-  // is still strong evidence this is a JS/Node project.
   if (fileExists(root, 'package.json')) {
     languages.push({
       name: 'JavaScript',

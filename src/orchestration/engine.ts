@@ -123,7 +123,6 @@ function refuse<T>(session: AuditSession, tool: AuditToolName, code: ToolErrorCo
   return err<T>(code, reason);
 }
 
-/** Time and step bounds. Applied before every state-changing operation. */
 function preflight(session: AuditSession, tool: AuditToolName): ToolOutcome<true> {
   if (Date.now() - Date.parse(session.createdAt) > session.limits.maxElapsedMs) {
     return refuse(session, tool, 'BUDGET_EXCEEDED', 'Audit elapsed-time limit exceeded.', 'blocked');
@@ -210,7 +209,6 @@ function boundSize(summary: AuditStateSummary): AuditStateSummary {
     s.outputTruncated = true;
   }
   s.evidenceRefs.truncated = s.evidenceRefs.listed.length < s.evidenceRefs.total;
-  // Keep the contract true even if future fields make the normal shrinkers insufficient.
   if (size() > max) {
     s.steps = [];
     s.hypotheses = [];
@@ -450,7 +448,7 @@ export async function requestAuditVerification(config: AppConfig, input: Runtime
     if (session.verificationAttempts >= session.limits.maxVerificationRequests) {
       return refuse(session, 'request_audit_verification', 'BUDGET_EXCEEDED', 'Maximum runtime verification requests for this audit reached.');
     }
-    session.verificationAttempts += 1; // rejected attempts count too: no unbounded retry loop
+    session.verificationAttempts += 1;
     const startedAt = now();
     const known = new Set(session.steps.flatMap((s) => s.investigationStepIds));
     const fail = (code: ToolErrorCode, message: string): ToolOutcome<AuditStateSummary> => {

@@ -2,7 +2,7 @@ import path from 'node:path';
 
 export interface ImportBinding {
   spec: string;
-  imported: string; // 'default', '*', or a named export
+  imported: string;
 }
 
 export interface ModuleExports {
@@ -32,7 +32,6 @@ function addImportClause(out: Map<string, ImportBinding>, clauseRaw: string, spe
   }
 }
 
-/** ES `import` and CommonJS `require` bindings (comments must already be stripped). */
 export function parseImports(code: string): Map<string, ImportBinding> {
   const out = new Map<string, ImportBinding>();
   let m: RegExpExecArray | null;
@@ -55,7 +54,6 @@ export function parseImports(code: string): Map<string, ImportBinding> {
   return out;
 }
 
-/** Resolves a relative import to a known project file. Aliases (@/, ~/) and packages return null. */
 export function resolveRelativeImport(fromFile: string, spec: string, fileSet: ReadonlySet<string>): string | null {
   if (!spec.startsWith('.')) return null;
   const base = path.posix.normalize(path.posix.join(path.posix.dirname(fromFile), spec));
@@ -72,7 +70,6 @@ export function resolveRelativeImport(fromFile: string, spec: string, fileSet: R
   return null;
 }
 
-/** Which known variables (routers, apps, plugins) a module exports, by default or by name. */
 export function parseExports(code: string, isKnownVar: (name: string) => boolean): ModuleExports {
   const out: ModuleExports = { named: new Map<string, string>() };
   let m: RegExpExecArray | null;

@@ -29,8 +29,6 @@ export function detectDocker(root: string): DockerInfo {
   };
 }
 
-/** Config files worth surfacing to later phases (build tooling, linting,
- * framework config) — presence only, no content interpretation here. */
 const CONFIG_FILE_CANDIDATES = [
   'tsconfig.json',
   '.eslintrc.json',
@@ -58,8 +56,6 @@ export function detectConfigFiles(root: string): string[] {
   return CONFIG_FILE_CANDIDATES.filter((name) => fileExists(root, name));
 }
 
-/** Env files are reported by name only — contents are never read here,
- * since they commonly hold secrets and this phase does no secret handling. */
 const ENV_FILE_CANDIDATES = [
   '.env',
   '.env.local',

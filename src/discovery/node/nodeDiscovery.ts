@@ -11,12 +11,6 @@ import { detectAuthIndicators } from './authIndicators.js';
 import { detectEntryPoints } from './entryPoints.js';
 import { detectDocker, detectConfigFiles, detectEnvFiles } from './dockerAndConfig.js';
 
-/**
- * Runs the full Node.js/TypeScript discovery pipeline and returns a
- * populated ProjectProfile. Never throws: a malformed package.json becomes
- * a warning in the profile rather than an exception, and every detector
- * degrades to "not detected" rather than crashing when evidence is absent.
- */
 export function runNodeDiscovery(root: string): ProjectProfile {
   const profile = emptyProjectProfile();
   profile.ecosystem = 'node';

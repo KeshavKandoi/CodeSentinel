@@ -2,21 +2,11 @@ import type { DetectedItem, Evidence } from '../types.js';
 import { fileExists, readTextFile } from '../manifestReader.js';
 import { hasDep, depVersion, type NodeAnalysisContext } from './context.js';
 
-/**
- * Framework detection is deliberately conservative: a dependency name
- * alone is treated as medium confidence, and confidence is raised to high
- * only when corroborated by a framework-specific config file or a
- * source-code import/require of that exact package. This avoids false
- * positives from, e.g., a file merely named "next.config.js.bak" or a
- * project that lists a framework as an unused transitive dependency.
- */
 
 interface FrameworkSpec {
   name: string;
   depNames: string[];
   configFiles: string[];
-  /** Regexes checked against a handful of likely source files; a match
-   * raises confidence from medium (dep-only) to high. */
   sourcePatterns: RegExp[];
 }
 
@@ -74,9 +64,6 @@ const FRONTEND_SPECS: FrameworkSpec[] = [
   },
 ];
 
-/** A handful of likely-entry-point files checked for import/require
- * evidence, kept small and deterministic rather than scanning the whole
- * tree (that is search_files's job, not discovery's). */
 const LIKELY_SOURCE_FILES = [
   'index.js',
   'index.ts',
@@ -99,11 +86,6 @@ function detectSpec(root: string, ctx: NodeAnalysisContext, spec: FrameworkSpec)
   const matchedDep = spec.depNames.find((d) => hasDep(ctx, d));
   const matchedConfig = spec.configFiles.find((f) => fileExists(root, f));
 
-  // A dependency listing is the required, authoritative signal. A config
-  // file with a matching name is only ever corroborating evidence — on its
-  // own it must NOT trigger detection, since a leftover/unrelated file
-  // (e.g. a stray next.config.js in a non-Next.js project) is common and
-  // must not produce a false positive.
   if (!matchedDep) return null;
 
   const evidence: Evidence[] = [
@@ -129,9 +111,6 @@ function detectSpec(root: string, ctx: NodeAnalysisContext, spec: FrameworkSpec)
     evidence.push({ source: `content-match:${sourceMatchFile}`, detail: `Import/usage pattern for ${spec.name} found` });
   }
 
-  // Dependency presence alone is medium confidence. High confidence
-  // requires the dependency to be corroborated by a matching config file
-  // and/or an actual import/usage pattern in a likely source file.
   const corroborated = Boolean(matchedConfig) || Boolean(sourceMatchFile);
   const confidence = corroborated ? 'high' : 'medium';
 

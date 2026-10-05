@@ -537,7 +537,7 @@ function scanModel(model: FastifyModel, st: BuildState): void {
 function registerPrefix(arg: CallArg | undefined, model: FastifyModel): string | null {
   if (!arg) return '';
   const t = arg.text.trim();
-  if (!t.startsWith('{')) return null; // options passed as a variable: prefix cannot be known
+  if (!t.startsWith('{')) return null;
   const props = parseObjectProps(t);
   const prefix = props.get('prefix');
   if (prefix === undefined) return '';

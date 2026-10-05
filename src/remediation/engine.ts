@@ -177,7 +177,6 @@ export async function applyRemediation(config: AppConfig, remediationId: string)
     if (!investigation.ok) return investigation;
     if (!findingFor(investigation.data, record.proposal.findingId)) return err('REPORT_FINDING_NOT_FOUND', `Finding "${record.proposal.findingId}" is no longer present in the authorized investigation.`);
     const checked: Array<{ change: RemediationFileChange; absolute: string; content: string; proposedHash: string; mode: number }> = [];
-    // Complete preflight: no mutation is allowed until every target passes.
     for (const change of record.proposal.files) {
       const result = validateFile(config, change); if (!result.ok) return result;
       if (sha256(result.data.content) !== change.originalContentHash) return err('REMEDIATION_CONFLICT', `Original hash mismatch for "${change.path}"; no files were changed.`);
@@ -202,15 +201,15 @@ export async function applyRemediation(config: AppConfig, remediationId: string)
         prepared.push({ target: item.absolute, temp, expectedHash: item.proposedHash });
       }
     } catch {
-      for (const item of prepared) { try { fs.rmSync(item.temp, { force: true }); } catch { /* cleanup is best effort */ } }
+      for (const item of prepared) { try { fs.rmSync(item.temp, { force: true }); } catch {  } }
       record.status = 'apply_failed'; record.updatedAt = now(); return err('INTERNAL_ERROR', 'Remediation preparation failed and no files were changed.');
     }
     record.status = 'prepared'; record.updatedAt = now();
     for (const item of checked) {
       let current: Buffer;
-      try { current = fs.readFileSync(item.absolute); } catch { for (const preparedFile of prepared) { try { fs.rmSync(preparedFile.temp, { force: true }); } catch { /* ignore */ } } record.status = 'apply_failed'; record.updatedAt = now(); return err('REMEDIATION_CONFLICT', `Target file "${item.change.path}" changed before commit.`); }
+      try { current = fs.readFileSync(item.absolute); } catch { for (const preparedFile of prepared) { try { fs.rmSync(preparedFile.temp, { force: true }); } catch {  } } record.status = 'apply_failed'; record.updatedAt = now(); return err('REMEDIATION_CONFLICT', `Target file "${item.change.path}" changed before commit.`); }
       if (sha256(current) !== item.change.originalContentHash) {
-        for (const preparedFile of prepared) { try { fs.rmSync(preparedFile.temp, { force: true }); } catch { /* ignore */ } }
+        for (const preparedFile of prepared) { try { fs.rmSync(preparedFile.temp, { force: true }); } catch {  } }
         record.status = 'apply_failed'; record.updatedAt = now(); return err('REMEDIATION_CONFLICT', `Target file "${item.change.path}" changed before commit.`);
       }
     }
@@ -224,7 +223,7 @@ export async function applyRemediation(config: AppConfig, remediationId: string)
       }
       for (const item of committed) if (sha256(fs.readFileSync(item.target)) !== item.expectedHash) throw new Error('post-commit hash verification failed');
     } catch {
-      for (const item of prepared) { try { fs.rmSync(item.temp, { force: true }); } catch { /* ignore */ } }
+      for (const item of prepared) { try { fs.rmSync(item.temp, { force: true }); } catch {  } }
       let canRestore = true;
       for (const item of committed) { try { if (sha256(fs.readFileSync(item.target)) !== item.expectedHash) canRestore = false; } catch { canRestore = false; } }
       if (canRestore) {
@@ -378,7 +377,7 @@ export async function rollbackRemediation(config: AppConfig, remediationId: stri
       }
       for (const item of restoreTargets) fs.renameSync(item.temp, item.absolute);
     } catch {
-      for (const item of restoreTargets) { try { fs.rmSync(item.temp, { force: true }); } catch { /* cleanup is best effort */ } }
+      for (const item of restoreTargets) { try { fs.rmSync(item.temp, { force: true }); } catch {  } }
       record.status = 'rollback_required'; record.updatedAt = now(); return err('INTERNAL_ERROR', 'Rollback failed while restoring the snapshot.');
     }
     for (const item of restoreTargets) { if (sha256(fs.readFileSync(item.absolute)) !== item.snapshot.originalContentHash) { record.status = 'rollback_required'; record.updatedAt = now(); return err('ROLLBACK_CONFLICT', `Restored hash verification failed for "${item.snapshot.path}".`); } }

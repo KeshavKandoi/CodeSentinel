@@ -35,10 +35,6 @@ function redactString(text: string): string {
 export function redactReportValue(value: unknown, depth = 0): unknown {
   if (depth > 8) return '[TRUNCATED]';
   if (typeof value === 'string') return redactString(value).slice(0, 2_000);
-  // Keep report arrays bounded, but preserve the evidence graph's references.
-  // Deep audits cap evidence at 1,000 items; truncating this to 100 after
-  // integrity validation would silently return findings pointing at absent
-  // evidence IDs.
   if (Array.isArray(value)) return value.slice(0, 1_000).map((item) => redactReportValue(item, depth + 1));
   if (value && typeof value === 'object') {
     const output: Record<string, unknown> = {};

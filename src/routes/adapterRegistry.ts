@@ -6,10 +6,6 @@ import { fastapiAdapter } from './adapters/fastapi.js';
 import { djangoAdapter } from './adapters/django.js';
 import type { FrameworkAdapter, RouteFramework } from './types.js';
 
-/**
- * Adding a framework = write an adapter and register it here. The discovery
- * engine (engine.ts) never needs to change.
- */
 const registry = new Map<RouteFramework, FrameworkAdapter>();
 
 export function registerAdapter(adapter: FrameworkAdapter): void {

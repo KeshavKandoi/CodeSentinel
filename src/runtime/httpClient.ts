@@ -3,15 +3,6 @@ import { validateRedirect, validateUrl } from './targetGuard.js';
 import type { RuntimeResponse, RuntimeTarget, TestSession, VerificationEvidence } from './types.js';
 import type { RuntimeRequest } from './types.js';
 
-/**
- * Hardened HTTP client for controlled runtime verification. Every request
- * passes through targetGuard's validateUrl/validateRedirect before being
- * sent. Never sends headers/cookies/credentials other than what the caller
- * explicitly attached to a TestSession or a single RuntimeRequest -- nothing
- * is read automatically from project files or the process environment here.
- * Sensitive header values and known secret-shaped body content are redacted
- * before being retained as evidence.
- */
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_RESPONSE_BYTES = 200_000;
@@ -58,10 +49,6 @@ function blockedEvidence(req: RuntimeRequest, reason: string): VerificationEvide
   );
 }
 
-/** Tracks per-verification-case request count, a simple min-interval rate
- * limit, and a bounded-concurrency semaphore. One instance per case run --
- * never shared across cases, so limits are always scoped to a single
- * hypothesis rather than the whole server lifetime. */
 export class RuntimeClientState {
   requestsIssued = 0;
   private lastRequestAt = 0;
@@ -143,7 +130,6 @@ async function readBodyCapped(response: Response, maxBytes: number): Promise<{ t
         try {
           await reader.cancel();
         } catch {
-          /* ignore */
         }
         break;
       }
@@ -261,10 +247,6 @@ async function performRequest(
   }
 }
 
-/** The single entrypoint every verification case must use to issue a
- * request. Validates method allowlist, per-case request cap, and target
- * boundary (via targetGuard) before anything is sent, then runs the
- * request through the rate-limit/concurrency-bounded state. */
 export async function issueRuntimeRequest(
   target: RuntimeTarget,
   sessions: Map<string, TestSession>,

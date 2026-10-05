@@ -4,18 +4,6 @@ import { issueRuntimeRequest, RuntimeClientState } from '../httpClient.js';
 import type { RuntimeTarget, TestSession, VerificationCase, VerificationResult } from '../types.js';
 import { blockedResult, buildResult, hasUnresolvedSegment, isAuthRejection, isSuccessStatus } from './common.js';
 
-/**
- * Case 1: Missing authentication candidate.
- *
- * Requests the route without authentication and compares against the
- * expected protected behavior. A 401/403 is treated as evidence the route
- * IS protected (not_reproduced). A 2xx response is *consistent* with
- * missing authentication but is never enough on its own to mark the finding
- * verified -- a generic public page returning 200 is not proof of an
- * authorization bypass -- so a bare success status is reported
- * `inconclusive`, per the spec's explicit "never prove a vulnerability
- * merely by receiving HTTP 200" requirement.
- */
 
 export function buildMissingAuthenticationCase(finding: AccessControlFinding, entry: AttackSurfaceEntry): VerificationCase {
   return {

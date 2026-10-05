@@ -1,7 +1,3 @@
-/**
- * Lightweight, deterministic JS/TS source helpers. Not a full parser: they
- * are deliberately conservative and return null/unknown instead of guessing.
- */
 
 import { redactSecurityText } from '../security/utils.js';
 
@@ -10,7 +6,6 @@ export interface CallArg {
   start: number;
 }
 
-/** Blanks out comments while preserving string contents, length, and line numbers. */
 export function stripJsComments(src: string): string {
   let out = '';
   let i = 0;
@@ -65,7 +60,6 @@ export function stripJsComments(src: string): string {
   return out;
 }
 
-/** Same-length copy with string and template contents blanked, so call patterns inside strings never match. */
 export function blankStringContents(src: string): string {
   let out = '';
   let i = 0;
@@ -108,7 +102,6 @@ export function buildLineIndex(text: string): number[] {
   return starts;
 }
 
-/** 1-based line number containing `index`. */
 export function lineAtIndex(starts: readonly number[], index: number): number {
   let lo = 0;
   let hi = starts.length - 1;
@@ -136,7 +129,6 @@ function skipString(text: string, start: number): number {
   return text.length;
 }
 
-/** Index of the bracket matching the one at `openIdx`, or -1. */
 export function findMatching(text: string, openIdx: number, limit = 200_000): number {
   const open = text.charAt(openIdx);
   const close = open === '(' ? ')' : open === '[' ? ']' : open === '{' ? '}' : '';
@@ -158,7 +150,6 @@ export function findMatching(text: string, openIdx: number, limit = 200_000): nu
   return -1;
 }
 
-/** Splits the arguments of the call whose '(' is at `openIdx`. Null if unbalanced or too large. */
 export function readCallArgs(text: string, openIdx: number): { args: CallArg[]; endIdx: number } | null {
   if (text.charAt(openIdx) !== '(') return null;
   const args: CallArg[] = [];
@@ -209,7 +200,6 @@ export function argDisplayName(text: string): string {
   return truncate(redactSecurityText(quoted), 80);
 }
 
-/** Expands `[a, b]` into items; any other text is returned as a single item. */
 export function splitArrayItems(text: string): string[] {
   const t = text.trim();
   if (!t.startsWith('[') || !t.endsWith(']')) return [t];
@@ -252,7 +242,6 @@ export function collectConstStrings(code: string): Map<string, string> {
   return out;
 }
 
-/** Resolves a literal, a known const string, or a template of known consts. Null when not static. */
 export function evalPathString(text: string, consts: ReadonlyMap<string, string>): string | null {
   const t = text.trim();
   const lit = stringLiteralValue(t);
@@ -273,7 +262,6 @@ export function evalPathString(text: string, consts: ReadonlyMap<string, string>
   return null;
 }
 
-/** Like evalPathString but also accepts arrays made only of string literals. Null when not static. */
 export function evalPathList(text: string, consts: ReadonlyMap<string, string>): string[] | null {
   const t = text.trim();
   if (t.startsWith('[') && t.endsWith(']')) {
@@ -291,7 +279,6 @@ export function evalPathList(text: string, consts: ReadonlyMap<string, string>):
 
 const PATH_IDENT_RE = /^(?:[A-Z][A-Z0-9_]*|[A-Za-z_$][\w$]*(?:Prefix|PREFIX|BasePath|BaseUrl))$/;
 
-/** True when the first argument of `.use(...)` looks like a mount path rather than middleware. */
 export function isPathLike(text: string, consts: ReadonlyMap<string, string>): boolean {
   const t = text.trim();
   if (t.startsWith('[')) return evalPathList(t, consts) !== null;
@@ -300,7 +287,6 @@ export function isPathLike(text: string, consts: ReadonlyMap<string, string>): b
   return PATH_IDENT_RE.test(t);
 }
 
-/** Body text `{ ... }` of a same-file function/arrow named `name`, or null (e.g. imported controllers). */
 export function findFunctionBody(code: string, name: string): string | null {
   const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const decl = new RegExp(

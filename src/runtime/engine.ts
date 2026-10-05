@@ -15,15 +15,6 @@ import { buildSessionMap, missingSessions } from './session.js';
 import { validateTarget } from './targetGuard.js';
 import type { RuntimeTarget, TestSession, VerificationCase, VerificationResult } from './types.js';
 
-/**
- * Phase 6 orchestration: locates the static finding and its route (by
- * re-running the existing Phase 4/5 static engines -- this server holds no
- * persistent finding store), validates the target-authorization boundary,
- * selects the single applicable verification case for that finding's
- * candidateType, and executes only that case's minimum required requests.
- * Never verifies every finding automatically -- one findingId, one target,
- * one explicit call.
- */
 
 export interface SessionParams {
   ownerSessionId?: string;
@@ -67,10 +58,6 @@ function runStaticAnalysis(config: AppConfig): AnalyzedProject {
   return { entries, findings: accessResult.findings };
 }
 
-/** Discovery-only preview: for every currently verifiable finding, what
- * case would run and what test inputs it requires. Never executes a
- * request -- purely informational, for an AI client deciding what to ask
- * the operator for before calling verify_finding. */
 export function listVerificationCases(config: AppConfig): VerificationCase[] {
   const { entries, findings } = runStaticAnalysis(config);
   const cases: VerificationCase[] = [];
@@ -194,11 +181,6 @@ async function executeCase(
   }
 }
 
-/**
- * Attaches runtime verification metadata to a *new* object. Static access
- * findings intentionally remain `status: 'suspected'`; runtime state belongs
- * in the separate verification metadata and verificationStatus fields.
- */
 function attachVerification(
   finding: AccessControlFinding,
   result: VerificationResult

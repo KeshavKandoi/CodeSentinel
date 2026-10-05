@@ -4,17 +4,6 @@ import { issueRuntimeRequest, RuntimeClientState } from '../httpClient.js';
 import type { RuntimeTarget, TestSession, VerificationCase, VerificationResult } from '../types.js';
 import { blockedResult, buildResult, hasUnresolvedSegment, isAuthRejection, isSuccessStatus } from './common.js';
 
-/**
- * Case 5: Public/private inconsistency.
- *
- * Compares an unauthenticated request against an authenticated one for a
- * route Phase 5 indicates should be protected. Unlike the single-request
- * cases, this one's verification condition is a genuine *comparison*
- * (status equivalence between the two responses), which is stronger
- * evidence than a bare 200 -- if the unauthenticated caller gets the exact
- * same status as the authenticated caller, and that status is not itself an
- * auth rejection, this is real evidence of inconsistent protection.
- */
 
 export function buildPublicPrivateInconsistencyCase(
   finding: AccessControlFinding,

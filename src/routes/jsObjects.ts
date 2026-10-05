@@ -1,6 +1,5 @@
 import { findMatching, readCallArgs } from './jsScanner.js';
 
-/** Top-level properties of an object literal `{ a: 1, b, c() {} }` as key -> value text. Spreads are skipped. */
 export function parseObjectProps(objText: string): Map<string, string> {
   const out = new Map<string, string>();
   const t = objText.trim();
@@ -19,7 +18,6 @@ export function parseObjectProps(objText: string): Map<string, string> {
   return out;
 }
 
-/** Text of `const NAME = { ... }` declared in the same file, or null. */
 export function findObjectConst(code: string, name: string): string | null {
   const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const m = new RegExp(`(?:const|let|var)\\s+${esc}\\s*(?::[^=\\n]+)?=\\s*\\{`).exec(code);

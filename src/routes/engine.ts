@@ -6,10 +6,6 @@ import { getAdapters } from './adapterRegistry.js';
 import { createAdapterContext } from './sourceIndex.js';
 import type { AttackSurfaceEntry, DiscoverRoutesResult, Exposure } from './types.js';
 
-/**
- * Phase 4 entry point. Static only: never starts the app or sends requests.
- * Runs every adapter whose appliesTo() matches the Phase 2 ProjectProfile.
- */
 export function discoverRoutes(config: AppConfig): ToolOutcome<DiscoverRoutesResult> {
   const warnings: string[] = [];
   const profile = runProjectDiscovery(config.projectRoot);
@@ -40,7 +36,6 @@ export function discoverRoutes(config: AppConfig): ToolOutcome<DiscoverRoutesRes
     }
   }
 
-  // Exact duplicates (same id) are removed; different definitions of the same route are reported.
   const seenIds = new Set<string>();
   const entries: AttackSurfaceEntry[] = [];
   for (const entry of collected) {

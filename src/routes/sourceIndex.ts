@@ -6,7 +6,6 @@ import { dirExists, fileExists, listTopLevelNames } from '../discovery/manifestR
 import { readFile } from '../fs/fsOperations.js';
 import type { AdapterContext, SourceFile } from './types.js';
 
-/** Directories never analyzed: dependencies, VCS, build output, virtualenvs, caches, generated code, docs. */
 const IGNORED_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', 'out', '.next', '.nuxt', '.turbo', '.cache', 'coverage', '.vercel',
   '.output', '__pycache__', '.venv', 'venv', 'virtualenv', '.tox', '.mypy_cache', '.pytest_cache', '.ruff_cache',
@@ -21,11 +20,6 @@ function isIgnoredSourceFile(rel: string): boolean {
   return /\.d\.ts$|\.min\.js$|\.(test|spec)\.[cm]?[jt]sx?$|\.generated\.\w+$|^(test_.*|.*_test|conftest)\.py$/.test(base);
 }
 
-/**
- * Builds the context handed to framework adapters. All directory listing and
- * file reading goes through the Phase 1/2 sandboxed helpers (pathGuard-backed),
- * so adapters cannot read outside PROJECT_ROOT and never throw on I/O.
- */
 export function createAdapterContext(config: AppConfig, profile: ProjectProfile, warnings: string[]): AdapterContext {
   const root = config.projectRoot;
   let allFiles: string[] | null = null;
@@ -46,7 +40,7 @@ export function createAdapterContext(config: AppConfig, profile: ProjectProfile,
     }
       if (dirExists(root, childRel)) {
         if (IGNORED_DIRS.has(name) || name.endsWith('.egg-info')) continue;
-        if (fileExists(root, `${childRel}/pyvenv.cfg`)) continue; // Python virtualenv
+        if (fileExists(root, `${childRel}/pyvenv.cfg`)) continue;
         walk(childRel, depth + 1, out);
       } else if (fileExists(root, childRel)) {
         out.push(childRel);

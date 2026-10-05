@@ -1,12 +1,6 @@
 import type { Confidence } from '../../discovery/types.js';
 import type { RuntimeResponse, VerificationCase, VerificationEvidence, VerificationResult, VerificationStatus } from '../types.js';
 
-/**
- * Deterministic, code-evaluated helpers shared by every verification case.
- * No case file is permitted to ask an LLM whether a response "looks"
- * vulnerable -- every verification condition here is a plain boolean
- * expression over status codes and response shape.
- */
 
 export function isAuthRejection(response: RuntimeResponse): boolean {
   return response.status === 401 || response.status === 403;
@@ -58,9 +52,6 @@ export function blockedResult(
   return buildResult(vcase, 'blocked', 'low', `Verification blocked: ${reason}`, evidence, startedAt, reason);
 }
 
-/** True when a path still has an unresolved dynamic segment (":id", "{id}",
- * "<int:id>") that the caller must have concretized before a real request
- * can be sent against it. Verification never guesses a resource id. */
 export function hasUnresolvedSegment(path: string): boolean {
   return /[:{<]/.test(path);
 }

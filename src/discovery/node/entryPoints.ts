@@ -2,14 +2,6 @@ import type { EntryPoint, Evidence } from '../types.js';
 import { fileExists } from '../manifestReader.js';
 import type { NodeAnalysisContext } from './context.js';
 
-/**
- * Entry-point detection combines several signals: package.json's "main"
- * field, the target of the "start" script, and a short list of common
- * conventional filenames. Each candidate is deduplicated by path, and
- * evidence accumulates per-candidate rather than stopping at the first
- * match, so a file confirmed by two signals is more trustworthy than one
- * confirmed by a single guess.
- */
 
 const CONVENTIONAL_ENTRY_CANDIDATES = [
   'src/index.ts',
@@ -39,8 +31,6 @@ const CONVENTIONAL_ENTRY_CANDIDATES = [
 
 function extractScriptEntryPath(scriptCmd: string | undefined): string | null {
   if (!scriptCmd) return null;
-  // Matches the first bare-ish file argument to node/ts-node/nodemon, e.g.
-  // "node dist/index.js", "ts-node src/index.ts", "nodemon src/server.ts".
   const match = scriptCmd.match(/(?:node|ts-node|nodemon|node --loader ts-node\/esm)\s+(?:--[\w-]+(?:=\S+)?\s+)*([^\s]+\.(?:js|ts|mjs|cjs))/);
   return match ? match[1] : null;
 }
@@ -76,10 +66,6 @@ export function detectEntryPoints(root: string, ctx: NodeAnalysisContext): Entry
 
   const results: EntryPoint[] = [];
   for (const [path, evidence] of candidates.entries()) {
-    // Only report a candidate as an entry point if it actually exists on
-    // disk, OR it was named by main/start (still useful even if the built
-    // output doesn't exist yet, e.g. "dist/index.js" pre-build) — but we
-    // downgrade confidence in that case.
     const exists = fileExists(root, path);
     const namedBySignal = evidence.some((e) => e.source !== `file:${path}`);
     if (!exists && !namedBySignal) continue;
@@ -87,12 +73,11 @@ export function detectEntryPoints(root: string, ctx: NodeAnalysisContext): Entry
     let confidence: 'high' | 'medium' | 'low';
     if (exists && evidence.length >= 2) confidence = 'high';
     else if (exists) confidence = 'medium';
-    else confidence = 'low'; // named by main/start but file not found (e.g. unbuilt dist/)
+    else confidence = 'low';
 
     results.push({ path, confidence, evidence });
   }
 
-  // Stable ordering: high confidence first, then by path for determinism.
   results.sort((a, b) => {
     const rank = { high: 0, medium: 1, low: 2 };
     if (rank[a.confidence] !== rank[b.confidence]) return rank[a.confidence] - rank[b.confidence];

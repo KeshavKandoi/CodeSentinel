@@ -13,20 +13,15 @@ export interface SourceRange {
 
 export interface RouteParameter {
   name: string;
-  type: string; // 'unknown' when it cannot be determined statically
+  type: string;
   required: boolean | 'unknown';
 }
 
-/**
- * One externally reachable endpoint. Any value that cannot be determined
- * statically is the literal string 'unknown' (or an empty list) rather than
- * a guess. `evidence` explains exactly why the entry was discovered.
- */
 export interface AttackSurfaceEntry {
   id: string;
   method: HttpMethod;
-  path: string; // 'unknown' when not statically resolvable
-  pathResolved: boolean; // false when a prefix or the path itself is unresolved
+  path: string;
+  pathResolved: boolean;
   framework: RouteFramework;
   language: RouteLanguage;
   file: string;
@@ -37,7 +32,7 @@ export interface AttackSurfaceEntry {
   router: string;
   middleware: string[];
   dependencies: string[];
-  parameters: RouteParameter[]; // path parameters
+  parameters: RouteParameter[];
   queryParameters: RouteParameter[];
   bodyParameters: RouteParameter[];
   authIndicators: string[];
@@ -58,9 +53,7 @@ export interface AdapterContext {
   config: AppConfig;
   profile: ProjectProfile;
   warnings: string[];
-  /** Sandboxed, ignore-aware listing of source files with one of the extensions. */
   listSourceFiles(extensions: readonly string[]): string[];
-  /** Sandboxed, cached, never-throwing read. Null when unreadable or truncated. */
   readSource(path: string): SourceFile | null;
 }
 

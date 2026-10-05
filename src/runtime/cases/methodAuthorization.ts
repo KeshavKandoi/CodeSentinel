@@ -6,18 +6,6 @@ import { blockedResult, buildResult, hasUnresolvedSegment, isAuthRejection, isSu
 
 const DESTRUCTIVE_METHODS = new Set(['DELETE']);
 
-/**
- * Case 6: Method-level authorization inconsistency.
- *
- * Phase 5's `inconsistent_authorization` finding already identifies a
- * specific unprotected method sibling to a protected one on the same
- * resource. This case only ever tests that one already-identified weaker
- * method, and only with explicitly configured, non-destructive test calls.
- * DELETE (or any other method the caller marks destructive) is refused
- * unless the target explicitly sets allowDestructiveMethods AND the case
- * was built against a dedicated fixture endpoint the caller has vetted --
- * this module does not attempt to infer "non-destructive" on its own.
- */
 
 export function buildMethodAuthorizationCase(finding: AccessControlFinding, entry: AttackSurfaceEntry): VerificationCase {
   return {

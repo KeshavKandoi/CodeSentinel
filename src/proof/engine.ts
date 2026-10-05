@@ -93,7 +93,7 @@ const SAFE_SOURCE_ADAPTERS: SourceProofAdapter[] = [
   { type: 'sql_injection', categories: ['injection'], marker: 'CODESENTINEL_PROOF_SQLI_SENTINEL', requestValue: 'codesentinel-inert-probe', parameter: 'query', title: 'SQL injection proof', notes: 'Requires a local fixture-controlled semantic marker, never a generic SQL error.' },
   { type: 'command_injection', categories: ['command_injection'], marker: 'CODESENTINEL_PROOF_COMMAND_SENTINEL', requestValue: 'codesentinel-inert-probe', parameter: 'command', title: 'Command injection proof', notes: 'Requires a local fixture-controlled marker; CodeSentinel never executes the supplied value.' },
   { type: 'xss_reflected', categories: ['xss'], marker: 'CODESENTINEL_PROOF_XSS_SENTINEL', requestValue: '<CODESENTINEL_PROOF_XSS_SENTINEL>', parameter: 'q', title: 'Reflected XSS proof', notes: 'Verifies exact unencoded reflection of a unique inert marker, not script execution.' },
-  { type: 'jwt_verification', categories: ['authentication'], marker: 'invalid-signature-authorization', requestValue: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjb2Rlc2VudGluZWwifQ.invalid-signature', parameter: 'token', title: 'JWT verification proof', notes: 'Uses a deterministic invalid signature token and verifies the protected authorization behavior; decoded claims and markers are never treated as proof.', oracleKind: 'authorization_behavior', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-016' },
+  { type: 'jwt_verification', categories: ['authentication'], marker: 'invalid-signature-authorization', requestValue: `${Buffer.from(JSON.stringify({ alg: 'HS256' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: 'codesentinel' })).toString('base64url')}.invalid-signature`, parameter: 'token', title: 'JWT verification proof', notes: 'Uses a deterministic invalid signature token and verifies the protected authorization behavior; decoded claims and markers are never treated as proof.', oracleKind: 'authorization_behavior', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-016' },
   { type: 'session_cookie_flags', categories: ['security_configuration'], marker: 'httponly,samesite,secure', parameter: 'probe', title: 'Session cookie flags proof', notes: 'Inspects only a redacted cookie-attribute summary; cookie names and values are never retained.', oracleKind: 'cookie_flags_incomplete', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-017' },
   { type: 'permissive_cors', categories: ['cors'], marker: 'access-control-allow-origin:*', parameter: 'origin', title: 'Permissive CORS proof', notes: 'Requires the actual response header to allow every origin; status alone is insufficient.', oracleKind: 'header_contains' },
   { type: 'insecure_deserialization', categories: ['deserialization'], marker: 'CODESENTINEL_PROOF_DESERIALIZED', requestValue: 'codesentinel-inert-probe', parameter: 'payload', title: 'Insecure deserialization proof', notes: 'Requires an explicit local semantic marker and never executes the supplied payload in CodeSentinel.', matchesFinding: (finding) => finding.ruleId === 'CS-NODE-011' },
@@ -403,10 +403,6 @@ function sourceReceipt(
   });
 }
 
-/** Replays a previously verified source proof after a controlled remediation.
- * The original static finding is intentionally not re-read: a successful fix
- * is expected to remove it. The stored proof case supplies only the original
- * bounded route shape; Phase 6 still validates the target and request. */
 export async function replaySecurityProof(
   config: AppConfig,
   request: VerifyFindingRequest,

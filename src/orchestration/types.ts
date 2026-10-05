@@ -53,7 +53,6 @@ export interface AuditObjective {
   notice: string;
 }
 
-/** Recorded only by the orchestrator when it executes a real capability. Never created from external input. */
 export interface AuditStep {
   id: string;
   sequence: number;
@@ -75,7 +74,6 @@ export interface AuditStep {
 
 export type AuditHypothesisStatus = 'proposed' | 'linked' | 'verified' | 'not_reproduced' | 'inconclusive' | 'blocked';
 
-/** A hypothesis is a claim to investigate. It is never evidence and never a confirmed finding. */
 export interface AuditHypothesis {
   kind: 'hypothesis';
   isEvidence: false;

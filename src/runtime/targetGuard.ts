@@ -2,31 +2,6 @@ import dns from 'node:dns';
 import net from 'node:net';
 import type { RuntimeTarget } from './types.js';
 
-/**
- * The single choke point every outbound runtime-verification request must
- * pass through. Nothing in httpClient.ts is permitted to construct or
- * follow a URL without going through validateUrl()/validateRedirect() here.
- *
- * Defense in depth against SSRF:
- *  1. allowedOrigin is parsed strictly: http/https only, no embedded
- *     credentials, normalized host+port.
- *  2. The request path is checked for tricks that could make it resolve
- *     outside the origin (protocol-relative "//", embedded "@", backslash
- *     tricks, absolute URLs passed as a "path").
- *  3. The hostname is actually resolved via DNS, and *every* resolved IP is
- *     checked against private/loopback/link-local/metadata ranges -- so a
- *     hostname that looks fine but resolves to a private or metadata
- *     address is blocked (protects against DNS rebinding).
- *  4. Loopback (127.0.0.0/8, ::1) is allowed by default, matching the
- *     "default to local development targets" requirement. Any other
- *     private-range destination requires the caller to explicitly set
- *     allowPrivateNetworkTarget: true on the RuntimeTarget -- an attacker
- *     (or a careless caller) supplying an external-looking origin cannot
- *     silently get private-network access.
- *  5. Every redirect hop is re-validated with the same checks and must
- *     still resolve to the exact configured origin -- redirects are never
- *     allowed to leave allowedOrigin.
- */
 
 export interface ValidationBlocked {
   ok: false;
@@ -51,17 +26,14 @@ const CLOUD_METADATA_HOSTS = new Set([
   'metadata.google.internal',
   'metadata.goog',
   'metadata.azure.com',
-  '100.100.100.200', // Alibaba Cloud metadata
-  'fd00:ec2::254', // AWS IMDSv2 IPv6
+  '100.100.100.200',
+  'fd00:ec2::254',
 ]);
 
 function blocked(reason: string): ValidationBlocked {
   return { ok: false, reason };
 }
 
-/** Parses and strictly validates the configured allowed origin. Rejects
- * anything that isn't exactly scheme://host[:port] with no path, query,
- * fragment, or embedded credentials. */
 export function parseAllowedOrigin(raw: string): ParsedOrigin | ValidationBlocked {
   let parsed: URL;
   try {
@@ -93,7 +65,6 @@ function ipVersion(ip: string): 4 | 6 | 0 {
   return net.isIP(ip) as 4 | 6 | 0;
 }
 
-/** True for loopback addresses: 127.0.0.0/8, ::1, and the literal "localhost". */
 export function isLoopback(hostnameOrIp: string): boolean {
   const h = hostnameOrIp.toLowerCase();
   if (h === 'localhost') return true;
@@ -102,28 +73,25 @@ export function isLoopback(hostnameOrIp: string): boolean {
   return false;
 }
 
-/** True for RFC1918 / link-local / unique-local private network ranges.
- * Does NOT include loopback -- callers check isLoopback separately since
- * loopback has different default-allow treatment. */
 export function isPrivateRange(ip: string): boolean {
   const version = ipVersion(ip);
   if (version === 4) {
     const parts = ip.split('.').map((p) => Number.parseInt(p, 10));
     if (parts.length !== 4 || parts.some((p) => Number.isNaN(p))) return false;
     const [a, b] = parts as [number, number, number, number];
-    if (a === 10) return true; // 10.0.0.0/8
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-    if (a === 192 && b === 168) return true; // 192.168.0.0/16
-    if (a === 169 && b === 254) return true; // 169.254.0.0/16 (link-local, includes cloud metadata)
-    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 (carrier-grade NAT)
-    if (a === 0) return true; // 0.0.0.0/8
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    if (a === 0) return true;
     return false;
   }
   if (version === 6) {
     const h = ip.toLowerCase();
-    if (h.startsWith('fc') || h.startsWith('fd')) return true; // fc00::/7 unique local
-    if (h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb')) return true; // fe80::/10 link-local
-    if (h.startsWith('::ffff:')) return isPrivateRange(h.slice(7)); // IPv4-mapped IPv6
+    if (h.startsWith('fc') || h.startsWith('fd')) return true;
+    if (h.startsWith('fe8') || h.startsWith('fe9') || h.startsWith('fea') || h.startsWith('feb')) return true;
+    if (h.startsWith('::ffff:')) return isPrivateRange(h.slice(7));
     return false;
   }
   return false;
@@ -143,10 +111,6 @@ async function resolveHostAddresses(hostname: string): Promise<string[]> {
   }
 }
 
-/** Validates one hostname (from the allowed origin, or from a redirect
- * Location header) against the metadata/private-range/loopback rules.
- * Every resolved address must pass, not just one -- a hostname with mixed
- * public/private A records is rejected. */
 async function validateHostname(hostname: string, allowPrivateNetworkTarget: boolean): Promise<ValidationBlocked | null> {
   const bare = hostname.replace(/^\[|\]$/g, '');
   if (net.isIP(bare) === 0 && bare !== 'localhost') return blocked(`Destination "${hostname}" must be localhost or a literal IP address.`);
@@ -166,7 +130,7 @@ async function validateHostname(hostname: string, allowPrivateNetworkTarget: boo
     if (isCloudMetadataDestination(addr)) {
       return blocked(`Destination "${hostname}" resolves to a cloud metadata address (${addr}) and is never permitted.`);
     }
-    if (isLoopback(addr)) continue; // loopback always allowed
+    if (isLoopback(addr)) continue;
     if (isPrivateRange(addr)) {
       if (!allowPrivateNetworkTarget) {
         return blocked(
@@ -180,9 +144,6 @@ async function validateHostname(hostname: string, allowPrivateNetworkTarget: boo
   return null;
 }
 
-/** Validates the fully-configured RuntimeTarget itself (before any request
- * is made). This is the first gate: verify_finding must call this and
- * refuse to proceed at all if it fails. */
 export async function validateTarget(target: RuntimeTarget): Promise<ValidationBlocked | null> {
   const parsed = parseAllowedOrigin(target.allowedOrigin);
   if ('reason' in parsed) return parsed;
@@ -194,10 +155,6 @@ export async function validateTarget(target: RuntimeTarget): Promise<ValidationB
 const PATH_ESCAPE_RE = /^\s*\/\/|@|\\\\|^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 const ENCODED_PATH_ESCAPE_RE = /%2f|%5c|%40/i;
 
-/** Builds and validates the full request URL for one call within an
- * already-validated target. Rejects any path that could smuggle an
- * absolute URL, protocol-relative reference, or embedded credentials past
- * the configured origin. */
 export async function validateUrl(target: RuntimeTarget, path: string): Promise<ValidationResult> {
   const parsedOrigin = parseAllowedOrigin(target.allowedOrigin);
   if ('reason' in parsedOrigin) return blocked(parsedOrigin.reason);
@@ -228,9 +185,6 @@ export async function validateUrl(target: RuntimeTarget, path: string): Promise<
   return { ok: true, url };
 }
 
-/** Validates a redirect Location header. The resulting URL must resolve to
- * the exact same origin as the target -- redirects are never allowed to
- * leave allowedOrigin, regardless of what the server sends. */
 export async function validateRedirect(target: RuntimeTarget, location: string, currentUrl: URL): Promise<ValidationResult> {
   let resolved: URL;
   try {
@@ -253,7 +207,6 @@ export async function validateRedirect(target: RuntimeTarget, location: string, 
   const path = `${resolved.pathname}${resolved.search}`;
   return validateUrl(target, path === '' ? '/' : path).then((result) => {
     if (!result.ok) return result;
-    // validateUrl already re-checked scheme/host/port against allowedOrigin.
     return result;
   });
 }

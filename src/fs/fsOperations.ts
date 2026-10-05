@@ -200,7 +200,6 @@ export interface SearchFilesOptions {
   maxResults: number;
   isRegex: boolean;
   allowSensitive?: boolean;
-  /** Internal scan accounting; never changes which files search returns. */
   onFileRead?: (filePath: string) => void;
 }
 

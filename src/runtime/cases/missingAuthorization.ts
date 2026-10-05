@@ -4,18 +4,6 @@ import { issueRuntimeRequest, RuntimeClientState } from '../httpClient.js';
 import type { RuntimeTarget, TestSession, VerificationCase, VerificationResult } from '../types.js';
 import { blockedResult, buildResult, hasUnresolvedSegment, isAuthRejection, isSuccessStatus, writeChangedState } from './common.js';
 
-/**
- * Case 3: Missing authorization candidate.
- *
- * Uses an explicitly configured lower-privileged identity and requests a
- * route Phase 5 flagged as administrative/privileged. A rejection is
- * evidence the role check IS enforced (not_reproduced). For a
- * state-changing method, a 2xx response directly demonstrates the
- * privileged action succeeded for a low-privileged identity -- the
- * verification condition itself. For a read, 2xx is inconclusive for the
- * same reason as the other cases: a generic response body is not proof the
- * privileged action/resource was actually returned.
- */
 
 export function buildMissingAuthorizationCase(
   finding: AccessControlFinding,

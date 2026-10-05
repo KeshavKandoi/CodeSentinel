@@ -49,7 +49,6 @@ export interface EntryInput {
   evidence: Evidence[];
 }
 
-/** Single place where guards are classified and public/protected is decided, so every adapter behaves the same. */
 export function buildEntry(input: EntryInput): AttackSurfaceEntry {
   const guards = classifyGuards([...input.middleware, ...input.dependencies]);
   const authIndicators = unique([...guards.authentication, ...input.extraAuth]);

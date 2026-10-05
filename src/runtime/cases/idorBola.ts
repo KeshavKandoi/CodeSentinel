@@ -4,25 +4,6 @@ import { issueRuntimeRequest, RuntimeClientState } from '../httpClient.js';
 import type { RuntimeTarget, TestSession, VerificationCase, VerificationResult } from '../types.js';
 import { blockedResult, buildResult, hasUnresolvedSegment, isAuthRejection, isNotFound, isSuccessStatus, writeChangedState } from './common.js';
 
-/**
- * Case 2: IDOR/BOLA candidate.
- *
- * Uses two explicitly configured controlled test identities. `ownerSessionId`
- * is the identity the resource at `vcase.path` belongs to (used only for
- * context/objective text -- never called here); `otherSessionId` is the
- * identity that must NOT be able to access/modify it. The path must already
- * be a concrete, fixture-supplied resource identifier -- this case never
- * guesses or enumerates resource ids.
- *
- * A rejection (401/403/404) for the other identity is evidence ownership IS
- * enforced (not_reproduced). For a state-changing method, a 2xx response
- * directly demonstrates the cross-user write/delete succeeded -- that is the
- * verification condition itself, not an incidental 200, so it is reported
- * verified. For a read (GET/HEAD), a 2xx is only reported inconclusive: it
- * is consistent with IDOR but could equally be a legitimately shared/public
- * resource, and this engine has no way to compare response content against
- * "owner-only" data without risking exposing more than necessary.
- */
 
 export function buildIdorCase(
   finding: AccessControlFinding,

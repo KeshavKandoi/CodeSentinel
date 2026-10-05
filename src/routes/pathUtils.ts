@@ -8,7 +8,6 @@ export function toHttpMethod(name: string): HttpMethod {
   return found ?? 'unknown';
 }
 
-/** Joins route fragments into one normalized path: leading slash, no doubled or trailing slashes. */
 export function joinRoutePath(...parts: string[]): string {
   const segments: string[] = [];
   for (const part of parts) {
@@ -30,7 +29,6 @@ export function makeParam(name: string, type = 'unknown', required: boolean | 'u
   return { name, type, required };
 }
 
-/** Express/Fastify/Nest style `:id` and `:id?` parameters. */
 export function expressPathParams(routePath: string): RouteParameter[] {
   const out: RouteParameter[] = [];
   const re = /:([A-Za-z_]\w*)(\?)?/g;

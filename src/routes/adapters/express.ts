@@ -63,7 +63,7 @@ interface RouterNode {
 interface MountEdge {
   parent: string;
   child: string;
-  prefixes: Array<string | null>; // null = prefix not statically resolvable
+  prefixes: Array<string | null>;
   middleware: string[];
   line: number;
   text: string;
@@ -143,7 +143,6 @@ function resolveImportedRouter(fromFile: string, spec: string, imported: string,
   const exportedVar = imported === 'default' || imported === '*' ? tm.exports.defaultVar : tm.exports.named.get(imported);
   if (exportedVar && tm.vars.has(exportedVar)) return { keys: [nodeKey(target, exportedVar)], guess: false };
 
-  // No explicit export found: only accept it when the file has exactly one router (flagged as a lower-confidence guess).
   if (imported === 'default') {
     const routers = Array.from(tm.vars.entries()).filter(([, kind]) => kind === 'router');
     const only = routers[0];
@@ -196,7 +195,6 @@ function scanModel(model: FileModel, st: BuildState): void {
   const masked = blankStringContents(code);
   let m: RegExpExecArray | null;
 
-  // 1) app.get('/x', ...), router.post('/y', ...)
   const callRe = /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|post|put|patch|delete|head|options|all)\s*\(/g;
   while ((m = callRe.exec(masked)) !== null) {
     const recv = m[1] ?? '';
@@ -208,12 +206,10 @@ function scanModel(model: FileModel, st: BuildState): void {
       continue;
     }
     const pathArg = call.args[0];
-    // app.get('setting') is Express's settings getter, not a route.
     if (call.args.length < 2 || !pathArg || isFunctionLike(pathArg.text)) continue;
     node.routes.push(makeRoute(model, m[2] ?? '', pathArg.text, call.args.slice(1), m.index, call.endIdx));
   }
 
-  // 2) router.route('/x').get(h).post(h2)
   const routeRe = /\b([A-Za-z_$][\w$]*)\s*\.\s*route\s*\(/g;
   while ((m = routeRe.exec(masked)) !== null) {
     const node = st.nodes.get(nodeKey(file, m[1] ?? ''));
@@ -235,7 +231,6 @@ function scanModel(model: FileModel, st: BuildState): void {
     }
   }
 
-  // 3) app.use(...) / router.use(...): mounts and middleware
   const useRe = /\b([A-Za-z_$][\w$]*)\s*\.\s*use\s*\(/g;
   while ((m = useRe.exec(masked)) !== null) {
     const recv = m[1] ?? '';
@@ -255,7 +250,6 @@ function scanModel(model: FileModel, st: BuildState): void {
       prefixes = evalPathList(first.text, model.consts) ?? [null];
       rest = call.args.slice(1);
     } else if (first && !isFunctionLike(first.text) && first.text.includes('+') && /['"]/.test(first.text)) {
-      // Computed prefix such as getBase() + '/x': never guess, mark it unresolved.
       hasPath = true;
       prefixes = [null];
       rest = call.args.slice(1);
@@ -292,7 +286,6 @@ function scanModel(model: FileModel, st: BuildState): void {
   }
 }
 
-/** Middleware registered with .use() on `node` before `beforeLine` that applies to `pathHint`. */
 function applicableUses(node: RouterNode, beforeLine: number, pathHint: string): string[] {
   const out: string[] = [];
   for (const u of node.uses) {

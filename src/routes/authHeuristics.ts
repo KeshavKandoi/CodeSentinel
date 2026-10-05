@@ -1,8 +1,3 @@
-/**
- * Name/pattern based classification of guards (middleware, dependencies,
- * decorators). These are static heuristics: they produce *indicators*, never
- * proof that a route is or is not protected.
- */
 const NON_AUTH_RE = /rate[-_]?limit|throttl|cors|helmet|morgan|logger|compression|bodyparser|express\.(json|urlencoded|static)/i;
 const AUTHN_RE = /(authenticat|auth(?!oriz)|jwt|passport|session|bearer|token|login|signin|protect|requireuser|isloggedin|api[_-]?key|basicauth)/i;
 const AUTHZ_RE = /(authoriz|role|permission|admin|\bacl\b|rbac|policy|casl|scope|isowner|ownership|checkaccess|hasaccess|\bcan\()/i;
