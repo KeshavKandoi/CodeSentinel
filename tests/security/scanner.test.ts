@@ -55,7 +55,10 @@ describe('Phase 3 static security scanner', () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.data.project.ecosystem).toBe('unknown');
+      expect(result.data.project.nestedProjects).toEqual(['service']);
+      expect(result.data.message).toMatch(/Nested Node project/i);
       expect(result.data.rulesRun).toEqual([]);
+      expect(result.data.fileAnalysis.analyzed).toBe(0);
       expect(result.data.warnings.join(' ')).toMatch(/service.*projectRoot/i);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -132,6 +135,7 @@ describe('Phase 3 static security scanner', () => {
       expect(findings.some((finding) => finding.file === 'src/large-generated.js')).toBe(false);
       const boundedScan = await scanProject(config);
       expect(boundedScan.ok && boundedScan.data.warnings.some(warning => warning.includes('src/large-generated.js') && warning.includes('read limit'))).toBe(true);
+      expect(boundedScan.ok && boundedScan.data.fileAnalysis.skippedFiles.some(item => item.file === 'src/large-generated.js' && item.reason.includes('read limit'))).toBe(true);
     } finally {
       fs.rmSync(largeFile, { force: true });
     }

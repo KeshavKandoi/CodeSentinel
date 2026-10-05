@@ -78,6 +78,13 @@ CodeSentinel provides a rich set of discovery, static, and orchestration tools. 
 
 - `analyze_project`: Detects the programming language, framework, database, and ecosystem. (STATIC-ONLY)
 - `scan_project`: Runs deterministic security rules to detect static code issues. (STATIC-ONLY)
+- `discover_routes`: Generates an inventory of externally reachable API routes. (METADATA-ONLY)
+- `analyze_access_control`: Classifies route authentication (public/authenticated/roles) and surfaces IDOR/BOLA candidates. (STATIC-ONLY)
+- `run_full_security_audit`: Runs the unified read-only audit pipeline with stable finding IDs and an optional loopback proof stage. (STATIC + RUNTIME-PROVEN when a target is supplied)
+- `start_security_audit`: Creates a bounded session with specific scopes. (METADATA-ONLY)
+- `prove_security_finding`: Issues a verifiable payload to prove a vulnerability locally. (RUNTIME-PROVEN)
+- `propose_remediation`: Submits an AI-generated fix for verification. (METADATA-ONLY)
+- `apply_remediation`: Applies the authorized fix to the source. (RUNTIME-PROVEN / VERIFIED_RESOLVED)
 
 ### Phase 2 Node and WebSocket detection
 
@@ -99,13 +106,16 @@ Each static finding now includes an `impact` field alongside severity, confidenc
 The configured `projectRoot` should be the application directory containing `package.json`. Node analysis runs for that root. Python markers are recognized but Node rules do not run on Python projects. When an unknown root contains immediate child directories with Node manifests, `scan_project` warns with candidate directories and asks for an explicit application root; it does not automatically combine unrelated packages. Oversized source files skipped by the AST rules are reported in scan warnings.
 
 CS-NODE-001 also scores hardcoded credential literals using their value and file context. Recognizable credential formats and long, varied values receive high confidence even in test or fixture files. Obvious markers such as `fake-key`, `dummy-api-key`, and `redacted` are skipped; weakly suggestive literals in test files are also skipped. An unrecognized production literal can still be reported at medium confidence. Entropy and naming are heuristics: they cannot prove whether a value is active, and a real credential with an obvious fixture marker may be missed. Evidence is redacted before it is returned.
-- `discover_routes`: Generates an inventory of externally reachable API routes. (METADATA-ONLY)
-- `analyze_access_control`: Classifies route authentication (public/authenticated/roles) and surfaces IDOR/BOLA candidates. (STATIC-ONLY)
-- `run_full_security_audit`: Runs the unified read-only audit pipeline with stable finding IDs and an optional loopback proof stage. (STATIC + RUNTIME-PROVEN when a target is supplied)
-- `start_security_audit`: Creates a bounded session with specific scopes. (METADATA-ONLY)
-- `prove_security_finding`: Issues a verifiable payload to prove a vulnerability locally. (RUNTIME-PROVEN)
-- `propose_remediation`: Submits an AI-generated fix for verification. (METADATA-ONLY)
-- `apply_remediation`: Applies the authorized fix to the source. (RUNTIME-PROVEN / VERIFIED_RESOLVED)
+
+### Scan report
+
+Call `scan_project` with a per-call `projectRoot` or a configured `PROJECT_ROOT`. Its JSON result includes project identity, support status, nested project candidates and package manager, rule execution counts with skipped and failed rule reasons, bounded file coverage, finding counts by severity, category and confidence, individual redacted findings, warnings, a plain-language message, and limitations. Git worktree status is `not_checked`: static scanning does not invoke Git or project commands. `fileAnalysis.discovered` counts eligible JavaScript/TypeScript files and the root `package.json` within the bounded inventory; `analyzed` counts those actually read by a scanner rule. The inventory may be incomplete when `MAX_LIST_RESULTS` is reached.
+
+An example finding has `ruleId: "CS-NODE-022"`, `severity: "high"`, `confidence: "medium"`, `file: "src/server.ts"`, `line: 196`, source-backed `evidence`, `impact`, `remediation`, `status: "suspected"`, and `verificationStatus: "not_verified"`. High confidence means strong static evidence; medium means useful evidence with possible external context; low needs more review. Confidence does not change severity.
+
+For a clean Node scan, `summary.total` is `0` and `message` states that no vulnerabilities were detected **by the enabled static rules**. It also reports rules run, file coverage and limits; zero findings does not prove the project secure. For an empty or unsupported root, the message says why rules did not run, and `rulesSkipped` explains each rule. Python, Go, and Rust are recognized by their root manifests but have no security rules yet. A root with immediate nested Node projects receives a warning asking for the intended application directory.
+
+`scan_project` is read-only: it reads and parses bounded local files and never executes target code, package scripts, or network requests. Runtime proof is a separate, explicitly authorized workflow. A static finding remains suspected unless a registered proof adapter supplies a verified result.
 
 ## Recommended AI Workflow
 
