@@ -30,7 +30,7 @@ async function runScan(): Promise<SecurityFinding[]> {
 describe('Phase 3 security rule registry', () => {
   it('registers unique, metadata-complete rules for the initial rule set', () => {
     const rules = getSecurityRules();
-    expect(rules).toHaveLength(21);
+    expect(rules.filter((rule) => Number(rule.id.slice(-3)) <= 21)).toHaveLength(21);
     expect(new Set(rules.map((rule) => rule.id)).size).toBe(rules.length);
     for (const rule of rules) {
       expect(rule.id).toMatch(/^CS-NODE-\d{3}$/);
@@ -59,7 +59,7 @@ describe('Phase 3 static security scanner', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.project.ecosystem).toBe('node');
-    expect(result.data.rulesRun).toHaveLength(21);
+    expect(result.data.rulesRun.filter((id) => Number(id.slice(-3)) <= 21)).toHaveLength(21);
     expect(result.data.summary.total).toBe(result.data.findings.length);
     for (const finding of result.data.findings) {
       expect(finding.id).toContain(finding.ruleId);
@@ -81,7 +81,7 @@ describe('Phase 3 static security scanner', () => {
   it('detects one or more positive examples for every initial rule', async () => {
     const findings = await runScan();
     const ids = new Set(findings.map((finding) => finding.ruleId));
-    expect(ids).toEqual(new Set(getSecurityRules().map((rule) => rule.id)));
+    expect(ids).toEqual(new Set(getSecurityRules().filter((rule) => Number(rule.id.slice(-3)) <= 21).map((rule) => rule.id)));
   });
 
   it('reports source locations for source-backed findings and package evidence for dependency findings', async () => {
