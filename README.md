@@ -156,6 +156,9 @@ For production deployments, package CodeSentinel into an isolated container alon
 - Receipts, remediation records, and investigations are held in memory and are lost on restart; stores are bounded.
 - A `NOT_FOUND` proof lookup re-runs the static scan and route discovery to confirm the ID is unknown; the cost is bounded per call.
 - Redaction is pattern-based; secret formats not covered by the shared redactor may still appear in evidence text.
+- Proof attempt budgets (10 per finding, 500 per process) are held in memory and reset on restart.
+- Reflected-XSS proof verifies only when the server returns the probe value unescaped.
+- Several guarantees (static rules, route and access analysis) are covered by behavioral tests rather than formal analysis.
 
 ## Unified audit pipeline
 
