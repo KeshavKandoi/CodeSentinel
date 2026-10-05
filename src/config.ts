@@ -18,7 +18,7 @@ const MAX_OUTPUT_BYTES_CEILING = 50_000_000;
 const MAX_READ_FILE_BYTES_CEILING = 100_000_000;
 const MAX_LIST_RESULTS_CEILING = 100_000;
 
-function resolveProjectRoot(rawRoot: string | undefined): string {
+export function resolveProjectRoot(rawRoot: string | undefined): string {
   if (!rawRoot || rawRoot.trim() === '') {
     throw new Error(
       'PROJECT_ROOT is not set. Set the PROJECT_ROOT environment variable to the absolute path of the project you want to audit.'
@@ -59,12 +59,21 @@ function readIntEnv(env: NodeJS.ProcessEnv, name: string, fallback: number, ceil
   return parsed;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+function limitsFromEnv(env: NodeJS.ProcessEnv) {
   return {
-    projectRoot: resolveProjectRoot(env.PROJECT_ROOT),
     commandTimeoutMs: readIntEnv(env, 'COMMAND_TIMEOUT_MS', DEFAULT_COMMAND_TIMEOUT_MS, COMMAND_TIMEOUT_CEILING_MS),
     maxOutputBytes: readIntEnv(env, 'MAX_OUTPUT_BYTES', DEFAULT_MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES_CEILING),
     maxReadFileBytes: readIntEnv(env, 'MAX_READ_FILE_BYTES', DEFAULT_MAX_READ_FILE_BYTES, MAX_READ_FILE_BYTES_CEILING),
     maxListResults: readIntEnv(env, 'MAX_LIST_RESULTS', DEFAULT_MAX_LIST_RESULTS, MAX_LIST_RESULTS_CEILING),
   };
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  return { projectRoot: resolveProjectRoot(env.PROJECT_ROOT), ...limitsFromEnv(env) };
+}
+
+export function loadConfigAllowUnset(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  const raw = env.PROJECT_ROOT;
+  const unset = raw === undefined || raw.trim() === '';
+  return { projectRoot: unset ? '' : resolveProjectRoot(raw), ...limitsFromEnv(env) };
 }
