@@ -460,7 +460,10 @@ const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'propose_remediation',
     description: 'Validate and store an external AI remediation proposal. It never modifies files, executes commands, or calls an AI provider.',
-    inputSchema: { type: 'object', properties: { investigationId: { type: 'string' }, findingId: { type: 'string' }, description: { type: 'string' }, rationale: { type: 'string' }, files: { type: 'array' }, expectedSecurityEffect: { type: 'string' }, requiresRuntimeVerification: { type: 'boolean' }, runtimeVerification: { type: 'object' } }, required: ['investigationId', 'findingId', 'description', 'rationale', 'files', 'expectedSecurityEffect', 'requiresRuntimeVerification'] },
+    inputSchema: {
+      ...z.toJSONSchema(proposeRemediationSchema),
+      allOf: [{ if: { properties: { requiresRuntimeVerification: { const: true } }, required: ['requiresRuntimeVerification'] }, then: { required: ['runtimeVerification'] } }],
+    },
     handler: async (config, rawInput) => {
       const validation = safeValidate(proposeRemediationSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
@@ -470,7 +473,7 @@ const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'remediate_finding',
     description: 'Explicitly authorized, bounded single-file remediation with dry run, syntax validation, automatic rollback, and a redacted pending-retest receipt. Never runs automatically during audit.',
-    inputSchema: { type: 'object', properties: { finding: { type: 'object' }, authorization: { type: 'object' }, strategy: { type: 'object' }, dryRun: { type: 'boolean' } }, required: ['finding', 'strategy', 'dryRun'] },
+    inputSchema: z.toJSONSchema(controlledRemediationSchema),
     handler: async (config, rawInput) => {
       const validation = safeValidate(controlledRemediationSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
@@ -480,7 +483,7 @@ const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'retest_finding',
     description: 'Independently retest a validated controlled remediation against the current project state, with optional authorized runtime proof. Read-only for source files.',
-    inputSchema: { type: 'object', properties: { findingId: { type: 'string' }, target: { type: 'object' }, sessions: { type: 'array' }, sessionParams: { type: 'object' } }, required: ['findingId'] },
+    inputSchema: z.toJSONSchema(retestFindingSchema),
     handler: async (config, rawInput) => {
       const validation = safeValidate(retestFindingSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
@@ -490,7 +493,7 @@ const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'security_remediation_sweep',
     description: 'Run a read-only post-remediation security sweep: independent retests, fresh static and access scans, full audit coverage, before/after correlation, and final evidence-backed states.',
-    inputSchema: { type: 'object', properties: { findingIds: { type: 'array' }, remediationIds: { type: 'array' }, target: { type: 'object' }, sessions: { type: 'array' }, sessionParams: { type: 'object' }, runtimeSetupFailure: { type: 'object' } } },
+    inputSchema: z.toJSONSchema(securityRemediationSweepSchema),
     handler: async (config, rawInput) => {
       const validation = safeValidate(securityRemediationSweepSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
@@ -500,7 +503,7 @@ const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'apply_remediation',
     description: 'Apply one validated, hash-checked remediation proposal using bounded filesystem writes. The result remains pending verification.',
-    inputSchema: { type: 'object', properties: { remediationId: { type: 'string' }, authorization: { type: 'object' } }, required: ['remediationId'] },
+    inputSchema: z.toJSONSchema(remediationIdSchema),
     handler: async (config, rawInput) => {
       const validation = safeValidate(remediationIdSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
@@ -510,7 +513,7 @@ const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'verify_remediation',
     description: 'Rerun deterministic analysis and authorized runtime verification for an applied remediation, then classify the result and regressions.',
-    inputSchema: { type: 'object', properties: { remediationId: { type: 'string' } }, required: ['remediationId'] },
+    inputSchema: z.toJSONSchema(verifyRemediationSchema),
     handler: async (config, rawInput) => {
       const validation = safeValidate(verifyRemediationSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
@@ -520,7 +523,7 @@ const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'rollback_remediation',
     description: 'Restore a remediation snapshot only when every file still has its expected post-remediation hash.',
-    inputSchema: { type: 'object', properties: { remediationId: { type: 'string' }, authorization: { type: 'object' } }, required: ['remediationId'] },
+    inputSchema: z.toJSONSchema(rollbackRemediationSchema),
     handler: async (config, rawInput) => {
       const validation = safeValidate(rollbackRemediationSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);

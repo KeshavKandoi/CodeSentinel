@@ -89,6 +89,8 @@ CodeSentinel provides discovery, static, orchestration, proof, and separately in
 - `security_remediation_sweep`: Retests recorded remediations, runs fresh source and access scans plus the full read-only audit pipeline, and reports correlated final finding states and new findings. (READ-ONLY FOR SOURCE FILES)
 - `apply_remediation`: Applies an existing validated proposal only with explicit local test-target authorization. Application alone does not verify a fix.
 
+`propose_remediation` requires an existing analyzed investigation and finding. Its `files` input is an array of 1–10 objects, each with `path` (a project-relative file), `originalContentHash` (the file's lowercase SHA-256 hex digest), `proposedContent` (the replacement source), and `description` (a non-empty explanation). A path-only string cannot describe or safely validate a proposed edit. The proposal stores a validated record and remains read-only. `apply_remediation` requires its `proposalId` as `remediationId` plus explicit local test-target authorization before writing.
+
 ### Phase 2 Node and WebSocket detection
 
 `scan_project` keeps the original CS-NODE-001 through CS-NODE-021 rules and adds bounded AST-based rules:
