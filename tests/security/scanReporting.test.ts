@@ -13,6 +13,7 @@ it('reports an honest clean Node scan with coverage, rule counts, and no target 
   const project = makeFixtureProject();
   projects.push(project);
   const before = fs.readFileSync(path.join(project.root, 'src/index.js'), 'utf8');
+  const entriesBefore = fs.readdirSync(project.root, { recursive: true }).map(String).sort();
   const result = await scanProject(project.config);
   if (!result.ok) throw new Error(result.error.message);
   expect(result.data.project).toMatchObject({ root: project.root, name: 'fixture', ecosystem: 'node', support: 'supported', nestedProjects: [] });
@@ -27,6 +28,7 @@ it('reports an honest clean Node scan with coverage, rule counts, and no target 
   expect(result.data.runtimeVerificationPerformed).toBe(false);
   expect(result.data.limitations.join(' ')).toMatch(/static|runtime/i);
   expect(fs.readFileSync(path.join(project.root, 'src/index.js'), 'utf8')).toBe(before);
+  expect(fs.readdirSync(project.root, { recursive: true }).map(String).sort()).toEqual(entriesBefore);
 });
 
 it('serializes a source-backed finding with impact, remediation, and static verification state', async () => {

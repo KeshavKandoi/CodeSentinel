@@ -113,7 +113,21 @@ Call `scan_project` with a per-call `projectRoot` or a configured `PROJECT_ROOT`
 
 An example finding has `ruleId: "CS-NODE-022"`, `severity: "high"`, `confidence: "medium"`, `file: "src/server.ts"`, `line: 196`, source-backed `evidence`, `impact`, `remediation`, `status: "suspected"`, and `verificationStatus: "not_verified"`. High confidence means strong static evidence; medium means useful evidence with possible external context; low needs more review. Confidence does not change severity.
 
+Abbreviated example from a WebSocket scan (the actual result includes all findings, evidence, counts, and limitations):
+
+```json
+{
+  "project": { "name": "realtime-10m-websocket-server", "ecosystem": "node", "support": "supported" },
+  "ruleExecution": { "executed": 25, "skipped": 0, "failed": 0 },
+  "summary": { "total": 3, "bySeverity": { "critical": 0, "high": 1, "medium": 2, "low": 0, "info": 0 } },
+  "findings": [{ "ruleId": "CS-NODE-022", "file": "src/server.ts", "line": 196, "severity": "high", "confidence": "medium", "status": "suspected", "verificationStatus": "not_verified" }],
+  "runtimeVerificationPerformed": false
+}
+```
+
 For a clean Node scan, `summary.total` is `0` and `message` states that no vulnerabilities were detected **by the enabled static rules**. It also reports rules run, file coverage and limits; zero findings does not prove the project secure. For an empty or unsupported root, the message says why rules did not run, and `rulesSkipped` explains each rule. Python, Go, and Rust are recognized by their root manifests but have no security rules yet. A root with immediate nested Node projects receives a warning asking for the intended application directory.
+
+An abbreviated clean result says: `{"summary":{"total":0},"message":"No vulnerabilities were detected by the enabled static-analysis rules. This does not prove the project is secure.","runtimeVerificationPerformed":false}`. Inspect `ruleExecution`, `fileAnalysis`, and `limitations` before deciding what further review is needed.
 
 `scan_project` is read-only: it reads and parses bounded local files and never executes target code, package scripts, or network requests. Runtime proof is a separate, explicitly authorized workflow. A static finding remains suspected unless a registered proof adapter supplies a verified result.
 
