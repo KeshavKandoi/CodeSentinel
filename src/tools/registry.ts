@@ -1,3 +1,4 @@
+import { resolveToolRoot } from '../projectRoot.js';
 import { orchestrationToolDefinitions } from "../orchestration/tools.js";
 import { z } from 'zod';
 import { logger } from '../logger.js';
@@ -520,3 +521,46 @@ const coreToolDefinitions: ToolDefinition[] = [
 ];
 
 export const toolDefinitions: ToolDefinition[] = [...coreToolDefinitions, ...orchestrationToolDefinitions];
+
+const PROJECT_ROOT_TOOLS = new Set([
+  'get_project_info', 'scan_project', 'analyze_project', 'list_files', 'read_file', 'search_files',
+  'get_security_graph', 'discover_routes', 'analyze_access_control', 'run_deep_security_audit',
+  'list_verification_cases', 'list_security_proof_cases',
+]);
+
+function withProjectRoot(handler: ToolDefinition['handler']): ToolDefinition['handler'] {
+  return async (config, rawInput) => {
+    if (rawInput !== undefined && rawInput !== null && (typeof rawInput !== 'object' || Array.isArray(rawInput))) {
+      return handler(config, rawInput);
+    }
+    const { projectRoot, ...rest } = (rawInput ?? {}) as Record<string, unknown>;
+    if (projectRoot !== undefined && (typeof projectRoot !== 'string' || projectRoot.length === 0 || projectRoot.length > 4096)) {
+      return invalidInputResponse('projectRoot: must be a non-empty string of at most 4096 characters');
+    }
+    const resolved = resolveToolRoot(config, projectRoot as string | undefined);
+    if (!resolved.ok) return toMcpResponse(resolved);
+    return handler({ ...config, projectRoot: resolved.data }, rest);
+  };
+}
+
+function requireConfiguredRoot(handler: ToolDefinition['handler']): ToolDefinition['handler'] {
+  return async (config, rawInput) => {
+    if (!config.projectRoot) return toMcpResponse(err('INVALID_INPUT', 'This tool requires the PROJECT_ROOT environment variable to be set.'));
+    return handler(config, rawInput);
+  };
+}
+
+for (const tool of toolDefinitions) {
+  if (PROJECT_ROOT_TOOLS.has(tool.name)) {
+    tool.handler = withProjectRoot(tool.handler);
+    tool.inputSchema = {
+      ...tool.inputSchema,
+      properties: {
+        ...((tool.inputSchema.properties as Record<string, unknown> | undefined) ?? {}),
+        projectRoot: { type: 'string', description: 'Absolute path of the local project to analyze. Overrides PROJECT_ROOT for this call.' },
+      },
+    };
+  } else {
+    tool.handler = requireConfiguredRoot(tool.handler);
+  }
+}
