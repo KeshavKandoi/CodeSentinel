@@ -1,6 +1,6 @@
 import type { ProjectProfile, Ecosystem } from './types.js';
 import { emptyProjectProfile } from './types.js';
-import { fileExists } from './manifestReader.js';
+import { dirExists, fileExists, listTopLevelNames } from './manifestReader.js';
 import { runNodeDiscovery } from './node/nodeDiscovery.js';
 
 /**
@@ -51,5 +51,11 @@ export function runProjectDiscovery(root: string): ProjectProfile {
   const profile = emptyProjectProfile();
   profile.ecosystem = 'unknown';
   profile.warnings.push('Could not determine project ecosystem: no package.json, requirements.txt, pyproject.toml, setup.py, or Pipfile found.');
+  const nestedNodeProjects = listTopLevelNames(root, '.').slice(0, 100)
+    .filter((name) => !name.startsWith('.') && name !== 'node_modules' && dirExists(root, name) && fileExists(root, `${name}/package.json`))
+    .slice(0, 5);
+  if (nestedNodeProjects.length > 0) {
+    profile.warnings.push(`Node package manifest(s) found in ${nestedNodeProjects.join(', ')}. Pass projectRoot for the intended application; nested projects were not scanned automatically.`);
+  }
   return profile;
 }

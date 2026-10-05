@@ -188,6 +188,7 @@ function makeAccessFinding(
     line: entry.line,
     evidence,
     description: rule.description,
+    impact: rule.description,
     remediation: rule.remediation,
     verificationStatus: 'not_verified',
     routeId: entry.routeId,

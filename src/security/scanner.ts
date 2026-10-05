@@ -43,6 +43,7 @@ export async function scanProject(config: AppConfig): Promise<ToolOutcome<Securi
       }
       return result.data;
     },
+    warn(message) { if (!warnings.includes(message)) addBoundedWarning(warnings, message); },
   };
 
   // Do not run a language-specific rule set against an unsupported ecosystem.
@@ -67,7 +68,7 @@ export async function scanProject(config: AppConfig): Promise<ToolOutcome<Securi
     summary: summarize(findings),
     rulesRun: rules.map((rule) => rule.id),
     findings,
-    warnings,
+    warnings: [...new Set(warnings)],
   });
 }
 

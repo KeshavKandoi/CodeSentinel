@@ -81,17 +81,22 @@ CodeSentinel provides a rich set of discovery, static, and orchestration tools. 
 
 ### Phase 2 Node and WebSocket detection
 
-`scan_project` keeps the original CS-NODE-001 through CS-NODE-021 rules and adds three bounded AST-based rules:
+`scan_project` keeps the original CS-NODE-001 through CS-NODE-021 rules and adds bounded AST-based rules:
 
 | Rule | Detection |
 | --- | --- |
 | CS-NODE-022 | A parsed WebSocket message supplies an identity directly to connection registration, without a visible verification call. |
 | CS-NODE-023 | A `/metrics` HTTP handler returns runtime metrics without a visible authentication guard. |
 | CS-NODE-024 | A WebSocket server has no explicit `maxPayload` while its message handler parses incoming data and passes it to sensitive processing. |
+| CS-NODE-025 | A request field flows through a local variable to `child_process.exec` or `execSync`. Fixed commands and `execFile` argument arrays are excluded. |
 
 For example, a message handler that parses `data`, then calls `manager.registerUser(info.id, parsed.userId)`, can yield a high-severity CS-NODE-022 finding at the registration line. Results include a rule ID, severity, category, file and line, redacted source evidence, impact in the description, and remediation. A protected metrics handler or a server with an explicit `maxPayload` does not trigger the corresponding rule.
 
 These are static candidates. The analyzer does not prove that an upstream proxy lacks authentication or payload limits, and it cannot resolve every custom verifier or alias. It does not report missing Origin checks, generic rate limits, or `ws://` from absence alone; those require deployment context or stronger source evidence. The scanner reads bounded source files locally and does not execute or alter the target project.
+
+Each static finding now includes an `impact` field alongside severity, confidence, source evidence, and remediation. If a legacy rule has no separate impact text, its description is used; this is explanatory text, not a claim of runtime verification. `status: "suspected"` and `verificationStatus: "not_verified"` remain the initial scanner state. `verify_finding` handles supported access-control candidates, while `prove_security_finding` and `run_full_security_audit` use registered proof adapters and an explicitly authorized local target. Other static findings stay unverified until a suitable proof path exists.
+
+The configured `projectRoot` should be the application directory containing `package.json`. Node analysis runs for that root. Python markers are recognized but Node rules do not run on Python projects. When an unknown root contains immediate child directories with Node manifests, `scan_project` warns with candidate directories and asks for an explicit application root; it does not automatically combine unrelated packages. Oversized source files skipped by the AST rules are reported in scan warnings.
 
 CS-NODE-001 also scores hardcoded credential literals using their value and file context. Recognizable credential formats and long, varied values receive high confidence even in test or fixture files. Obvious markers such as `fake-key`, `dummy-api-key`, and `redacted` are skipped; weakly suggestive literals in test files are also skipped. An unrecognized production literal can still be reported at medium confidence. Entropy and naming are heuristics: they cannot prove whether a value is active, and a real credential with an obvious fixture marker may be missed. Evidence is redacted before it is returned.
 - `discover_routes`: Generates an inventory of externally reachable API routes. (METADATA-ONLY)

@@ -67,6 +67,7 @@ export function makeFinding(rule: SecurityRule, evidence: SecurityEvidence): Sec
     line: evidence.line,
     evidence: [{ ...evidence, matchedText: evidence.matchedText ? redactSecurityText(evidence.matchedText) : evidence.matchedText, reason: redactSecurityText(evidence.reason), context: evidence.context ? redactSecurityText(evidence.context) : evidence.context }],
     description: rule.description,
+    impact: rule.impact ?? rule.description,
     remediation: rule.remediation,
     verificationStatus: 'not_verified',
   };

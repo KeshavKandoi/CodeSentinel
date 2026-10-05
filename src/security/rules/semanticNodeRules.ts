@@ -4,9 +4,9 @@ import { contextFor, makeFinding } from '../utils.js';
 import type { SecurityFinding, SecurityRule, SecurityScanContext } from '../types.js';
 
 const definitions = [
-  { id: 'CS-NODE-022', category: 'authentication', title: 'Client-controlled WebSocket identity is trusted', description: 'An incoming WebSocket message supplies an identity used for connection registration. This can let a caller claim another user and affect message routing or attribution.', severity: 'high', confidence: 'medium', evidenceRequirements: 'A field from a parsed WebSocket message reaches an identity registration call without a visible verification step.', remediation: 'Authenticate the connection and derive its user identity from a verified session or token before registration.', falsePositiveGuidance: 'Review external authentication or an identity check in a helper that static analysis cannot resolve.', languages: ['node'] },
-  { id: 'CS-NODE-023', category: 'security_configuration', title: 'Operational metrics returned without a visible guard', description: 'An HTTP handler returns operational metrics before a visible authentication check. The data can reveal service activity and topology.', severity: 'medium', confidence: 'medium', evidenceRequirements: 'A /metrics handler returns a runtime snapshot or metrics object without a visible guard in the handler.', remediation: 'Restrict the metrics route to authenticated operators or a private monitoring network.', falsePositiveGuidance: 'A reverse proxy or private network may restrict access outside the analyzed source.', languages: ['node'] },
-  { id: 'CS-NODE-024', category: 'security_configuration', title: 'Large WebSocket messages reach sensitive processing', description: 'A WebSocket server processes incoming messages at a sensitive sink without an explicit payload bound. Large inputs may consume excessive resources.', severity: 'medium', confidence: 'low', evidenceRequirements: 'WebSocketServer lacks maxPayload while a message handler parses client data and passes it to an expensive or persistent operation.', remediation: 'Set an appropriate maxPayload and validate message size before expensive processing.', falsePositiveGuidance: 'A proxy, library default, or an equivalent limit outside the analyzed handler may bound messages.', languages: ['node'] },
+  { id: 'CS-NODE-022', category: 'authentication', title: 'Client-controlled WebSocket identity is trusted', description: 'An incoming WebSocket message supplies an identity used for connection registration. This can let a caller claim another user and affect message routing or attribution.', impact: 'A caller may claim another user identity and affect message routing or sender attribution.', severity: 'high', confidence: 'medium', evidenceRequirements: 'A field from a parsed WebSocket message reaches an identity registration call without a visible verification step.', remediation: 'Authenticate the connection and derive its user identity from a verified session or token before registration.', falsePositiveGuidance: 'Review external authentication or an identity check in a helper that static analysis cannot resolve.', languages: ['node'] },
+  { id: 'CS-NODE-023', category: 'security_configuration', title: 'Operational metrics returned without a visible guard', description: 'An HTTP handler returns operational metrics before a visible authentication check. The data can reveal service activity and topology.', impact: 'An unauthenticated caller reaching this route may observe operational data and service topology.', severity: 'medium', confidence: 'medium', evidenceRequirements: 'A /metrics handler returns a runtime snapshot or metrics object without a visible guard in the handler.', remediation: 'Restrict the metrics route to authenticated operators or a private monitoring network.', falsePositiveGuidance: 'A reverse proxy or private network may restrict access outside the analyzed source.', languages: ['node'] },
+  { id: 'CS-NODE-024', category: 'security_configuration', title: 'Large WebSocket messages reach sensitive processing', description: 'A WebSocket server processes incoming messages at a sensitive sink without an explicit payload bound. Large inputs may consume excessive resources.', impact: 'Large client messages may consume excess CPU or memory before sensitive processing completes.', severity: 'medium', confidence: 'low', evidenceRequirements: 'WebSocketServer lacks maxPayload while a message handler parses client data and passes it to an expensive or persistent operation.', remediation: 'Set an appropriate maxPayload and validate message size before expensive processing.', falsePositiveGuidance: 'A proxy, library default, or an equivalent limit outside the analyzed handler may bound messages.', languages: ['node'] },
 ] as const;
 
 type Definition = (typeof definitions)[number];
@@ -21,10 +21,6 @@ function callbackFor(node: ts.CallExpression, event: string): ts.FunctionExpress
   if (!/\.on$/.test(callName(node)) || node.arguments[0]?.getText().replaceAll(/["'`]/g, '') !== event) return null;
   const callback = node.arguments[1];
   return callback && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) ? callback : null;
-}
-function hasVerificationBefore(callback: ts.FunctionExpression | ts.ArrowFunction, sink: ts.Node): boolean {
-  const before = callback.getText().slice(0, sink.getStart() - callback.getStart());
-  return /\b(?:verifyToken|verifyJwt|authenticate|authorize|validateSession|requireAuth|jwt\.verify)\s*\(/i.test(before);
 }
 function isClientIdentity(text: string, parsedNames: Set<string>): boolean {
   return [...parsedNames].some(name => new RegExp(`\\b${name}\\s*(?:\\.|\\[)\\s*["']?(?:userId|username|accountId)["']?\\b`).test(text));
@@ -53,7 +49,7 @@ function inspect(source: ts.SourceFile, definition: Definition): ts.Node[] {
       for (const sink of children(callback, ts.isCallExpression) as ts.CallExpression[]) {
         if (!/\.(?:registerUser|registerIdentity|register|identify|bindUser)$/.test(callName(sink))) continue;
         if (!sink.arguments.some(argument => isClientIdentity(argument.getText(), parsedNames))) continue;
-        if (!hasVerificationBefore(callback, sink)) hits.push(sink);
+        hits.push(sink);
       }
     }
     return hits;
@@ -64,8 +60,7 @@ function inspect(source: ts.SourceFile, definition: Definition): ts.Node[] {
       if (!/req(?:uest)?\.url\s*===?\s*["']\/metrics["']/.test(conditional.expression.getText())) continue;
       const body = conditional.thenStatement.getText();
       if (!/res\.(?:end|send|json)\s*\(/.test(body) || !/(?:snapshot|metrics|active_connections|bytes_received|registry)/i.test(body)) continue;
-      const preceding = source.text.slice(0, conditional.getStart());
-      if (/\b(?:authenticate|authorize|requireAuth|verifyToken|isAuthenticated)\s*\(/i.test(body) || /\b(?:authenticate|authorize|requireAuth|verifyToken|isAuthenticated)\s*\(/i.test(preceding.slice(-500))) continue;
+      if (/\b(?:authenticate|authorize|requireAuth|verifyToken|isAuthenticated)\s*\(/i.test(body)) continue;
       hits.push(conditional);
     }
     return hits;
@@ -100,6 +95,7 @@ function rule(definition: Definition): SecurityRule {
           findings.push(makeFinding(result, { file, line, matchedText: source.content.split('\n')[line - 1]?.trim().slice(0, 240), context: contextFor(source.content, line), reason: definition.evidenceRequirements }));
         }
       }
+      for (const warning of warnings) context.warn(warning);
       return findings;
     },
   };

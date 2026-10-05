@@ -48,6 +48,7 @@ export interface SecurityFinding {
   line?: number;
   evidence: SecurityEvidence[];
   description: string;
+  impact: string;
   remediation: string;
   verificationStatus: VerificationStatus;
 }
@@ -57,6 +58,7 @@ export interface SecurityRuleMetadata {
   category: SecurityCategory;
   title: string;
   description: string;
+  impact?: string;
   severity: SecuritySeverity;
   confidence: Confidence;
   evidenceRequirements: string;
@@ -74,6 +76,7 @@ export interface SecurityScanContext {
   profile: ProjectProfile;
   search(query: string, options?: Partial<{ path: string; caseSensitive: boolean; isRegex: boolean; maxResults: number }>): Promise<SearchMatch[]>;
   readFile(path: string): Promise<ReadFileResult | null>;
+  warn(message: string): void;
 }
 
 export interface SecurityScanResult {
