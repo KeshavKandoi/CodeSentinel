@@ -284,6 +284,7 @@ export async function requestRuntimeVerification(config: AppConfig, input: Verif
       requestsIssued: result.data.result.requestsIssued,
       blockedReason: result.data.result.blockedReason,
       evidenceRef: runtimeRef,
+      targetOrigin: input.target.allowedOrigin,
     };
     addStep(state, 'runtime_verification', result.data.result.summary, [runtimeRef]);
     hypothesis.status = result.data.result.status === 'verified' ? 'verified' : result.data.result.status === 'not_reproduced' ? 'not_reproduced' : result.data.result.status === 'blocked' ? 'blocked' : 'inconclusive';
