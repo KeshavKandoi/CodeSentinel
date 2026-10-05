@@ -18,6 +18,7 @@ let server: http.Server;
 let origin = '';
 let secureOracle = false;
 let replayMode: 'normal' | 'redirect' | 'timeout' | 'large' = 'normal';
+const pending: http.ServerResponse[] = [];
 
 function tool(name: string) {
   const found = toolDefinitions.find((item) => item.name === name);
@@ -35,7 +36,7 @@ beforeAll(async () => {
       return;
     }
     if (replayMode === 'timeout') {
-      setTimeout(() => response.end('late response'), 1000);
+      pending.push(response);
       return;
     }
     if (replayMode === 'large') {
@@ -57,6 +58,7 @@ afterAll(async () => {
 });
 
 afterEach(() => {
+  for (const held of pending.splice(0)) held.end();
   replayMode = 'normal';
   secureOracle = false;
   resetSecurityProofsForTests();
@@ -185,7 +187,7 @@ describe('proof to remediation lifecycle', () => {
     if (!finding) return;
     const cases = [
       { mode: 'redirect' as const, target: { allowedOrigin: origin, minRequestIntervalMs: 0 } },
-      { mode: 'timeout' as const, target: { allowedOrigin: origin, requestTimeoutMs: 300, minRequestIntervalMs: 0 } },
+      { mode: 'timeout' as const, target: { allowedOrigin: origin, requestTimeoutMs: 2000, minRequestIntervalMs: 0 } },
       { mode: 'large' as const, target: { allowedOrigin: origin, maxResponseBytes: 128, minRequestIntervalMs: 0 } },
     ];
     for (const item of cases) {
@@ -205,7 +207,7 @@ describe('proof to remediation lifecycle', () => {
   });
 });
 
-async function prepareAppliedRemediation() {
+async function prepareAppliedRemediation(opts: { target?: { requestTimeoutMs?: number; maxResponseBytes?: number }; replayOrigin?: string } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codesentinel-phase9-')));
   roots.push(root);
   fs.cpSync(vulnerableFixture, root, { recursive: true });
@@ -213,7 +215,7 @@ async function prepareAppliedRemediation() {
   const started = body(await tool('start_security_investigation').handler(config, { projectPath: root, scope: ['input_validation'], hypothesis: 'Phase 9 verification hardening.' }));
   const analyzed = body(await tool('run_security_analysis').handler(config, { investigationId: started.id }));
   const finding = analyzed.findings.find((item: { origin: string; category: string }) => item.origin === 'security_scan' && item.category === 'injection');
-  const proof = await proveSecurityFinding(config, { findingId: finding.findingId, target: { allowedOrigin: origin, minRequestIntervalMs: 0 } });
+  const proof = await proveSecurityFinding(config, { findingId: finding.findingId, target: { allowedOrigin: origin, minRequestIntervalMs: 0, ...(opts.target ?? {}) } });
   if (!proof.ok) throw new Error('proof failed');
   const original = fs.readFileSync(path.join(root, 'src/app.ts'), 'utf8');
   const proposal = body(await tool('propose_remediation').handler(config, {
@@ -224,7 +226,7 @@ async function prepareAppliedRemediation() {
     files: [{ path: 'src/app.ts', originalContentHash: crypto.createHash('sha256').update(original).digest('hex'), proposedContent: secureSource, description: 'Apply the bounded secure fixture implementation.' }],
     expectedSecurityEffect: 'The SQL injection candidate disappears and the proof marker is no longer returned.',
     requiresRuntimeVerification: true,
-    runtimeVerification: { findingId: finding.findingId, target: { allowedOrigin: origin, minRequestIntervalMs: 0 }, sessions: [], sessionParams: {} },
+    runtimeVerification: { findingId: finding.findingId, target: { allowedOrigin: opts.replayOrigin ?? origin, minRequestIntervalMs: 0, ...(opts.target ?? {}) }, sessions: [], sessionParams: {} },
   }));
   const applied = body(await tool('apply_remediation').handler(config, { remediationId: proposal.proposalId }));
   if (applied.status !== 'applied_pending_verification') throw new Error('apply failed');
@@ -257,7 +259,13 @@ describe('Phase 9 remediation verification hardening', () => {
     expect(record.ok).toBe(true);
     if (!record.ok) return;
     expect(record.data.status).not.toBe('verifying');
-    expect([first.isError === true, second.isError === true].filter(Boolean).length).toBeLessThanOrEqual(1);
+    expect([first.isError === true, second.isError === true].filter(Boolean).length).toBe(1);
+    const failed = [first, second].find((item) => item.isError === true)!;
+    expect(body(failed).error).toBe('INVALID_TRANSITION');
+    expect(record.data.status).toBe('verified_resolved');
+    const { findingId } = await prepareReceiptsView(remediationId);
+    expect(findingId).toBe(record.data.proposal.findingId);
+    expect(listSecurityReceiptsForFinding(findingId).filter((receipt) => receipt.replayOfReceiptId !== null).length).toBe(1);
   });
 
   it('accepts a receipt only for the origin it was created for', async () => {
@@ -288,6 +296,62 @@ describe('Phase 9 remediation verification hardening', () => {
       const same = await replaySecurityProof(config, { findingId, target: { allowedOrigin: origin, minRequestIntervalMs: 0 }, sessions: [], sessionParams: {} }, bound, remediationRef);
       expect(same.ok).toBe(true);
       if (same.ok) expect(same.data.targetOrigin).toBe(origin);
+    } finally {
+      await new Promise<void>((resolve) => other.close(() => resolve()));
+    }
+  });
+});
+
+async function prepareReceiptsView(remediationId: string) {
+  const { getRemediation } = await import('../../src/remediation/engine.js');
+  const record = getRemediation(remediationId);
+  if (!record.ok) throw new Error('missing remediation');
+  return { findingId: record.data.proposal.findingId };
+}
+
+describe('Phase 10 remediation failure cleanup', () => {
+  it.each([['redirect', {}], ['timeout', { requestTimeoutMs: 2000 }], ['large', { maxResponseBytes: 128 }]] as const)('%s replay ends blocked and is never left verifying or resolved', async (mode, target) => {
+    const { config, remediationId } = await prepareAppliedRemediation({ target });
+    replayMode = mode;
+    await tool('verify_remediation').handler(config, { remediationId });
+    const { getRemediation } = await import('../../src/remediation/engine.js');
+    const record = getRemediation(remediationId);
+    expect(record.ok).toBe(true);
+    if (!record.ok) return;
+    expect(record.data.status).not.toBe('verifying');
+    expect(record.data.status).not.toBe('verified_resolved');
+    expect(record.data.verification?.runtimeStatus).toBe('blocked');
+    expect(record.data.verification?.replayResult).toBe('blocked');
+  }, 30_000);
+
+  it('a stale receipt leaves the remediation inconclusive, not resolved', async () => {
+    const { config, remediationId } = await prepareAppliedRemediation();
+    resetSecurityProofsForTests();
+    secureOracle = true;
+    const response = await tool('verify_remediation').handler(config, { remediationId });
+    expect(response.isError).toBe(true);
+    const { getRemediation } = await import('../../src/remediation/engine.js');
+    const record = getRemediation(remediationId);
+    expect(record.ok).toBe(true);
+    if (!record.ok) return;
+    expect(record.data.status).toBe('verification_inconclusive');
+  });
+
+  it('a replay against a different origin is rejected and the remediation is not resolved', async () => {
+    const other = http.createServer((_request, response) => { response.writeHead(200); response.end('safe fixture response'); });
+    await new Promise<void>((resolve) => other.listen(0, '127.0.0.1', resolve));
+    const address = other.address();
+    if (!address || typeof address === 'string') throw new Error('no address');
+    try {
+      const { config, remediationId } = await prepareAppliedRemediation({ replayOrigin: `http://127.0.0.1:${address.port}` });
+      const response = await tool('verify_remediation').handler(config, { remediationId });
+      expect(response.isError).toBe(true);
+      const { getRemediation } = await import('../../src/remediation/engine.js');
+      const record = getRemediation(remediationId);
+      expect(record.ok).toBe(true);
+      if (!record.ok) return;
+      expect(record.data.status).toBe('verification_inconclusive');
+      expect(record.data.status).not.toBe('verified_resolved');
     } finally {
       await new Promise<void>((resolve) => other.close(() => resolve()));
     }
