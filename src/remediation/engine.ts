@@ -376,9 +376,11 @@ async function verifyRemediationInner(config: AppConfig, remediationId: string):
   }));
 }
 
-export async function rollbackRemediation(config: AppConfig, remediationId: string, authorization?: RemediationAuthorization): Promise<ToolOutcome<RemediationRecord>> {
+export async function rollbackRemediation(config: AppConfig, remediationId: string, authorization?: RemediationAuthorization): Promise<ToolOutcome<RemediationRecord | ControlledRollbackReceipt>> {
   const authorized = authorizeRemediation(config.projectRoot, authorization);
   if (!authorized.ok) return authorized;
+  const controlled = controlledRecords.get(remediationId);
+  if (controlled) return rollbackControlledRemediation(config, controlled);
   const existing = records.get(remediationId); if (!existing) return err('REMEDIATION_NOT_FOUND', `Remediation "${remediationId}" was not found.`);
   return withLock(lockKey(existing), async () => {
     const record = records.get(remediationId)!;
@@ -437,6 +439,9 @@ export interface ControlledRemediationRecord {
   projectRoot: string;
   file: string;
   appliedHash: string;
+  originalHash: string;
+  originalContent: Buffer;
+  status: 'validated_pending_retest' | 'rolled_back';
   before: ControlledBeforeFinding;
   baselineFindings: ControlledBaselineFinding[];
   baselineComplete: boolean;
@@ -459,6 +464,54 @@ export interface ControlledBaselineFinding {
 }
 
 const controlledRecords = new Map<string, ControlledRemediationRecord>();
+
+export interface ControlledRollbackReceipt {
+  remediationId: string;
+  findingId: string;
+  projectRoot: string;
+  file: string;
+  status: 'rolled_back';
+  originalHash: string;
+  restoredHash: string;
+  restoredAt: string;
+}
+
+export function getControlledRemediationRecordById(remediationId: string): ControlledRemediationRecord | null {
+  return controlledRecords.get(remediationId) ?? null;
+}
+
+async function rollbackControlledRemediation(config: AppConfig, record: ControlledRemediationRecord): Promise<ToolOutcome<ControlledRollbackReceipt>> {
+  if (record.projectRoot !== config.projectRoot) return err('PATH_OUTSIDE_ROOT', 'The remediation belongs to another canonical project root.');
+  return withLock(`controlled:${record.projectRoot}:${record.file}`, async () => {
+    if (controlledRecords.get(record.remediationId) !== record) return err('REMEDIATION_NOT_FOUND', 'The controlled remediation record is no longer available.');
+    if (record.status === 'rolled_back') return err('INVALID_TRANSITION', 'This controlled remediation has already been rolled back.');
+    const entries = [...controlledRecords.values()];
+    const position = entries.findIndex((item) => item.remediationId === record.remediationId);
+    if (entries.slice(position + 1).some((item) => item.projectRoot === record.projectRoot && item.file === record.file && item.status !== 'rolled_back')) return err('REMEDIATION_CONFLICT', 'A newer controlled remediation changed this file; roll it back first.');
+    if (sha256(record.originalContent) !== record.originalHash) return err('REMEDIATION_CONFLICT', 'The stored original snapshot failed its integrity check.');
+    const checked = validateFile(config, { path: record.file, originalContentHash: '', proposedContent: '', description: '' });
+    if (!checked.ok) return err('ROLLBACK_CONFLICT', 'The remediated file can no longer be opened safely inside the project root.');
+    let current: Buffer;
+    try { current = readControlledFile(config, record.file); } catch { return err('ROLLBACK_CONFLICT', 'The remediated file could not be read safely.'); }
+    if (sha256(current) !== record.appliedHash) return err('ROLLBACK_CONFLICT', 'The remediated file changed after validation; rollback will not overwrite it.');
+    const target = checked.data.absolute;
+    const temp = `${target}.codesentinel-rollback-${crypto.randomUUID()}.tmp`;
+    try {
+      const mode = fs.statSync(target).mode;
+      fs.writeFileSync(temp, record.originalContent, { flag: 'wx', mode });
+      if (sha256(fs.readFileSync(temp)) !== record.originalHash) throw new Error('snapshot integrity mismatch');
+      if (fs.lstatSync(target).isSymbolicLink() || sha256(readControlledFile(config, record.file)) !== record.appliedHash) return err('ROLLBACK_CONFLICT', 'The remediated file changed before rollback could complete.');
+      fs.renameSync(temp, target);
+      if (sha256(readControlledFile(config, record.file)) !== record.originalHash) return err('ROLLBACK_CONFLICT', 'The restored file did not match the recorded original hash.');
+      record.status = 'rolled_back';
+      return ok({ remediationId: record.remediationId, findingId: record.findingId, projectRoot: record.projectRoot, file: record.file, status: 'rolled_back', originalHash: record.originalHash, restoredHash: record.originalHash, restoredAt: now() });
+    } catch {
+      return err('ROLLBACK_CONFLICT', 'Controlled rollback could not be completed safely.');
+    } finally {
+      try { fs.rmSync(temp, { force: true }); } catch { }
+    }
+  });
+}
 
 export function getControlledRemediationRecord(projectRoot: string, findingId: string): ControlledRemediationRecord | null {
   return [...controlledRecords.values()].reverse().find((record) => record.projectRoot === projectRoot && record.findingId === findingId) ?? null;
@@ -633,7 +686,7 @@ export async function remediateFinding(config: AppConfig, input: ControlledRemed
         receipt.remediationId = remediationId;
         if (beforeFinding.before.originalReceiptId && beforeFinding.before.sourceId) linkSecurityReceiptToRemediation(beforeFinding.before.sourceId, beforeFinding.before.originalReceiptId, remediationId, config.projectRoot);
         if (controlledRecords.size >= MAX_RECORDS) controlledRecords.delete(controlledRecords.keys().next().value!);
-        controlledRecords.set(remediationId, { remediationId, findingId: input.finding.id, projectRoot: config.projectRoot, file, appliedHash: proposedHash, before: beforeFinding.before, baselineFindings: beforeFinding.findings, baselineComplete: beforeFinding.complete, lastRetest: null, appliedAt: now() });
+        controlledRecords.set(remediationId, { remediationId, findingId: input.finding.id, projectRoot: config.projectRoot, file, appliedHash: proposedHash, originalHash, originalContent: Buffer.from(current), status: 'validated_pending_retest', before: beforeFinding.before, baselineFindings: beforeFinding.findings, baselineComplete: beforeFinding.complete, lastRetest: null, appliedAt: now() });
       }
       return ok(receipt);
     } catch {

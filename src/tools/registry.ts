@@ -55,7 +55,7 @@ import {
 } from '../investigation/orchestrator.js';
 import { generateSecurityReport, getSecurityFinding } from '../report/engine.js';
 import { detachedRedacted } from '../report/redaction.js';
-import { applyRemediation, getRemediation, proposeRemediation, remediateFinding, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
+import { applyRemediation, getControlledRemediationRecordById, getRemediation, proposeRemediation, remediateFinding, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
 import { retestFinding } from '../remediation/retest.js';
 import { securityRemediationSweep } from '../remediation/sweep.js';
 import { runDeepSecurityAudit } from '../intelligence/engine.js';
@@ -574,13 +574,22 @@ const INVESTIGATION_TOOLS = new Set([
 const REMEDIATION_TOOLS = new Set(['apply_remediation', 'verify_remediation', 'rollback_remediation']);
 const explicitSessionRoots = new Map<string, string>();
 
-function withStoredRoot(handler: ToolDefinition['handler'], field: 'investigationId' | 'remediationId', allowed: Set<string>): ToolDefinition['handler'] {
+function withStoredRoot(handler: ToolDefinition['handler'], field: 'investigationId' | 'remediationId', allowed: Set<string>, allowControlledRollback = false): ToolDefinition['handler'] {
   return async (config, rawInput) => {
     if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) return handler(config, rawInput);
     const input = rawInput as Record<string, unknown>;
     if (Object.keys(input).some((key) => key !== 'projectRoot' && !allowed.has(key))) return handler(config, rawInput);
     if (typeof input[field] === 'string' && input[field].length > 128) return handler(config, rawInput);
     if (typeof input[field] !== 'string') return handler(config, rawInput);
+    const controlled = allowControlledRollback ? getControlledRemediationRecordById(input[field]) : null;
+    if (controlled) {
+      const selected = input.projectRoot === undefined ? resolveToolRoot(config, undefined) : typeof input.projectRoot === 'string' ? resolveToolRoot(config, input.projectRoot) : null;
+      if (!selected) return invalidInputResponse('projectRoot: must be a string');
+      if (!selected.ok) return toMcpResponse(selected);
+      if (selected.data !== controlled.projectRoot) return toMcpResponse(err('PATH_OUTSIDE_ROOT', 'The remediation belongs to another project root.'));
+      const { projectRoot: _projectRoot, ...rest } = input;
+      return handler({ ...config, projectRoot: selected.data }, rest);
+    }
     const record = field === 'remediationId' ? getRemediation(input[field]) : null;
     if (record && !record.ok) return toMcpResponse(record);
     const investigationId = record?.ok ? record.data.proposal.investigationId : input[field];
@@ -645,7 +654,7 @@ for (const tool of toolDefinitions) {
       },
     };
   } else if (INVESTIGATION_TOOLS.has(tool.name) || REMEDIATION_TOOLS.has(tool.name)) {
-    tool.handler = withStoredRoot(tool.handler, REMEDIATION_TOOLS.has(tool.name) ? 'remediationId' : 'investigationId', new Set(Object.keys((tool.inputSchema.properties as Record<string, unknown> | undefined) ?? {})));
+    tool.handler = withStoredRoot(tool.handler, REMEDIATION_TOOLS.has(tool.name) ? 'remediationId' : 'investigationId', new Set(Object.keys((tool.inputSchema.properties as Record<string, unknown> | undefined) ?? {})), tool.name === 'rollback_remediation');
     tool.inputSchema = { ...tool.inputSchema, properties: { ...((tool.inputSchema.properties as Record<string, unknown> | undefined) ?? {}), projectRoot: { type: 'string', description: 'Optional project root; if supplied, must match the audit session root.' } } };
   } else {
     tool.handler = requireConfiguredRoot(tool.handler);
