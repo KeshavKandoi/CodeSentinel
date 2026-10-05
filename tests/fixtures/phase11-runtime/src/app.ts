@@ -10,4 +10,5 @@ app.post('/upload', multer({ dest: 'uploads/' }).single('file'), (req, res) => r
 app.get('/jwt', (req, res) => res.send(jwt.decode(req.query.token)));
 app.get('/session-cookie', (req, res) => res.cookie('session', 'fixture-secret', { secure: false, httpOnly: false, sameSite: 'none' }).send('ok'));
 app.get('/cors', (req, res) => { res.setHeader('Access-Control-Allow-Origin', '*'); res.send('ok'); });
+app.get('/deserialize', (req, res) => res.send(unserialize(req.query.payload)));
 export default app;
