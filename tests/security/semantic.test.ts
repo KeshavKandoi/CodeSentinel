@@ -40,6 +40,11 @@ describe('semantic Node rules', () => {
     expect(findings.some(f => f.ruleId === 'CS-NODE-022')).toBe(false);
   });
 
+  it('does not treat verification of an unrelated token as binding the claimed identity', async () => {
+    const result = await scan('wss.on("connection", socket => { socket.on("message", data => { const parsed = JSON.parse(data.toString()); verifyToken(parsed.token); registry.register(parsed.userId, socket); }); });');
+    expect(result.some(f => f.ruleId === 'CS-NODE-022')).toBe(true);
+  });
+
   it('finds exposed operational metrics with source location', async () => {
     const findings = await scan('import http from "http";\nhttp.createServer((req, res) => {\n if (req.url === "/metrics") {\n  res.end(JSON.stringify(manager.snapshot()));\n }\n});');
     expect(findings.find(f => f.ruleId === 'CS-NODE-023')).toMatchObject({ severity: 'medium', file: 'src/server.ts', line: 3 });
@@ -48,6 +53,11 @@ describe('semantic Node rules', () => {
   it('does not flag guarded metrics or simple health', async () => {
     const findings = await scan('http.createServer((req, res) => { if (req.url === "/metrics") { if (!authenticate(req)) return res.end("denied"); res.end(JSON.stringify(manager.snapshot())); } if (req.url === "/health") res.end("ok"); });');
     expect(findings.some(f => f.ruleId === 'CS-NODE-023')).toBe(false);
+  });
+
+  it('does not treat authentication on an earlier route as protecting metrics', async () => {
+    const result = await scan('http.createServer((req, res) => { if (req.url === "/admin") { authenticate(req); res.end("ok"); } if (req.url === "/metrics") { res.end(JSON.stringify(manager.snapshot())); } });');
+    expect(result.some(f => f.ruleId === 'CS-NODE-023')).toBe(true);
   });
 
   it('finds an unbounded WebSocket payload only alongside expensive processing', async () => {

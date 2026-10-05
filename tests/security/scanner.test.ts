@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { scanProject } from '../../src/security/scanner.js';
@@ -45,6 +46,21 @@ describe('Phase 3 security rule registry', () => {
 });
 
 describe('Phase 3 static security scanner', () => {
+  it('explains an unknown root containing nested Node applications without scanning them', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codesentinel-workspace-')));
+    try {
+      fs.mkdirSync(path.join(root, 'service'));
+      fs.writeFileSync(path.join(root, 'service', 'package.json'), '{"name":"service"}');
+      const result = await scanProject({ ...config, projectRoot: root });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.project.ecosystem).toBe('unknown');
+      expect(result.data.rulesRun).toEqual([]);
+      expect(result.data.warnings.join(' ')).toMatch(/service.*projectRoot/i);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
   it('does not run Node rules against explicitly unsupported Python projects', async () => {
     const result = await scanProject({ ...config, projectRoot: pythonFixtureRoot });
     expect(result.ok).toBe(true);
@@ -67,6 +83,7 @@ describe('Phase 3 static security scanner', () => {
       expect(finding.verificationStatus).toBe('not_verified');
       expect(finding.evidence.length).toBeGreaterThan(0);
       expect(finding.evidence[0].reason.length).toBeGreaterThan(10);
+      expect(finding.impact.length).toBeGreaterThan(10);
     }
   });
 
@@ -113,6 +130,8 @@ describe('Phase 3 static security scanner', () => {
       const findings = await runScan();
       expect(findings.some((finding) => finding.file === 'src/malformed.ts')).toBe(false);
       expect(findings.some((finding) => finding.file === 'src/large-generated.js')).toBe(false);
+      const boundedScan = await scanProject(config);
+      expect(boundedScan.ok && boundedScan.data.warnings.some(warning => warning.includes('src/large-generated.js') && warning.includes('read limit'))).toBe(true);
     } finally {
       fs.rmSync(largeFile, { force: true });
     }
