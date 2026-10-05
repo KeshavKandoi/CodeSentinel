@@ -23,6 +23,7 @@ import { accessCategory, addOrMerge, canonicalCategory, compareBySeverity, compa
 import { calculateRiskScore } from './scoring.js';
 import { advance, advanceToVerified } from './lifecycle.js';
 import { assessVerification } from './verification.js';
+import { classifyRuntimeSetupFailure } from './environment.js';
 import type { AuditContext, AuditFinding, AuditGraphSummary, AuditResult, AuditStage, AuditSummary, FinalVerification, NamedCount, StageStatus, TreeFingerprint } from './types.js';
 
 interface StageOutput {
@@ -294,11 +295,28 @@ function buildResult(ctx: AuditContext, input: RunFullSecurityAuditInput): Audit
   const before = ctx.treeBefore;
   const after = ctx.treeAfter;
   const comparable = before !== null && after !== null && before.hash.length > 0 && after.hash.length > 0;
+  const blocker = input.runtimeSetupFailure ? classifyRuntimeSetupFailure(input.runtimeSetupFailure.command, input.runtimeSetupFailure.output) : null;
+  const runtimeStage = ctx.stages.find((stage) => stage.stage === 'runtime_proof');
+  const attempted = findings.some((finding) => finding.proof.attempted);
+  const incompleteStages = ctx.stages.some((stage) => stage.status === 'failed' || stage.status === 'blocked');
+  const proofBlocked = findings.some((finding) => finding.proof.attempted && finding.proof.status === 'blocked');
+  const unverified = findings.filter((finding) => finding.status !== 'verified' && finding.status !== 'verified_resolved').length;
+  const securityStatus: AuditResult['securityStatus'] = summary.runtimeVerified > 0 ? 'verified_vulnerability' : blocker || incompleteStages || incompleteCoverage || proofBlocked ? 'inconclusive' : findings.length > 0 ? 'suspected' : 'no_findings';
+  const executionStatus: AuditResult['executionStatus'] = blocker ? 'blocked' : ctx.stages.some((stage) => stage.status === 'failed') ? 'failed' : incompleteStages || proofBlocked || runtimeStage?.status === 'skipped' ? 'partially_completed' : 'completed';
+  const reason = blocker?.reason ?? (runtimeStage?.status === 'blocked' || runtimeStage?.status === 'skipped' ? runtimeStage.note : findings.find((finding) => finding.proof.attempted && finding.proof.status === 'blocked')?.proof.note ?? null);
+  const checked = ctx.stages.filter((stage) => stage.status === 'completed' && stage.stage !== 'report').map((stage) => `${stage.stage} completed`);
+  const couldNotVerify = blocker ? [`Runtime verification blocked: ${blocker.reason}`, 'CodeSentinel did not start the application or send HTTP requests; no new finding was marked verified.', `${unverified} static candidate(s) remain unverified; ${summary.runtimeVerified} runtime-confirmed vulnerabilities.`] : proofBlocked ? [`Runtime proof was blocked: ${reason ?? 'The proof prerequisites were not met.'}`, `${unverified} static candidate(s) remain unverified.`] : runtimeStage?.status === 'skipped' ? ['Runtime verification was not performed; no authorized runtime target or prior receipt was available.'] : [];
   return {
     schemaVersion: 1,
     auditId,
     runId: ctx.runId,
     readOnly: { enforced: true, sourceTreeUnchanged: comparable ? before.hash === after.hash : null, filesChecked: before?.files ?? 0, truncated: before?.truncated ?? false },
+    securityStatus,
+    executionStatus,
+    verification: { attempted, completed: runtimeStage?.status === 'completed' && !blocker && !proofBlocked, blocked: Boolean(blocker) || proofBlocked || runtimeStage?.status === 'blocked', reason, verifiedVulnerabilities: summary.runtimeVerified, staticCandidatesUnverified: unverified },
+    blocker,
+    targetActivity: { targetModifications: comparable && before.hash === after.hash ? 'none' : 'unknown', dependenciesInstalled: false, commandsExecutedInsideTarget: false, runtimeStartedByCodeSentinel: false, networkRequestsSent: attempted, databaseAccessed: attempted ? null : false },
+    guidance: { checked, couldNotVerify, nextSteps: blocker ? [blocker.recommendedNextStep, 'Rerun runtime verification after the environment is ready.'] : runtimeStage?.status === 'skipped' ? ['Provide an authorized local runtime target to attempt proof.'] : [] },
     project: { name: ctx.profile?.projectName ?? null, ecosystem: ctx.profile?.ecosystem ?? 'unknown', root: '[CONFIGURED_PROJECT_ROOT]' },
     execution: { startedAt: ctx.startedAt, finishedAt: new Date(finishedMs).toISOString(), elapsedMs: finishedMs - ctx.startedMs, limits: ctx.limits, findingsTruncated: ctx.truncatedFindings },
     stages: ctx.stages,
@@ -405,6 +423,16 @@ export async function runSecurityAuditPipeline(config: AppConfig, input: RunFull
 
   await runStage(ctx, 'runtime_proof', true, true, async () => {
     const eligible = [...ctx.findings.values()].filter((finding) => finding.status === 'proof_eligible').sort(compareBySeverity);
+    if (input.runtimeSetupFailure) {
+      const blocker = classifyRuntimeSetupFailure(input.runtimeSetupFailure.command, input.runtimeSetupFailure.output);
+      for (const finding of eligible) {
+        finding.classification.proofStatus = 'blocked';
+        finding.classification.reason = blocker.reason;
+        advance(finding, 'blocked');
+      }
+      addIssue(ctx, 'runtime_proof', 'ENVIRONMENT_BLOCKED', blocker.reason, true, eligible.map((finding) => finding.id));
+      return { count: 0, status: 'blocked', note: blocker.reason };
+    }
     const target = input.target;
     const attempted = new Set<string>();
     const notAttempted: string[] = [];

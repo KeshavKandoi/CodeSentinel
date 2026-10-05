@@ -100,7 +100,7 @@ const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'run_full_security_audit',
     description: 'Run the complete read-only CodeSentinel audit pipeline in one call: discovery, route discovery, static scan, access-control analysis, deep analysis, candidate classification, optional runtime proof, security graph, and a lifecycle report with stable finding IDs. Runtime proof runs only when an authorized local target is supplied and only through registered proof adapters. Never modifies source, never calls an LLM, and findings are verified only by a semantic proof oracle.',
-    inputSchema: { type: 'object', properties: { target: { type: 'object' }, sessions: { type: 'array' }, sessionParams: { type: 'object' }, investigationId: { type: 'string' }, maxFindings: { type: 'number' }, maxProofAttempts: { type: 'number' }, maxElapsedMs: { type: 'number' }, maxFiles: { type: 'number' }, includeGraph: { type: 'boolean' } } },
+    inputSchema: { type: 'object', properties: { target: { type: 'object' }, runtimeSetupFailure: { type: 'object', properties: { command: { type: 'string' }, output: { type: 'string' } }, required: ['command', 'output'] }, sessions: { type: 'array' }, sessionParams: { type: 'object' }, investigationId: { type: 'string' }, maxFindings: { type: 'number' }, maxProofAttempts: { type: 'number' }, maxElapsedMs: { type: 'number' }, maxFiles: { type: 'number' }, includeGraph: { type: 'boolean' } } },
     handler: async (config, rawInput) => {
       const validation = safeValidate(runFullSecurityAuditSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
