@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import type { AppConfig } from '../../src/config.js';
 import { classifyRuntimeSetupFailure } from '../../src/audit/environment.js';
 import { toolDefinitions } from '../../src/tools/registry.js';
@@ -17,10 +18,10 @@ function project(source: string): string {
   return root;
 }
 
-async function audit(root: string, runtimeSetupFailure?: { command: string; output: string }) {
+async function audit(root: string, runtimeSetupFailure?: { command: string; output: string }, target?: { allowedOrigin: string }) {
   const config: AppConfig = { projectRoot: '', commandTimeoutMs: 5000, maxOutputBytes: 1_000_000, maxReadFileBytes: 2_000_000, maxListResults: 1000 };
   const tool = toolDefinitions.find((item) => item.name === 'run_full_security_audit')!;
-  const result = await tool.handler(config, { projectRoot: root, runtimeSetupFailure });
+  const result = await tool.handler(config, { projectRoot: root, runtimeSetupFailure, target });
   expect(result.isError).toBe(false);
   return JSON.parse(result.content[0]!.text);
 }
@@ -71,10 +72,40 @@ describe('runtime setup status', () => {
     expect(result.securityStatus).toBe('inconclusive');
   });
 
-  it('reports an ordinary static-only audit without claiming runtime safety', async () => {
+  it('blocks proof-eligible findings when no authorized runtime target is supplied', async () => {
+    const result = await audit(project("const express = require('express'); const app = express(); app.get('/admin', (req, res) => res.send('admin'));\n"));
+    expect(result.summary.total).toBeGreaterThan(0);
+    expect(result.findings.some((finding: any) => finding.status === 'proof_eligible')).toBe(true);
+    expect(result.securityStatus).toBe('inconclusive');
+    expect(result.executionStatus).toBe('blocked');
+    expect(result.verification).toMatchObject({ attempted: false, completed: false, blocked: true, verifiedVulnerabilities: 0 });
+    expect(result.verification.staticCandidatesUnverified).toBe(result.summary.total);
+    expect(result.blocker).toMatchObject({ kind: 'runtime_target_missing', responsibility: 'user_environment', reason: 'Runtime verification could not start because no authorized runtime target was supplied.' });
+    expect(result.nextStep).toEqual({ action: 'Provide an authorized isolated local runtime target and rerun verification.', safeToRerun: true });
+    expect(result.issues.some((issue: any) => issue.code === 'RUNTIME_TARGET_MISSING')).toBe(true);
+  });
+
+  it('reports not_required when there are no proof-eligible findings', async () => {
     const result = await audit(project('const value = 1;\n'));
-    expect(result.executionStatus).toBe('partially_completed');
+    expect(result.executionStatus).toBe('not_required');
     expect(result.verification.attempted).toBe(false);
+    expect(result.blocker).toBeNull();
     expect(result.securityStatus).not.toBe('verified_safe');
+  });
+
+  it('reports completed when an authorized runtime target is available', async () => {
+    const server = http.createServer((_request, response) => { response.writeHead(200, { 'content-type': 'text/plain' }); response.end('admin'); });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Local test server did not bind a port.');
+      const root = project("const express = require('express'); const app = express(); app.get('/admin', (req, res) => res.send('admin'));\n");
+      const result = await audit(root, undefined, { allowedOrigin: `http://127.0.0.1:${address.port}` });
+      expect(result.executionStatus).toBe('completed');
+      expect(result.verification.attempted).toBe(true);
+      expect(result.blocker).toBeNull();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
