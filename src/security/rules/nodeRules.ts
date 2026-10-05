@@ -1,5 +1,6 @@
 import type { DependencyInfo } from '../../discovery/types.js';
 import type { SecurityFinding, SecurityRule, SecurityScanContext } from '../types.js';
+import type { Confidence } from '../../discovery/types.js';
 import {
   codeLineIsExecutable,
   contextFor,
@@ -13,7 +14,7 @@ import {
   makeFinding,
 } from '../utils.js';
 
-type CandidatePredicate = (line: string, match: { path: string; line: number; preview: string }, content: string) => boolean;
+type CandidatePredicate = (line: string, match: { path: string; line: number; preview: string }, content: string) => boolean | Confidence;
 
 function ruleBase(rule: Omit<SecurityRule, 'run'>): Omit<SecurityRule, 'run'> {
   return rule;
@@ -35,19 +36,38 @@ function makeSearchRule(meta: Omit<SecurityRule, 'run'>, query: string, predicat
         if (!file) continue;
         const line = lineAt(file.content, match.line);
         if (!codeLineIsExecutable(line)) continue;
-        if (!predicate(line, match, file.content)) continue;
-        findings.push(makeFinding(meta as SecurityRule, {
+        const decision = predicate(line, match, file.content);
+        if (!decision) continue;
+        const finding = makeFinding(meta as SecurityRule, {
           file: match.path,
           line: match.line,
           column: match.column,
           matchedText: line.trim().slice(0, 240),
           context: contextFor(file.content, match.line),
           reason: meta.evidenceRequirements,
-        }));
+        });
+        if (typeof decision === 'string') finding.confidence = decision;
+        findings.push(finding);
       }
       return findings;
     },
   };
+}
+
+function secretConfidence(value: string, filePath: string): Confidence | false {
+  const normalized = value.trim();
+  if (looksLikePlaceholder(normalized) || /(?:^|[-_ .])(?:test|dummy|fake|example|sample|placeholder|redacted|hidden)(?:$|[-_ .])/i.test(normalized)) return false;
+  const structured = /^(?:sk_live_|sk_test_|ghp_|gho_|github_pat_|xox[baprs]-|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,})/.test(normalized)
+    || /^eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/.test(normalized);
+  if (structured) return 'high';
+  const groups = [/[a-z]/.test(normalized), /[A-Z]/.test(normalized), /\d/.test(normalized), /[^A-Za-z0-9]/.test(normalized)].filter(Boolean).length;
+  const frequencies = new Map<string, number>();
+  for (const char of normalized) frequencies.set(char, (frequencies.get(char) ?? 0) + 1);
+  const entropy = [...frequencies.values()].reduce((sum, count) => { const p = count / normalized.length; return sum - p * Math.log2(p); }, 0);
+  const realistic = normalized.length >= 20 && groups >= 3 && entropy >= 3.5;
+  if (realistic) return 'high';
+  const testFile = filePath.replaceAll('\\', '/').split('/').some(segment => /^(?:tests?|__tests__|fixtures?|mocks?|__mocks__)$/.test(segment)) || /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(filePath);
+  return testFile ? false : 'medium';
 }
 
 const hardcodedSecrets = makeSearchRule(
@@ -64,11 +84,11 @@ const hardcodedSecrets = makeSearchRule(
     languages: ['node'],
   }),
   String.raw`\b(api[_-]?key|secret|password|passwd|pwd|token|private[_-]?key|client[_-]?secret|access[_-]?key)\b\s*[:=]`,
-  (line) => {
+  (line, candidate) => {
     if (/process\.env\b/.test(line)) return false;
     const match = /(?:api[_-]?key|secret|password|passwd|pwd|token|private[_-]?key|client[_-]?secret|access[_-]?key)\b\s*[:=]\s*['"`]([^'"`]{8,})['"`]/i.exec(line);
     if (!match) return false;
-    return !looksLikePlaceholder(match[1]);
+    return secretConfidence(match[1], candidate.path);
   }
 );
 
