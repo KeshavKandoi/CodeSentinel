@@ -122,6 +122,49 @@ describe('controlled remediation MCP boundary', () => {
     expect(fs.readFileSync(fx.unrelated, 'utf8')).toBe('user changed notes\n');
   });
 
+  it('rolls back a validated controlled remediation and rejects a second rollback', async () => {
+    const fx = fixture();
+    const beforeHash = digest(fs.readFileSync(fx.target));
+    const applied = await call('remediate_finding', fx.config, input(fx.root));
+    expect(applied.body.remediationStatus).toBe('validated_pending_retest');
+    const rolledBack = await call('rollback_remediation', fx.config, { projectRoot: fx.root, remediationId: applied.body.remediationId, authorization: authorization(fx.root) });
+    expect(rolledBack.error).toBe(false);
+    expect(rolledBack.body).toMatchObject({ remediationId: applied.body.remediationId, status: 'rolled_back', originalHash: beforeHash, restoredHash: beforeHash });
+    expect(digest(fs.readFileSync(fx.target))).toBe(beforeHash);
+    const repeated = await call('rollback_remediation', fx.config, { projectRoot: fx.root, remediationId: applied.body.remediationId, authorization: authorization(fx.root) });
+    expect(repeated.body.error).toBe('INVALID_TRANSITION');
+    const missing = await call('rollback_remediation', fx.config, { projectRoot: fx.root, remediationId: 'controlled-00000000-0000-0000-0000-000000000000', authorization: authorization(fx.root) });
+    expect(missing.body.error).toBe('REMEDIATION_NOT_FOUND');
+  });
+
+  it('rejects cross-project controlled rollback and preserves unexpected newer changes', async () => {
+    const first = fixture();
+    const second = fixture();
+    const applied = await call('remediate_finding', first.config, input(first.root));
+    const appliedHash = digest(fs.readFileSync(first.target));
+    const foreign = await call('rollback_remediation', second.config, { projectRoot: second.root, remediationId: applied.body.remediationId, authorization: authorization(second.root) });
+    expect(foreign.body.error).toBe('PATH_OUTSIDE_ROOT');
+    expect(digest(fs.readFileSync(first.target))).toBe(appliedHash);
+    fs.writeFileSync(first.target, 'const userChanged = true;\n');
+    const changedHash = digest(fs.readFileSync(first.target));
+    const conflict = await call('rollback_remediation', first.config, { projectRoot: first.root, remediationId: applied.body.remediationId, authorization: authorization(first.root) });
+    expect(conflict.body.error).toBe('ROLLBACK_CONFLICT');
+    expect(digest(fs.readFileSync(first.target))).toBe(changedHash);
+  });
+
+  it('refuses to roll back an older controlled edit over a newer remediation', async () => {
+    const fx = fixture();
+    const first = await call('remediate_finding', fx.config, input(fx.root));
+    execFileSync('git', ['add', 'test.js'], { cwd: fx.root });
+    execFileSync('git', ['-c', 'user.name=CodeSentinel Test', '-c', 'user.email=test@invalid.local', 'commit', '-qm', 'first edit'], { cwd: fx.root });
+    const second = await call('remediate_finding', fx.config, input(fx.root, { finding: { id: 'another-finding', file: 'test.js', approval: 'explicitly_approved' }, strategy: { kind: 'patch', oldText: 'false', newText: '0' } }));
+    expect(second.body.remediationStatus).toBe('validated_pending_retest');
+    const currentHash = digest(fs.readFileSync(fx.target));
+    const stale = await call('rollback_remediation', fx.config, { projectRoot: fx.root, remediationId: first.body.remediationId, authorization: authorization(fx.root) });
+    expect(stale.body.error).toBe('REMEDIATION_CONFLICT');
+    expect(digest(fs.readFileSync(fx.target))).toBe(currentHash);
+  });
+
   it('keeps the legacy apply tool write-protected without authorization', async () => {
     const fx = fixture();
     const result = await applyRemediation({ ...fx.config, projectRoot: fx.root }, 'missing-proposal');

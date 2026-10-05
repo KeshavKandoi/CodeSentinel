@@ -66,6 +66,13 @@ describe('built MCP controlled remediation lifecycle', () => {
   });
 
   it('executes scan, authorization, rollback, write, retest, audit, and sweep through stdio', async () => {
+    const listed = await request('tools/list', {});
+    const names = listed.result.tools.map((item: any) => item.name);
+    expect(names).toContain('retest_finding');
+    expect(names).toContain('remediate_finding');
+    expect(names).toContain('rollback_remediation');
+    expect(names).toContain('security_remediation_sweep');
+    expect(names).not.toContain('security_remediation_retest');
     const authorization = { projectRoot: root, localTarget: true, allowRemediation: true, nonProductionTestTarget: true };
     const baselineHash = digest(target);
     const baselineGit = execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });
@@ -80,6 +87,9 @@ describe('built MCP controlled remediation lifecycle', () => {
     const baseInput = { projectRoot: root, finding: { id: finding.id, file: 'app.js', approval: 'explicitly_approved' }, dryRun: false };
     const unauthorized = await call('remediate_finding', { ...baseInput, strategy: { kind: 'patch', oldText: '  const product =', newText: '  if (!req.user) return res.sendStatus(403);\n  const product =' } });
     expect(unauthorized.body.remediationStatus).toBe('not_authorized');
+    expect(digest(target)).toBe(baselineHash);
+    const dryRun = await call('remediate_finding', { ...baseInput, authorization, dryRun: true, strategy: { kind: 'patch', oldText: '  const product =', newText: '  if (!req.user) return res.sendStatus(403);\n  const product =' } });
+    expect(dryRun.body).toMatchObject({ remediationStatus: 'dry_run', validationStatus: 'passed', filesChanged: [] });
     expect(digest(target)).toBe(baselineHash);
     const invalid = await call('remediate_finding', { ...baseInput, authorization, strategy: { kind: 'patch', oldText: 'res.json(product);', newText: 'res.json(product + );' } });
     expect(invalid.body).toMatchObject({ remediationStatus: 'rolled_back', validationStatus: 'failed', rollbackStatus: 'succeeded' });
@@ -118,6 +128,15 @@ describe('built MCP controlled remediation lifecycle', () => {
     fs.writeFileSync(path.join(otherRoot, 'package.json'), JSON.stringify({ name: 'other-project', version: '1.0.0' }));
     const crossProject = await call('security_remediation_sweep', { projectRoot: otherRoot, remediationIds: [fixed.body.remediationId] });
     expect(crossProject.body.error).toBe('REMEDIATION_NOT_FOUND');
+    const foreignRollback = await call('rollback_remediation', { projectRoot: otherRoot, remediationId: fixed.body.remediationId, authorization: { ...authorization, projectRoot: otherRoot } });
+    expect(foreignRollback.body.error).toBe('PATH_OUTSIDE_ROOT');
+    expect(digest(target)).toBe(afterWrite);
+    const rollback = await call('rollback_remediation', { projectRoot: root, remediationId: fixed.body.remediationId, authorization });
+    expect(rollback.error).toBe(false);
+    expect(rollback.body).toMatchObject({ status: 'rolled_back', originalHash: baselineHash, restoredHash: baselineHash });
+    expect(digest(target)).toBe(baselineHash);
+    const afterRollback = await call('security_remediation_sweep', { projectRoot: root });
+    expect(afterRollback.body.findings.stillVulnerable.some((item: any) => item.findingId === finding.id)).toBe(true);
     const runtimeFile = path.join(root, 'runtime.js');
     fs.writeFileSync(runtimeFile, "const app = require('express')();\napp.get('/search', (req, res) => {\n  const rows = db.query(`SELECT * FROM users WHERE name = '${String(req.query.query)}'`);\n  res.json(rows);\n});\n");
     execFileSync('git', ['add', 'runtime.js'], { cwd: root });
