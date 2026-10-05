@@ -35,7 +35,7 @@ beforeAll(async () => {
       return;
     }
     if (replayMode === 'timeout') {
-      setTimeout(() => response.end('late response'), 100);
+      setTimeout(() => response.end('late response'), 1000);
       return;
     }
     if (replayMode === 'large') {
@@ -185,7 +185,7 @@ describe('proof to remediation lifecycle', () => {
     if (!finding) return;
     const cases = [
       { mode: 'redirect' as const, target: { allowedOrigin: origin, minRequestIntervalMs: 0 } },
-      { mode: 'timeout' as const, target: { allowedOrigin: origin, requestTimeoutMs: 10, minRequestIntervalMs: 0 } },
+      { mode: 'timeout' as const, target: { allowedOrigin: origin, requestTimeoutMs: 300, minRequestIntervalMs: 0 } },
       { mode: 'large' as const, target: { allowedOrigin: origin, maxResponseBytes: 128, minRequestIntervalMs: 0 } },
     ];
     for (const item of cases) {
