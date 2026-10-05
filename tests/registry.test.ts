@@ -40,6 +40,7 @@ describe('tool registry shape', () => {
       'read_file',
       'record_audit_hypothesis',
       'record_security_hypothesis',
+      'remediate_finding',
       'request_audit_verification',
       'request_runtime_verification',
       'rollback_remediation',
@@ -316,8 +317,8 @@ describe('phase 1 MCP boundary', () => {
 });
 
 describe('Phase 9 MCP contract', () => {
-  it('registers exactly 37 tools and rejects unknown arguments on every one', async () => {
-    expect(toolDefinitions.length).toBe(37);
+  it('registers exactly 38 tools and rejects unknown arguments on every one', async () => {
+    expect(toolDefinitions.length).toBe(38);
     for (const definition of toolDefinitions) {
       const response = await definition.handler(config, { unexpectedPhase9Key: 1 });
       expect(response.isError, definition.name).toBe(true);

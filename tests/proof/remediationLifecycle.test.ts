@@ -23,7 +23,8 @@ const pending: http.ServerResponse[] = [];
 function tool(name: string) {
   const found = toolDefinitions.find((item) => item.name === name);
   if (!found) throw new Error(`Missing tool ${name}`);
-  return found;
+  if (name !== 'apply_remediation' && name !== 'rollback_remediation') return found;
+  return { ...found, handler: (config: AppConfig, input: any) => found.handler(config, { ...input, authorization: { projectRoot: config.projectRoot, localTarget: true, allowRemediation: true, nonProductionTestTarget: true } }) };
 }
 
 function body(response: { content: Array<{ text: string }> }): any { return JSON.parse(response.content[0]!.text); }

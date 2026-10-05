@@ -11,7 +11,12 @@ import { listRemediationsForInvestigation, resetRemediationsForTests } from '../
 
 const roots: string[] = [];
 const configFor = (root: string): AppConfig => ({ projectRoot: root, commandTimeoutMs: 5000, maxOutputBytes: 1_000_000, maxReadFileBytes: 2_000_000, maxListResults: 2_000 });
-function tool(name: string) { const item = toolDefinitions.find((entry) => entry.name === name); if (!item) throw new Error(`missing tool ${name}`); return item; }
+function tool(name: string) {
+  const item = toolDefinitions.find((entry) => entry.name === name);
+  if (!item) throw new Error(`missing tool ${name}`);
+  if (name !== 'apply_remediation' && name !== 'rollback_remediation') return item;
+  return { ...item, handler: (config: AppConfig, input: any) => item.handler(config, { ...input, authorization: { projectRoot: config.projectRoot, localTarget: true, allowRemediation: true, nonProductionTestTarget: true } }) };
+}
 function body(response: { content: Array<{ text: string }> }) { return JSON.parse(response.content[0]!.text) as any; }
 function makeProject(): { root: string; config: AppConfig } {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codesentinel-phase9-'))); roots.push(root);
