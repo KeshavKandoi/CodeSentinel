@@ -35,6 +35,24 @@ describe('Phase 9 controlled remediation', () => {
     return { investigationId: started.id, findingId: finding.findingId };
   }
 
+  it('binds proposals, apply, verification, and rollback to the investigation project', async () => {
+    const first = makeProject();
+    const second = makeProject();
+    const { investigationId, findingId } = await investigation(first.config, first.root);
+    const relative = 'src/vulnerable.ts';
+    const original = fs.readFileSync(path.join(first.root, relative), 'utf8');
+    const input = { investigationId, findingId, description: 'Remove unsafe sink.', rationale: 'Test project isolation.', files: [{ path: relative, originalContentHash: crypto.createHash('sha256').update(original).digest('hex'), proposedContent: 'export const safe = true;\n', description: 'Replace source.' }], expectedSecurityEffect: 'Unsafe sink removed.', requiresRuntimeVerification: false };
+    expect(body(await tool('propose_remediation').handler(second.config, input)).error).toBe('PATH_OUTSIDE_ROOT');
+    const proposal = body(await tool('propose_remediation').handler(first.config, input));
+    expect(proposal.proposalId).toBeDefined();
+    expect(body(await tool('apply_remediation').handler(second.config, { remediationId: proposal.proposalId })).error).toBe('PATH_OUTSIDE_ROOT');
+    expect(fs.readFileSync(path.join(second.root, relative), 'utf8')).toBe(original);
+    expect(body(await tool('apply_remediation').handler(first.config, { remediationId: proposal.proposalId })).status).toBe('applied_pending_verification');
+    expect(body(await tool('verify_remediation').handler(second.config, { remediationId: proposal.proposalId })).error).toBe('PATH_OUTSIDE_ROOT');
+    expect(body(await tool('rollback_remediation').handler(second.config, { remediationId: proposal.proposalId })).error).toBe('PATH_OUTSIDE_ROOT');
+    expect(fs.readFileSync(path.join(second.root, relative), 'utf8')).toBe(original);
+  });
+
   it('validates, applies, re-analyzes, and rolls back without returning source contents', async () => {
     const { root, config } = makeProject();
     const started = body(await tool('start_security_investigation').handler(config, { projectPath: root, scope: ['input_validation'], hypothesis: 'Find unsafe input handling.' }));

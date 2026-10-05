@@ -57,6 +57,18 @@ it('parses valid TSX and JSX without malformed-source warnings', async () => {
   expect(scan.data.fileAnalysis.skippedFiles).not.toEqual(expect.arrayContaining([expect.objectContaining({ file: 'src/View.tsx' })]));
 });
 
+it('reports source files skipped beyond the AST walk depth limit', async () => {
+  const project = makeFixtureProject();
+  projects.push(project);
+  const deep = path.join(project.root, 'src', ...Array.from({ length: 16 }, (_, index) => `d${index}`));
+  fs.mkdirSync(deep, { recursive: true });
+  fs.writeFileSync(path.join(deep, 'deep.ts'), 'const deep = true;\n');
+  const scan = await scanProject(project.config);
+  if (!scan.ok) throw new Error(scan.error.message);
+  expect(scan.data.warnings.join(' ')).toContain('depth limit');
+  expect(scan.data.rulesFailed).toHaveLength(0);
+});
+
 it('explains an empty root and skipped Node rules', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'codesentinel-empty-')));
   try {

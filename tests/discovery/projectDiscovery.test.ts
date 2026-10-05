@@ -1,12 +1,27 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { runProjectDiscovery } from '../../src/discovery/projectDiscovery.js';
+import { MAX_MANIFEST_BYTES } from '../../src/discovery/manifestReader.js';
 import type { ProjectProfile, DetectedItem } from '../../src/discovery/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_ROOT = path.resolve(__dirname, '..', 'fixtures');
+
+it('bounds an oversized package manifest and reports incomplete discovery', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cs-manifest-')));
+  try {
+    fs.writeFileSync(path.join(root, 'package.json'), '{"name":"huge","padding":"' + 'x'.repeat(MAX_MANIFEST_BYTES) + '"}');
+    const profile = runProjectDiscovery(root);
+    expect(profile.ecosystem).toBe('node');
+    expect(profile.projectName).toBeNull();
+    expect(profile.warnings.join(' ')).toContain('discovery limit');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function fixtureRoot(name: string): string {
   return fs.realpathSync(path.join(FIXTURES_ROOT, name));
