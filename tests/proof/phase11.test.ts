@@ -186,3 +186,61 @@ describe('Phase 11 real local fixture proofs', () => {
     expect(secure?.status).toBe('not_reproduced');
   });
 });
+
+describe('Phase 11 insecure deserialization semantic proof', () => {
+  const prove = async (secure: boolean, port: number) => {
+    resetSecurityProofsForTests();
+    const scan = await scanProject(config);
+    expect(scan.ok).toBe(true);
+    if (!scan.ok) return null;
+    const finding = scan.data.findings.find((item) => item.ruleId === 'CS-NODE-011');
+    expect(finding).toBeDefined();
+    if (!finding) return null;
+    const proc = spawn(process.execPath, ['server.mjs'], { cwd: fixture, env: { ...process.env, PORT: String(port), CODESENTINEL_SECURE: secure ? '1' : '0' }, stdio: 'ignore' });
+    try {
+      await waitForServer(port);
+      const result = await proveSecurityFinding(config, { findingId: finding.id, target: { allowedOrigin: `http://127.0.0.1:${port}`, minRequestIntervalMs: 0 } });
+      expect(result.ok).toBe(true);
+      return result.ok ? result.data : null;
+    } finally { proc.kill('SIGTERM'); }
+  };
+
+  it('verifies the vulnerable fixture only through the semantic marker', async () => {
+    const receipt = await prove(false, 43894);
+    expect(receipt?.proofCase.type).toBe('insecure_deserialization');
+    expect(receipt?.status).toBe('verified');
+    expect(receipt?.targetOrigin).toBe('http://127.0.0.1:43894');
+    expect(JSON.stringify(receipt)).toContain('CODESENTINEL_PROOF_DESERIALIZED');
+    expect(JSON.stringify(receipt)).not.toContain('fixture-secret');
+  });
+
+  it('does not verify the secure fixture', async () => {
+    const receipt = await prove(true, 43895);
+    expect(receipt?.status).toBe('not_reproduced');
+    expect(receipt?.whyProven).toBe('');
+  });
+
+  it('never verifies a target that merely echoes the probe value', async () => {
+    resetSecurityProofsForTests();
+    const scan = await scanProject(config);
+    expect(scan.ok).toBe(true);
+    if (!scan.ok) return;
+    const finding = scan.data.findings.find((item) => item.ruleId === 'CS-NODE-011');
+    expect(finding).toBeDefined();
+    if (!finding) return;
+    const http = await import('node:http');
+    const echo = http.createServer((request, response) => { response.writeHead(200, { 'content-type': 'text/plain' }); response.end(decodeURIComponent(request.url ?? '')); });
+    await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
+    const address = echo.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    try {
+      const result = await proveSecurityFinding(config, { findingId: finding.id, target: { allowedOrigin: `http://127.0.0.1:${port}`, minRequestIntervalMs: 0 } });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.status).not.toBe('verified');
+      expect(result.data.whyProven).toBe('');
+    } finally {
+      await new Promise<void>((resolve) => echo.close(() => resolve()));
+    }
+  });
+});
