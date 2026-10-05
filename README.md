@@ -74,7 +74,7 @@ If you must integrate CodeSentinel with ChatGPT, you must deploy a custom remote
 
 ## Available MCP Tools
 
-CodeSentinel provides a rich set of discovery, static, and orchestration tools. 37 tools are registered and every tool rejects unknown arguments. Some notable tools include:
+CodeSentinel provides discovery, static, orchestration, proof, and separately invoked remediation tools. Every tool rejects unknown arguments. Some notable tools include:
 
 - `analyze_project`: Detects the programming language, framework, database, and ecosystem. (STATIC-ONLY)
 - `scan_project`: Runs deterministic security rules to detect static code issues. (STATIC-ONLY)
@@ -84,7 +84,8 @@ CodeSentinel provides a rich set of discovery, static, and orchestration tools. 
 - `start_security_audit`: Creates a bounded session with specific scopes. (METADATA-ONLY)
 - `prove_security_finding`: Issues a verifiable payload to prove a vulnerability locally. (RUNTIME-PROVEN)
 - `propose_remediation`: Submits an AI-generated fix for verification. (METADATA-ONLY)
-- `apply_remediation`: Applies the authorized fix to the source. (RUNTIME-PROVEN / VERIFIED_RESOLVED)
+- `remediate_finding`: Dry-runs or applies one explicitly authorized, bounded file change and returns a pending-retest receipt. (WRITES ONLY WHEN EXPLICITLY AUTHORIZED)
+- `apply_remediation`: Applies an existing validated proposal only with explicit local test-target authorization. Application alone does not verify a fix.
 
 ### Phase 2 Node and WebSocket detection
 
@@ -167,6 +168,16 @@ CodeSentinel distinguishes between theoretical vulnerabilities and **RUNTIME-PRO
 ## Remediation and Replay
 
 When a finding is proven and a remediation is applied, CodeSentinel snapshots the files. You can invoke `verify_remediation` to replay the original payload. If the payload is successfully blocked (or resolved securely), the status is updated to **VERIFIED_RESOLVED**. If the remediation breaks deterministic functionality or fails the replay, `rollback_remediation` restores the files to their pre-remediation hashes.
+
+### Controlled remediation foundation
+
+The read-only flow is `audit → findings → report`. It never invokes a write tool. The separate controlled flow is `finding → explicit authorization → patch → syntax validation → remediation receipt → pending security retest`.
+
+`remediate_finding` accepts an explicit canonical `projectRoot`, a confirmed or explicitly approved finding ID and root-relative file, a `patch` (one exact text span) or `replace` strategy, and `dryRun`. Write mode also requires `authorization` with the same canonical root and all three flags set to `true`: `localTarget`, `allowRemediation`, and `nonProductionTestTarget`. Missing or mismatched authorization produces a receipt with no write. Production-like paths, symlinked files, traversal, dirty target files, and repositories without readable Git status are rejected. Other pre-existing working-tree changes are preserved.
+
+Dry run calculates hashes and checks JavaScript, TypeScript, or JSON syntax without changing files. Write mode snapshots the original bytes and Git status, checks the original hash again before replacing the file, validates syntax after the write, and automatically restores the original bytes if validation fails. Receipts contain paths, hashes, status, a bounded change summary, and rollback outcome; they omit source contents and credentials. `validated_pending_retest` means the edit passed this narrow validation. It does not mean the vulnerability is fixed. Build/type checks and exploit retesting are outside this Phase 1 operation; Phase 2 will add the security retest and final fix determination. No dependencies are installed and no target application is started by this operation.
+
+The existing proposal-based `apply_remediation` and `rollback_remediation` write tools now require the same explicit authorization object. `verify_remediation` retains its existing separate replay behavior; neither audit nor scan invokes remediation automatically.
 
 ## Demo
 
@@ -299,4 +310,4 @@ Ask Claude: "Scan this project: /Users/me/my-project". `projectRoot` must be an 
 
 An explicit `projectRoot` always overrides `PROJECT_ROOT`. If neither is provided, the tool returns: `Project root is required: pass projectRoot or set PROJECT_ROOT`.
 
-`run_command`, the investigation, remediation, proof and `run_full_security_audit` tools do not accept `projectRoot`. They keep using `PROJECT_ROOT` and return a clear error when it is unset.
+`remediate_finding` accepts an explicit `projectRoot`; proposal-based remediation operations remain bound to their investigation root. Audits and scans remain read-only regardless of the selected root.

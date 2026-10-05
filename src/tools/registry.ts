@@ -24,6 +24,7 @@ import {
   remediationIdSchema,
   verifyRemediationSchema,
   rollbackRemediationSchema,
+  controlledRemediationSchema,
   safeValidate,
   deepSecurityAuditSchema,
   proveSecurityFindingSchema,
@@ -52,7 +53,7 @@ import {
 } from '../investigation/orchestrator.js';
 import { generateSecurityReport, getSecurityFinding } from '../report/engine.js';
 import { detachedRedacted } from '../report/redaction.js';
-import { applyRemediation, getRemediation, proposeRemediation, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
+import { applyRemediation, getRemediation, proposeRemediation, remediateFinding, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
 import { runDeepSecurityAudit } from '../intelligence/engine.js';
 import { buildSecurityGraph, listSecurityProofCases, proveSecurityFinding } from '../proof/engine.js';
 import { runFullSecurityAuditSchema } from '../validation/schemas.js';
@@ -463,13 +464,23 @@ const coreToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'remediate_finding',
+    description: 'Explicitly authorized, bounded single-file remediation with dry run, syntax validation, automatic rollback, and a redacted pending-retest receipt. Never runs automatically during audit.',
+    inputSchema: { type: 'object', properties: { finding: { type: 'object' }, authorization: { type: 'object' }, strategy: { type: 'object' }, dryRun: { type: 'boolean' } }, required: ['finding', 'strategy', 'dryRun'] },
+    handler: async (config, rawInput) => {
+      const validation = safeValidate(controlledRemediationSchema, rawInput ?? {});
+      if (!validation.ok) return invalidInputResponse(validation.message);
+      return toMcpResponse(await remediateFinding(config, { ...validation.data, projectRoot: config.projectRoot }));
+    },
+  },
+  {
     name: 'apply_remediation',
     description: 'Apply one validated, hash-checked remediation proposal using bounded filesystem writes. The result remains pending verification.',
-    inputSchema: { type: 'object', properties: { remediationId: { type: 'string' } }, required: ['remediationId'] },
+    inputSchema: { type: 'object', properties: { remediationId: { type: 'string' }, authorization: { type: 'object' } }, required: ['remediationId'] },
     handler: async (config, rawInput) => {
       const validation = safeValidate(remediationIdSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
-      return toMcpResponse(await applyRemediation(config, validation.data.remediationId));
+      return toMcpResponse(await applyRemediation(config, validation.data.remediationId, validation.data.authorization));
     },
   },
   {
@@ -485,11 +496,11 @@ const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'rollback_remediation',
     description: 'Restore a remediation snapshot only when every file still has its expected post-remediation hash.',
-    inputSchema: { type: 'object', properties: { remediationId: { type: 'string' } }, required: ['remediationId'] },
+    inputSchema: { type: 'object', properties: { remediationId: { type: 'string' }, authorization: { type: 'object' } }, required: ['remediationId'] },
     handler: async (config, rawInput) => {
       const validation = safeValidate(rollbackRemediationSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
-      return toMcpResponse(await rollbackRemediation(config, validation.data.remediationId));
+      return toMcpResponse(await rollbackRemediation(config, validation.data.remediationId, validation.data.authorization));
     },
   },
   {
@@ -523,7 +534,7 @@ const coreToolDefinitions: ToolDefinition[] = [
 export const toolDefinitions: ToolDefinition[] = [...coreToolDefinitions, ...orchestrationToolDefinitions];
 
 const PROJECT_ROOT_TOOLS = new Set([
-  'run_full_security_audit', 'start_security_audit', 'start_security_investigation',
+  'run_full_security_audit', 'start_security_audit', 'start_security_investigation', 'remediate_finding',
   'get_project_info', 'scan_project', 'analyze_project', 'list_files', 'read_file', 'search_files',
   'get_security_graph', 'discover_routes', 'analyze_access_control', 'run_deep_security_audit',
   'list_verification_cases', 'list_security_proof_cases',

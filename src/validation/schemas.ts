@@ -204,9 +204,25 @@ export const proposeRemediationSchema = z.object({
     ctx.addIssue({ code: 'custom', path: ['runtimeVerification'], message: 'runtimeVerification is required when requiresRuntimeVerification is true' });
   }
 });
-export const remediationIdSchema = z.object({ remediationId: z.string().min(1).max(128) }).strict();
+export const remediationAuthorizationSchema = z.object({
+  projectRoot: z.string().min(1).max(4096),
+  localTarget: z.literal(true),
+  allowRemediation: z.literal(true),
+  nonProductionTestTarget: z.literal(true),
+}).strict();
+export const remediationIdSchema = z.object({ remediationId: z.string().min(1).max(128), authorization: remediationAuthorizationSchema.optional() }).strict();
 export const verifyRemediationSchema = remediationIdSchema;
 export const rollbackRemediationSchema = remediationIdSchema;
+export type RemediationAuthorizationInput = z.infer<typeof remediationAuthorizationSchema>;
+export const controlledRemediationSchema = z.object({
+  finding: z.object({ id: z.string().min(1).max(256), file: z.string().min(1).max(4096), approval: z.enum(['confirmed', 'explicitly_approved']) }).strict(),
+  authorization: remediationAuthorizationSchema.optional(),
+  strategy: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('patch'), oldText: z.string().min(1).max(100_000), newText: z.string().max(100_000) }).strict(),
+    z.object({ kind: z.literal('replace'), content: z.string().max(1_000_000) }).strict(),
+  ]),
+  dryRun: z.boolean(),
+}).strict();
 export type ProposeRemediationInput = z.infer<typeof proposeRemediationSchema>;
 export type RemediationIdInput = z.infer<typeof remediationIdSchema>;
 

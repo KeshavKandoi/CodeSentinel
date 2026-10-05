@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { AppConfig } from '../config.js';
-import { resolveExistingWithinRoot, resolveWithinRoot } from '../fs/pathGuard.js';
+import { openRegularFileWithinRoot, resolveExistingWithinRoot, resolveWithinRoot } from '../fs/pathGuard.js';
 import { err, ok, type ToolOutcome } from '../types.js';
 import { detachedRedacted } from '../report/redaction.js';
 import { getInvestigation, runSecurityAnalysis, startInvestigation } from '../investigation/orchestrator.js';
@@ -12,6 +12,9 @@ import type { RemediationFileChange, RemediationLifecycle, RemediationProposal, 
 import { verifyFinding } from '../runtime/engine.js';
 import { linkSecurityReceiptToRemediation, listSecurityReceiptsForFinding, replaySecurityProof } from '../proof/engine.js';
 import { listFiles } from '../fs/fsOperations.js';
+import { authorizeRemediation, type RemediationAuthorization } from './authorization.js';
+import { execFileSync } from 'node:child_process';
+import ts from 'typescript';
 
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_TOTAL_BYTES = 2_000_000;
@@ -100,7 +103,19 @@ function validateFile(config: AppConfig, change: RemediationFileChange): ToolOut
   if (stat.isSymbolicLink()) return invalid(`Remediation file "${change.path}" is a symbolic link.`);
   if (!stat.isFile()) return err('NOT_A_FILE', `Remediation path "${change.path}" is not a regular file.`);
   if (stat.size > MAX_FILE_BYTES || Buffer.byteLength(change.proposedContent, 'utf8') > MAX_FILE_BYTES) return err('FILE_TOO_LARGE', `Remediation file "${change.path}" exceeds the bounded file size.`);
-  const current = fs.readFileSync(absolute);
+  const opened = openRegularFileWithinRoot(config.projectRoot, absolute);
+  if (!opened.ok) return err('PATH_OUTSIDE_ROOT', `Remediation file "${change.path}" could not be opened safely within the project root.`);
+  if (opened.size > MAX_FILE_BYTES) { fs.closeSync(opened.fd); return err('FILE_TOO_LARGE', `Remediation file "${change.path}" exceeds the bounded file size.`); }
+  let current: Buffer;
+  try {
+    current = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < current.length) {
+      const count = fs.readSync(opened.fd, current, offset, current.length - offset, offset);
+      if (count === 0) return err('REMEDIATION_CONFLICT', `Remediation file "${change.path}" changed while it was read.`);
+      offset += count;
+    }
+  } finally { fs.closeSync(opened.fd); }
   if (current.includes(0) || Buffer.from(change.proposedContent).includes(0)) return invalid(`Binary content is not supported for remediation file "${change.path}".`);
   return ok({ absolute, content: current.toString('utf8') });
 }
@@ -167,7 +182,9 @@ export function listRemediationsForInvestigation(investigationId: string): Remed
   return [...records.values()].filter((record) => record.proposal.investigationId === investigationId).map(safeRecord);
 }
 
-export async function applyRemediation(config: AppConfig, remediationId: string): Promise<ToolOutcome<RemediationRecord>> {
+export async function applyRemediation(config: AppConfig, remediationId: string, authorization?: RemediationAuthorization): Promise<ToolOutcome<RemediationRecord>> {
+  const authorized = authorizeRemediation(config.projectRoot, authorization);
+  if (!authorized.ok) return authorized;
   const existing = records.get(remediationId);
   if (!existing) return err('REMEDIATION_NOT_FOUND', `Remediation "${remediationId}" was not found.`);
   return withLock(lockKey(existing), async () => {
@@ -351,7 +368,9 @@ async function verifyRemediationInner(config: AppConfig, remediationId: string):
   }));
 }
 
-export async function rollbackRemediation(config: AppConfig, remediationId: string): Promise<ToolOutcome<RemediationRecord>> {
+export async function rollbackRemediation(config: AppConfig, remediationId: string, authorization?: RemediationAuthorization): Promise<ToolOutcome<RemediationRecord>> {
+  const authorized = authorizeRemediation(config.projectRoot, authorization);
+  if (!authorized.ok) return authorized;
   const existing = records.get(remediationId); if (!existing) return err('REMEDIATION_NOT_FOUND', `Remediation "${remediationId}" was not found.`);
   return withLock(lockKey(existing), async () => {
     const record = records.get(remediationId)!;
@@ -386,3 +405,155 @@ export async function rollbackRemediation(config: AppConfig, remediationId: stri
 }
 
 export function resetRemediationsForTests(): void { records.clear(); locks.clear(); }
+
+export type ControlledRemediationStatus = 'not_authorized' | 'authorization_rejected' | 'dry_run' | 'applying' | 'applied_pending_validation' | 'validated_pending_retest' | 'validation_failed' | 'rolled_back' | 'rollback_failed' | 'completed';
+export type ControlledRemediationStrategy = { kind: 'patch'; oldText: string; newText: string } | { kind: 'replace'; content: string };
+export interface ControlledRemediationInput {
+  projectRoot: string;
+  finding: { id: string; file: string; approval: 'confirmed' | 'explicitly_approved' };
+  authorization?: RemediationAuthorization;
+  strategy: ControlledRemediationStrategy;
+  dryRun: boolean;
+}
+export interface ControlledRemediationReceipt {
+  findingId: string;
+  projectRoot: string;
+  authorizationStatus: 'missing' | 'rejected' | 'authorized';
+  dryRun: boolean;
+  filesChanged: string[];
+  preChangeHashes: Record<string, string>;
+  postChangeHashes: Record<string, string>;
+  proposedHashes: Record<string, string>;
+  strategy: 'patch' | 'replace';
+  patchSummary: string;
+  gitStatusBefore: { modifiedPaths: string[]; targetPreModified: boolean } | null;
+  validationStatus: 'not_run' | 'passed' | 'failed' | 'not_applicable';
+  validationScope: 'syntax' | 'json' | 'none';
+  rollbackStatus: 'not_needed' | 'succeeded' | 'failed';
+  remediationStatus: ControlledRemediationStatus;
+  timestamp: string;
+  reason: string | null;
+}
+
+function syntaxValid(file: string, content: string): boolean | null {
+  const extension = path.extname(file).toLowerCase();
+  if (extension === '.json') { try { JSON.parse(content); return true; } catch { return false; } }
+  const kinds: Record<string, ts.ScriptKind> = { '.ts': ts.ScriptKind.TS, '.tsx': ts.ScriptKind.TSX, '.js': ts.ScriptKind.JS, '.jsx': ts.ScriptKind.JSX, '.mjs': ts.ScriptKind.JS, '.cjs': ts.ScriptKind.JS };
+  const kind = kinds[extension];
+  if (kind === undefined) return null;
+  return (ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true, kind) as ts.SourceFile & { parseDiagnostics: ts.Diagnostic[] }).parseDiagnostics.length === 0;
+}
+
+function gitModifiedPaths(root: string): string[] | null {
+  try {
+    const git = path.join(root, '.git');
+    if (!fs.lstatSync(git).isDirectory()) return null;
+    const output = execFileSync('git', ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: root, timeout: 5_000, maxBuffer: 256_000, encoding: 'utf8' });
+    return output.split('\0').filter(Boolean).map((entry) => entry.slice(3)).sort();
+  } catch { return null; }
+}
+
+function readControlledFile(config: AppConfig, file: string): Buffer {
+  const checked = validateFile(config, { path: file, originalContentHash: '', proposedContent: '', description: '' });
+  if (!checked.ok) throw new Error('Controlled remediation file could not be reopened safely.');
+  return Buffer.from(checked.data.content, 'utf8');
+}
+
+export async function remediateFinding(config: AppConfig, input: ControlledRemediationInput): Promise<ToolOutcome<ControlledRemediationReceipt>> {
+  const file = input.finding.file;
+  const receipt: ControlledRemediationReceipt = {
+    findingId: input.finding.id, projectRoot: input.projectRoot, authorizationStatus: 'missing', dryRun: input.dryRun,
+    filesChanged: [], preChangeHashes: {}, postChangeHashes: {}, proposedHashes: {}, strategy: input.strategy.kind,
+    patchSummary: '', gitStatusBefore: null, validationStatus: 'not_run', validationScope: 'none', rollbackStatus: 'not_needed',
+    remediationStatus: 'not_authorized', timestamp: now(), reason: null,
+  };
+  const authorized = authorizeRemediation(config.projectRoot, input.authorization);
+  if (!authorized.ok) {
+    receipt.authorizationStatus = input.authorization ? 'rejected' : 'missing';
+    receipt.remediationStatus = input.authorization ? 'authorization_rejected' : 'not_authorized';
+    receipt.reason = authorized.error.message;
+    return ok(receipt);
+  }
+  receipt.authorizationStatus = 'authorized';
+  if (input.projectRoot !== authorized.data || !input.finding.id || !['confirmed', 'explicitly_approved'].includes(input.finding.approval)) {
+    receipt.remediationStatus = 'authorization_rejected'; receipt.reason = 'The finding or requested root does not match the authorized repository.'; return ok(receipt);
+  }
+  const status = gitModifiedPaths(authorized.data);
+  if (!status) { receipt.remediationStatus = 'authorization_rejected'; receipt.reason = 'Controlled remediation requires a readable local Git repository.'; return ok(receipt); }
+  receipt.gitStatusBefore = { modifiedPaths: status.slice(0, 100), targetPreModified: status.includes(file) };
+  if (status.includes(file)) { receipt.remediationStatus = 'authorization_rejected'; receipt.reason = 'The target file has pre-existing modifications.'; return ok(receipt); }
+  if (input.strategy.kind === 'patch' && (!input.strategy.oldText || input.strategy.oldText === input.strategy.newText)) { receipt.remediationStatus = 'validation_failed'; receipt.validationStatus = 'failed'; receipt.reason = 'A patch must replace one non-empty exact text span.'; return ok(receipt); }
+  const checked = validateFile(config, { path: file, originalContentHash: '', proposedContent: '', description: '' });
+  if (!checked.ok) { receipt.remediationStatus = 'authorization_rejected'; receipt.reason = checked.error.message; return ok(receipt); }
+  const before = checked.data.content;
+  let proposed: string;
+  let changeLine = 1;
+  if (input.strategy.kind === 'patch') {
+    const at = before.indexOf(input.strategy.oldText);
+    if (at < 0 || before.indexOf(input.strategy.oldText, at + input.strategy.oldText.length) >= 0) { receipt.remediationStatus = 'validation_failed'; receipt.validationStatus = 'failed'; receipt.reason = 'The exact patch span must occur once in the target file.'; return ok(receipt); }
+    changeLine = before.slice(0, at).split('\n').length;
+    proposed = before.slice(0, at) + input.strategy.newText + before.slice(at + input.strategy.oldText.length);
+  } else proposed = input.strategy.content;
+  if (Buffer.byteLength(proposed, 'utf8') > MAX_FILE_BYTES || changedLines(before, proposed) > MAX_CHANGED_LINES) { receipt.remediationStatus = 'validation_failed'; receipt.validationStatus = 'failed'; receipt.reason = 'The proposed change exceeds remediation bounds.'; return ok(receipt); }
+  const originalHash = sha256(before);
+  const proposedHash = sha256(proposed);
+  receipt.preChangeHashes[file] = originalHash;
+  receipt.postChangeHashes[file] = originalHash;
+  receipt.proposedHashes[file] = proposedHash;
+  receipt.patchSummary = `${input.strategy.kind} changes ${changedLines(before, proposed)} line(s) beginning at line ${changeLine} in ${file}; proposed SHA-256 ${proposedHash}.`;
+  receipt.validationScope = path.extname(file).toLowerCase() === '.json' ? 'json' : syntaxValid(file, before) === null ? 'none' : 'syntax';
+  if (input.dryRun) {
+    const valid = syntaxValid(file, proposed);
+    receipt.validationStatus = valid === null ? 'not_applicable' : valid ? 'passed' : 'failed';
+    receipt.remediationStatus = 'dry_run';
+    receipt.reason = valid === false ? 'The proposed content has a syntax error; no file was changed.' : null;
+    return ok(receipt);
+  }
+  return withLock(`controlled:${authorized.data}:${file}`, async () => {
+    const target = checked.data.absolute;
+    let current: Buffer;
+    try { current = readControlledFile(config, file); } catch { return err('REMEDIATION_CONFLICT', 'The target file became unavailable before the write.'); }
+    if (sha256(current) !== originalHash || fs.lstatSync(target).isSymbolicLink()) return err('REMEDIATION_CONFLICT', 'The target file changed before the write.');
+    const mode = fs.statSync(target).mode;
+    const temp = `${target}.codesentinel-${crypto.randomUUID()}.tmp`;
+    receipt.remediationStatus = 'applying';
+    try {
+      fs.writeFileSync(temp, proposed, { encoding: 'utf8', flag: 'wx', mode });
+      if (sha256(fs.readFileSync(temp)) !== proposedHash) throw new Error('prepared hash mismatch');
+      if (sha256(readControlledFile(config, file)) !== originalHash) throw new Error('target changed before commit');
+      fs.renameSync(temp, target);
+      receipt.filesChanged = [file];
+      const applied = readControlledFile(config, file);
+      receipt.postChangeHashes[file] = sha256(applied);
+      receipt.remediationStatus = 'applied_pending_validation';
+      const valid = syntaxValid(file, applied.toString('utf8'));
+      receipt.validationStatus = valid === null ? 'not_applicable' : valid ? 'passed' : 'failed';
+      if (valid === false || receipt.postChangeHashes[file] !== proposedHash) throw new Error('validation failed');
+      receipt.remediationStatus = valid === null ? 'applied_pending_validation' : 'validated_pending_retest';
+      return ok(receipt);
+    } catch {
+      receipt.remediationStatus = 'validation_failed';
+      receipt.reason = 'The change failed validation or integrity checks.';
+      let restore: string | null = null;
+      try {
+        fs.rmSync(temp, { force: true });
+        if (receipt.filesChanged.length > 0) {
+          if (sha256(readControlledFile(config, file)) !== proposedHash) throw new Error('target changed after write');
+          restore = `${target}.codesentinel-restore-${crypto.randomUUID()}.tmp`;
+          fs.writeFileSync(restore, current, { flag: 'wx', mode });
+          fs.renameSync(restore, target);
+          if (sha256(readControlledFile(config, file)) !== originalHash) throw new Error('restore hash mismatch');
+        }
+        receipt.filesChanged = [];
+        receipt.postChangeHashes[file] = originalHash;
+        receipt.rollbackStatus = 'succeeded';
+        receipt.remediationStatus = 'rolled_back';
+      } catch {
+        if (restore) { try { fs.rmSync(restore, { force: true }); } catch {} }
+        receipt.rollbackStatus = 'failed';
+        receipt.remediationStatus = 'rollback_failed';
+      }
+      return ok(receipt);
+    }
+  });
+}
