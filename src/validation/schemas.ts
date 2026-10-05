@@ -271,6 +271,7 @@ export const securityGraphSchema = z.object({}).strict();
 
 export const runFullSecurityAuditSchema = z.object({
   target: runtimeTargetSchema.optional(),
+  runtimeSetupFailure: z.object({ command: z.string().max(256), output: z.string().min(1).max(8_000) }).strict().optional(),
   sessions: z.array(testSessionSchema).max(10).default([]),
   sessionParams: sessionParamsSchema.default({}),
   investigationId: z.string().min(1).max(128).optional(),

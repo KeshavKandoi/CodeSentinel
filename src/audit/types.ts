@@ -6,6 +6,7 @@ import type { AnalyzeAccessControlResult } from '../access/types.js';
 import type { ProofCaseType, ProofStatus, SecurityGraph, SecurityGraphEdge, SecurityGraphNode, SecurityReceipt } from '../proof/types.js';
 import type { RemediationLifecycle, RemediationRecord } from '../remediation/types.js';
 import type { NearDuplicateGroup } from './graph.js';
+import type { EnvironmentBlocker } from './environment.js';
 
 export const AUDIT_STAGES = ['discovery', 'route_discovery', 'static_scan', 'access_control', 'deep_analysis', 'candidate_classification', 'runtime_proof', 'graph_construction', 'report'] as const;
 export type AuditStage = (typeof AUDIT_STAGES)[number];
@@ -178,6 +179,12 @@ export interface AuditResult {
   auditId: string;
   runId: string;
   readOnly: { enforced: true; sourceTreeUnchanged: boolean | null; filesChecked: number; truncated: boolean };
+  securityStatus: 'no_findings' | 'suspected' | 'verified_vulnerability' | 'verified_safe' | 'inconclusive';
+  executionStatus: 'completed' | 'partially_completed' | 'blocked' | 'failed' | 'skipped';
+  verification: { attempted: boolean; completed: boolean; blocked: boolean; reason: string | null; verifiedVulnerabilities: number; staticCandidatesUnverified: number };
+  blocker: EnvironmentBlocker | null;
+  targetActivity: { targetModifications: 'none' | 'unknown'; dependenciesInstalled: false; commandsExecutedInsideTarget: false; runtimeStartedByCodeSentinel: false; networkRequestsSent: boolean; databaseAccessed: boolean | null };
+  guidance: { checked: string[]; couldNotVerify: string[]; nextSteps: string[] };
   project: { name: string | null; ecosystem: string; root: string };
   execution: { startedAt: string; finishedAt: string; elapsedMs: number; limits: AuditLimitsUsed; findingsTruncated: number };
   stages: StageRecord[];
