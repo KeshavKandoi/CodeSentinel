@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { AppConfig } from '../config.js';
+import { isStableDirectory, openRegularFileWithinRoot } from '../fs/pathGuard.js';
+import { resolveToolRoot } from '../projectRoot.js';
 import { ok, type ToolOutcome } from '../types.js';
 
 export interface ProjectInfo {
@@ -15,6 +17,7 @@ export interface ProjectInfo {
 }
 
 const IGNORED_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.venv', '__pycache__']);
+const MAX_GIT_HEAD_BYTES = 4096;
 
 const MARKER_FILES: Record<string, string> = {
   'package.json': 'node',
@@ -39,14 +42,27 @@ function detectPackageManager(root: string): string | null {
 }
 
 function detectGitBranch(root: string): string | null {
+  const gitDir = path.join(root, '.git');
+  if (!isStableDirectory(root, gitDir)) return null;
+  const opened = openRegularFileWithinRoot(root, path.join(gitDir, 'HEAD'));
+  if (!opened.ok) return null;
   try {
-    const headPath = path.join(root, '.git', 'HEAD');
-    if (!fs.existsSync(headPath)) return null;
-    const head = fs.readFileSync(headPath, 'utf-8').trim();
-    const match = head.match(/^ref:\s*refs\/heads\/(.+)$/);
-    return match ? match[1] : head; // detached HEAD -> raw commit sha
+    if (opened.size > MAX_GIT_HEAD_BYTES) return null;
+    const buffer = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const count = fs.readSync(opened.fd, buffer, offset, buffer.length - offset, offset);
+      if (count === 0) return null;
+      offset += count;
+    }
+    const head = buffer.toString('utf8').trim();
+    const match = /^ref: refs\/heads\/([^\s\\\0]+)$/.exec(head);
+    if (match && !match[1].includes('..') && !match[1].includes('@{')) return match[1];
+    return /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(head) ? head : null;
   } catch {
     return null;
+  } finally {
+    fs.closeSync(opened.fd);
   }
 }
 
@@ -77,7 +93,9 @@ function countEntries(root: string): { files: number; dirs: number } {
 }
 
 export function getProjectInfo(config: AppConfig): ToolOutcome<ProjectInfo> {
-  const root = config.projectRoot;
+  const checkedRoot = resolveToolRoot(config, config.projectRoot);
+  if (!checkedRoot.ok) return checkedRoot;
+  const root = checkedRoot.data;
 
   const detectedTypes = Object.entries(MARKER_FILES)
     .filter(([marker]) => fs.existsSync(path.join(root, marker)))
