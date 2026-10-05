@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { loadConfig, type AppConfig } from './config.js';
+import { loadConfigAllowUnset, type AppConfig } from './config.js';
 import { logger } from './logger.js';
 import { redactReportValue } from './report/redaction.js';
 import { toolDefinitions } from './tools/registry.js';
@@ -9,13 +9,17 @@ import { toolDefinitions } from './tools/registry.js';
 async function main(): Promise<void> {
   let config: AppConfig;
   try {
-    config = loadConfig();
+    config = loadConfigAllowUnset();
   } catch (e) {
     // Config errors happen before the transport is up — fine to write to
     // stderr and exit non-zero; nothing has touched stdout yet.
     logger.error('config_load_failed', { message: (e as Error).message });
     process.stderr.write(`Fatal: ${(e as Error).message}\n`);
     process.exit(1);
+  }
+
+  if (!config.projectRoot) {
+    logger.warn('project_root_unset', { message: 'PROJECT_ROOT is not set. Read-only tools require projectRoot in each call; all other tools are unavailable.' });
   }
 
   logger.info('server_starting', {
