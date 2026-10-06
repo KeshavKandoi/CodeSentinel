@@ -1,16 +1,21 @@
+<div align="center">
+
+<img src="./readme.png" alt="CodeSentinel — Find. Fix. Verify." width="100%">
+
+</div>
+
 # CodeSentinel
 
-> Find security issues. Apply controlled fixes. Verify what changed.
+**Find. Fix. Verify.**
 
-CodeSentinel is a local security auditor and remediation engine exposed through the Model Context Protocol (MCP). It turns source-backed findings into an evidence trail: investigate the issue, propose a specific change, require explicit authorization, validate the write, independently retest the original finding, sweep for remaining or new issues, and roll back when needed. Normal auditing never edits target source files.
+CodeSentinel is an MCP security analysis and controlled remediation system. It discovers source-backed security findings, investigates them, records proposed fixes, requires explicit authorization for changes, validates each controlled write, independently retests the original finding, sweeps for remaining or new issues, and safely rolls back when needed. Normal auditing never edits target source files.
 
 ![Package version 1.0.0](https://img.shields.io/badge/version-1.0.0-2563eb) ![License metadata ISC](https://img.shields.io/badge/license-ISC-334155) ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6) ![MCP stdio](https://img.shields.io/badge/MCP-stdio-0f766e)
 
 ```text
 FIND → INVESTIGATE → PROPOSE → AUTHORIZE → DRY RUN → APPLY
                                                    ↓
-                              VALIDATE → RETEST → SWEEP
-                                                    ↘ ROLLBACK, if needed
+                              VALIDATE → RETEST → SWEEP → ROLLBACK, if needed
 ```
 
 **A successful file change is not a resolved vulnerability.** CodeSentinel keeps a remediation at `validated_pending_retest` until independent retesting examines the original finding. A resolved finding does not imply that the entire project is secure.
@@ -72,6 +77,26 @@ For MCP clients that accept an `mcpServers` JSON entry, configure a local stdio 
 ```
 
 The `env` block is optional when using tools that accept a per-call `projectRoot`. Register the same `node` command and absolute entrypoint in clients with a different MCP configuration format. Restart the client after changing the configuration or rebuilding the server, then use its tool discovery interface (`tools/list`) to confirm the registered tools and input schemas. The selected project must be accessible to the server process. CodeSentinel does not provide a hosted endpoint.
+
+### Claude Code
+
+Build first, then register the local stdio server using the absolute path to this repository's `dist/index.js`:
+
+```sh
+claude mcp add --transport stdio codesentinel -- node /absolute/path/to/CodeSentinel/security-auditor-mcp/dist/index.js
+claude mcp list
+```
+
+Set an optional default root during registration with `--env PROJECT_ROOT=/absolute/path/to/project` before `--transport stdio`. Check the connection with `claude mcp get codesentinel` or `/mcp` inside the client. The `--` separates client options from the server command.
+
+### Codex
+
+```sh
+codex mcp add codesentinel -- node /absolute/path/to/CodeSentinel/security-auditor-mcp/dist/index.js
+codex mcp list
+```
+
+For an optional default root, add `--env PROJECT_ROOT=/absolute/path/to/project` before `--`. Both clients can also call supported tools with an explicit `projectRoot`, which overrides the server default.
 
 ## Security Workflow
 
@@ -188,6 +213,16 @@ git diff --check
 ```
 
 The suite covers rule detection, project-root and path isolation, route and access analysis, runtime proof, reporting, remediation guards, retesting, rollback, and MCP integration. Some integration tests bind local loopback sockets; the test environment must permit that. A local verification of this repository tree passed **945 tests in 44 test files**. Re-run the suite after implementation changes for the current result.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| MCP tools are missing or stale | Run `npm run build`, restart the client, and confirm the configured absolute `dist/index.js` path. |
+| Project-root validation fails | Pass an existing, absolute, non-symlink `projectRoot` to a tool that accepts it, or configure `PROJECT_ROOT`. |
+| Remediation rejects a dirty or changed file | Use a clean disposable Git checkout and regenerate the proposal from the current file; do not bypass the guard. |
+| Runtime verification is blocked | Supply an authorized isolated local runtime target when a registered proof adapter supports the finding. |
+| A finding is unsupported or inconclusive | Inspect coverage and proof limits; do not treat the result as resolved. |
 
 ## Architecture
 
