@@ -2,7 +2,7 @@ import type { VerifyFindingInput } from '../validation/schemas.js';
 
 export type RemediationLifecycle =
   | 'proposed' | 'validated' | 'preparing' | 'prepared' | 'committing'
-  | 'applied_pending_verification' | 'verifying'
+  | 'applied_pending_verification' | 'validated_pending_retest' | 'verifying'
   | 'verified_resolved' | 'still_vulnerable' | 'changed_finding'
   | 'verification_inconclusive' | 'verification_blocked' | 'rejected'
   | 'apply_failed' | 'rollback_required' | 'rolled_back';
@@ -16,6 +16,7 @@ export interface RemediationFileChange {
 
 export interface RemediationProposal {
   proposalId: string;
+  projectRoot: string;
   investigationId: string;
   findingId: string;
   description: string;
@@ -73,4 +74,5 @@ export interface RemediationRecord {
   appliedContentHashes: Record<string, string>;
   verification: RemediationVerification | null;
   updatedAt: string;
+  controlledRemediationId?: string;
 }

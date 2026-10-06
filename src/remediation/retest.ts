@@ -25,6 +25,7 @@ export interface RetestFindingInput {
 export interface RetestFindingReceipt {
   findingId: string;
   remediationId: string;
+  proposalId: string | null;
   projectRoot: string;
   retestStatus: 'completed' | 'blocked' | 'failed';
   result: RetestResult;
@@ -72,7 +73,7 @@ async function retestFindingInner(config: AppConfig, input: RetestFindingInput):
   if (!record) return err('REMEDIATION_NOT_FOUND', 'No validated controlled remediation is recorded for this finding and canonical project root.');
   const before = record.before;
   const response: RetestFindingReceipt = {
-    findingId: record.findingId, remediationId: record.remediationId, projectRoot: config.projectRoot,
+    findingId: record.findingId, remediationId: record.remediationId, proposalId: record.proposalId ?? null, projectRoot: config.projectRoot,
     retestStatus: 'completed', result: 'inconclusive', securityStatus: 'inconclusive', executionStatus: 'completed',
     verification: { attempted: false, completed: false, verified: false, blocked: false },
     before: { ...before, status: before.origin === 'unsupported' ? 'unverified_baseline' : 'present' },

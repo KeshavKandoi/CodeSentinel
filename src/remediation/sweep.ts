@@ -22,6 +22,7 @@ export type SweepFinalState = 'resolved' | 'still_vulnerable' | 'inconclusive' |
 export interface SweepFinding {
   findingId: string;
   remediationId: string;
+  proposalId: string | null;
   state: SweepFinalState;
   priorRetest: string | null;
   evidence: {
@@ -132,7 +133,7 @@ export async function securityRemediationSweep(config: AppConfig, input: Securit
     else if (matches.length > 0 && record.before.proofSupport !== 'runtime' && postComplete) { state = 'still_vulnerable'; limitation = 'The original rule-backed condition is present in the post-remediation scan.'; }
     else if (retest?.result === 'resolved' && retest.verification.verified && retest.retestStatus === 'completed' && postComplete && earliest?.baselineComplete && original && (record.before.proofSupport === 'runtime' || possible.length === 0)) state = 'resolved';
     else limitation = retest?.limitation ?? (possible.length > 0 ? 'The post-remediation scan contains a related finding that cannot be correlated confidently.' : 'Required baseline, retest, or post-scan evidence is incomplete.');
-    const item: SweepFinding = { findingId: record.findingId, remediationId: record.remediationId, state, priorRetest: prior.get(record.remediationId) ?? null, evidence: { originalFindingId: record.before.sourceId, ruleId: record.before.ruleId, originalEvidenceHash: record.before.evidenceHash, validatedContentHash: record.appliedHash, validationStatus: 'passed', retest, postScanFindingIds: possible.map((finding) => finding.id) }, limitation };
+    const item: SweepFinding = { findingId: record.findingId, remediationId: record.remediationId, proposalId: record.proposalId ?? null, state, priorRetest: prior.get(record.remediationId) ?? null, evidence: { originalFindingId: record.before.sourceId, ruleId: record.before.ruleId, originalEvidenceHash: record.before.evidenceHash, validatedContentHash: record.appliedHash, validationStatus: 'passed', retest, postScanFindingIds: possible.map((finding) => finding.id) }, limitation };
     if (state === 'resolved') buckets.resolved.push(item);
     else if (state === 'still_vulnerable') buckets.stillVulnerable.push(item);
     else if (state === 'unsupported') buckets.unsupported.push(item);

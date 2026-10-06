@@ -210,8 +210,9 @@ export const remediationAuthorizationSchema = z.object({
   allowRemediation: z.literal(true),
   nonProductionTestTarget: z.literal(true),
 }).strict();
-export const remediationIdSchema = z.object({ remediationId: z.string().min(1).max(128), authorization: remediationAuthorizationSchema.optional() }).strict();
-export const verifyRemediationSchema = remediationIdSchema;
+export const remediationIdSchema = z.object({ remediationId: z.string().min(1).max(128), authorization: remediationAuthorizationSchema }).strict();
+export const applyRemediationSchema = remediationIdSchema.extend({ dryRun: z.boolean().default(false) }).strict();
+export const verifyRemediationSchema = z.object({ remediationId: z.string().min(1).max(128) }).strict();
 export const rollbackRemediationSchema = remediationIdSchema;
 export type RemediationAuthorizationInput = z.infer<typeof remediationAuthorizationSchema>;
 export const controlledRemediationSchema = z.object({
@@ -231,7 +232,7 @@ export const retestFindingSchema = z.object({
 }).strict();
 export const securityRemediationSweepSchema = z.object({
   findingIds: z.array(z.string().min(1).max(256).regex(/^[A-Za-z0-9_.:-]+$/)).max(100).optional(),
-  remediationIds: z.array(z.string().min(1).max(128).regex(/^controlled-[0-9a-f-]{36}$/)).max(100).optional(),
+  remediationIds: z.array(z.string().min(1).max(128).regex(/^(?:controlled-[0-9a-f-]{36}|remediation-[0-9a-f]{32})$/)).max(100).optional(),
   target: runtimeTargetSchema.optional(),
   sessions: z.array(testSessionSchema).max(10).default([]),
   sessionParams: sessionParamsSchema.default({}),

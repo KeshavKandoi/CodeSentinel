@@ -21,7 +21,7 @@ import {
   generateSecurityReportSchema,
   getSecurityFindingSchema,
   proposeRemediationSchema,
-  remediationIdSchema,
+  applyRemediationSchema,
   verifyRemediationSchema,
   rollbackRemediationSchema,
   controlledRemediationSchema,
@@ -55,7 +55,7 @@ import {
 } from '../investigation/orchestrator.js';
 import { generateSecurityReport, getSecurityFinding } from '../report/engine.js';
 import { detachedRedacted } from '../report/redaction.js';
-import { applyRemediation, getControlledRemediationRecordById, getRemediation, proposeRemediation, remediateFinding, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
+import { applyProposedRemediation, getControlledRemediationRecordById, getRemediation, proposeRemediation, remediateFinding, rollbackRemediation, verifyRemediation } from '../remediation/engine.js';
 import { retestFinding } from '../remediation/retest.js';
 import { securityRemediationSweep } from '../remediation/sweep.js';
 import { runDeepSecurityAudit } from '../intelligence/engine.js';
@@ -503,11 +503,15 @@ const coreToolDefinitions: ToolDefinition[] = [
   {
     name: 'apply_remediation',
     description: 'Apply one validated, hash-checked remediation proposal using bounded filesystem writes. The result remains pending verification.',
-    inputSchema: z.toJSONSchema(remediationIdSchema),
+    inputSchema: z.toJSONSchema(applyRemediationSchema),
     handler: async (config, rawInput) => {
-      const validation = safeValidate(remediationIdSchema, rawInput ?? {});
+      if (rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput) && Object.keys(rawInput).some((key) => !['remediationId', 'authorization', 'dryRun'].includes(key))) return invalidInputResponse('Unexpected apply_remediation argument.');
+      const supplied = rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput) ? (rawInput as Record<string, unknown>).authorization : undefined;
+      if (supplied === undefined) return toMcpResponse(err('AUTHORIZATION_REQUIRED', 'Explicit remediation authorization is required before applying a proposal.'));
+      if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied) || (supplied as Record<string, unknown>).localTarget !== true || (supplied as Record<string, unknown>).allowRemediation !== true || (supplied as Record<string, unknown>).nonProductionTestTarget !== true) return toMcpResponse(err('AUTHORIZATION_REJECTED', 'Explicit local, non-production remediation authorization is required.'));
+      const validation = safeValidate(applyRemediationSchema, rawInput ?? {});
       if (!validation.ok) return invalidInputResponse(validation.message);
-      return toMcpResponse(await applyRemediation(config, validation.data.remediationId, validation.data.authorization));
+      return toMcpResponse(await applyProposedRemediation(config, validation.data.remediationId, validation.data.authorization, validation.data.dryRun));
     },
   },
   {

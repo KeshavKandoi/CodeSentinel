@@ -174,7 +174,7 @@ export async function proposeRemediation(config: AppConfig, input: ProposeRemedi
     if (input.runtimeVerification && input.runtimeVerification.findingId !== input.findingId) return invalid('runtimeVerification.findingId must match findingId.');
     const proposalId = deterministicId(input);
     if (records.has(proposalId)) return err('DUPLICATE_OPERATION', `An identical remediation proposal already exists as "${proposalId}".`);
-    const proposal = freezeProposal({ proposalId, ...input, files: input.files.map((file) => ({ ...file })), remediationType: remediationTypeFor(finding), findingFile: finding.file, findingRoute: finding.path, createdAt: now() });
+    const proposal = freezeProposal({ proposalId, projectRoot: config.projectRoot, ...input, files: input.files.map((file) => ({ ...file })), remediationType: remediationTypeFor(finding), findingFile: finding.file, findingRoute: finding.path, createdAt: now() });
     const record: RemediationRecord = { proposal, status: 'validated', appliedAt: null, integrity: null, changeSummary: `Proposes changes to ${proposal.files.map((file) => file.path).sort().join(', ')}`.slice(0, 1000), snapshots: [], appliedContentHashes: {}, verification: null, updatedAt: now() };
     if (records.size >= MAX_RECORDS) return err('BUDGET_EXCEEDED', 'The bounded remediation store is full.');
     records.set(proposal.proposalId, record);
@@ -188,6 +188,53 @@ export function getRemediation(remediationId: string): ToolOutcome<RemediationRe
 }
 export function listRemediationsForInvestigation(investigationId: string): RemediationRecord[] {
   return [...records.values()].filter((record) => record.proposal.investigationId === investigationId).map(safeRecord);
+}
+
+export async function applyProposedRemediation(config: AppConfig, remediationId: string, authorization: RemediationAuthorization, dryRun: boolean): Promise<ToolOutcome<ControlledRemediationReceipt | RemediationRecord>> {
+  const authorized = authorizeRemediation(config.projectRoot, authorization);
+  if (!authorized.ok) return authorized;
+  const record = records.get(remediationId);
+  if (!record) return err('REMEDIATION_NOT_FOUND', `Remediation "${remediationId}" was not found.`);
+  if (record.proposal.projectRoot !== config.projectRoot) return err('PATH_OUTSIDE_ROOT', 'The proposal belongs to another canonical project root.');
+  if (record.status !== 'validated') return err('INVALID_TRANSITION', `Remediation cannot be applied from status "${record.status}".`);
+  const investigation = currentInvestigation(config, record.proposal.investigationId);
+  if (!investigation.ok) return investigation;
+  if (!findingFor(investigation.data, record.proposal.findingId)) return err('REPORT_FINDING_NOT_FOUND', 'The proposal finding is no longer present in its investigation.');
+  if (record.proposal.files.length !== 1) {
+    return err('REMEDIATION_INVALID', 'Controlled proposal application currently requires exactly one file.');
+  }
+  const change = record.proposal.files[0];
+  if (change.path !== record.proposal.findingFile) return err('REMEDIATION_INVALID', 'The controlled proposal must change the original finding file.');
+  const checked = validateFile(config, change);
+  if (!checked.ok) return checked;
+  if (sha256(checked.data.content) !== change.originalContentHash) return err('REMEDIATION_CONFLICT', 'The proposal original file hash no longer matches the selected file.');
+  const before = await captureBeforeFinding(config, record.proposal.findingId, change.path);
+  if (before.before.origin === 'unsupported') return err('REPORT_FINDING_NOT_FOUND', 'The rule-backed proposal finding is no longer present in the selected project.');
+  const result = await remediateFinding(config, {
+    projectRoot: config.projectRoot,
+    finding: { id: record.proposal.findingId, file: change.path, approval: 'explicitly_approved' },
+    authorization,
+    strategy: { kind: 'replace', content: change.proposedContent },
+    dryRun,
+    proposalId: remediationId,
+  });
+  if (!result.ok || dryRun || result.data.remediationStatus !== 'validated_pending_retest' || !result.data.remediationId) return result;
+  const controlled = controlledRecords.get(remediationId);
+  if (!controlled) return err('INTERNAL_ERROR', 'The controlled remediation record was not retained.');
+  controlled.proposalId = remediationId;
+  controlled.authorizationEvidence = { ...authorization };
+  controlled.validationStatus = result.data.validationStatus;
+  controlled.createdAt = record.proposal.createdAt;
+  controlled.updatedAt = now();
+  controlled.stateTransitions = [{ state: 'validated', at: record.proposal.createdAt }, { state: 'validated_pending_retest', at: controlled.updatedAt }];
+  controlledRecords.set(remediationId, controlled);
+  record.status = 'validated_pending_retest';
+  record.appliedAt = controlled.appliedAt;
+  record.updatedAt = controlled.updatedAt;
+  record.controlledRemediationId = remediationId;
+  record.appliedContentHashes[change.path] = controlled.appliedHash;
+  record.snapshots = [{ path: change.path, originalContentHash: controlled.originalHash, originalContent: controlled.originalContent.toString('utf8'), capturedAt: controlled.appliedAt }];
+  return ok({ ...result.data, remediationId, proposalId: remediationId, status: 'validated_pending_retest', originalHash: controlled.originalHash, changedHash: controlled.appliedHash, createdAt: controlled.createdAt, updatedAt: controlled.updatedAt });
 }
 
 export async function applyRemediation(config: AppConfig, remediationId: string, authorization?: RemediationAuthorization): Promise<ToolOutcome<RemediationRecord>> {
@@ -380,7 +427,14 @@ export async function rollbackRemediation(config: AppConfig, remediationId: stri
   const authorized = authorizeRemediation(config.projectRoot, authorization);
   if (!authorized.ok) return authorized;
   const controlled = controlledRecords.get(remediationId);
-  if (controlled) return rollbackControlledRemediation(config, controlled);
+  if (controlled) {
+    if (controlled.proposalId && controlled.proposalId !== remediationId) return err('REMEDIATION_CONFLICT', 'The controlled remediation is not linked to this proposal ID.');
+    const parent = controlled.proposalId ? records.get(controlled.proposalId) : null;
+    if (controlled.proposalId && (parent?.proposal.projectRoot !== config.projectRoot || parent.controlledRemediationId !== remediationId)) return err('REMEDIATION_CONFLICT', 'The proposal and controlled remediation relationship is invalid.');
+    const result = await rollbackControlledRemediation(config, controlled);
+    if (result.ok && parent) { parent.status = 'rolled_back'; parent.updatedAt = now(); }
+    return result;
+  }
   const existing = records.get(remediationId); if (!existing) return err('REMEDIATION_NOT_FOUND', `Remediation "${remediationId}" was not found.`);
   return withLock(lockKey(existing), async () => {
     const record = records.get(remediationId)!;
@@ -435,6 +489,12 @@ export interface ControlledBeforeFinding {
 
 export interface ControlledRemediationRecord {
   remediationId: string;
+  proposalId?: string;
+  authorizationEvidence?: RemediationAuthorization;
+  validationStatus?: 'passed' | 'failed' | 'not_applicable' | 'not_run';
+  createdAt?: string;
+  updatedAt?: string;
+  stateTransitions?: Array<{ state: string; at: string }>;
   findingId: string;
   projectRoot: string;
   file: string;
@@ -504,6 +564,8 @@ async function rollbackControlledRemediation(config: AppConfig, record: Controll
       fs.renameSync(temp, target);
       if (sha256(readControlledFile(config, record.file)) !== record.originalHash) return err('ROLLBACK_CONFLICT', 'The restored file did not match the recorded original hash.');
       record.status = 'rolled_back';
+      record.updatedAt = now();
+      record.stateTransitions?.push({ state: 'rolled_back', at: record.updatedAt });
       return ok({ remediationId: record.remediationId, findingId: record.findingId, projectRoot: record.projectRoot, file: record.file, status: 'rolled_back', originalHash: record.originalHash, restoredHash: record.originalHash, restoredAt: now() });
     } catch {
       return err('ROLLBACK_CONFLICT', 'Controlled rollback could not be completed safely.');
@@ -523,7 +585,18 @@ export function listControlledRemediationRecords(projectRoot: string): Controlle
 
 export function recordControlledRetest(projectRoot: string, remediationId: string, result: string, timestamp: string): void {
   const record = controlledRecords.get(remediationId);
-  if (record?.projectRoot === projectRoot) record.lastRetest = { result, timestamp };
+  if (record?.projectRoot === projectRoot) {
+    record.lastRetest = { result, timestamp };
+    record.updatedAt = timestamp;
+    record.stateTransitions?.push({ state: `retest:${result}`, at: timestamp });
+    if (record.proposalId) {
+      const parent = records.get(record.proposalId);
+      if (parent?.proposal.projectRoot === projectRoot && parent.controlledRemediationId === remediationId && record.status !== 'rolled_back') {
+        parent.status = result === 'resolved' ? 'verified_resolved' : result === 'still_present' ? 'still_vulnerable' : result === 'blocked' ? 'verification_blocked' : 'verification_inconclusive';
+        parent.updatedAt = timestamp;
+      }
+    }
+  }
 }
 
 export function baselineFinding(finding: SecurityFinding | AccessControlFinding, origin: ControlledBaselineFinding['origin']): ControlledBaselineFinding {
@@ -558,6 +631,7 @@ export type ControlledRemediationStatus = 'not_authorized' | 'authorization_reje
 export type ControlledRemediationStrategy = { kind: 'patch'; oldText: string; newText: string } | { kind: 'replace'; content: string };
 export interface ControlledRemediationInput {
   projectRoot: string;
+  proposalId?: string;
   finding: { id: string; file: string; approval: 'confirmed' | 'explicitly_approved' };
   authorization?: RemediationAuthorization;
   strategy: ControlledRemediationStrategy;
@@ -565,6 +639,12 @@ export interface ControlledRemediationInput {
 }
 export interface ControlledRemediationReceipt {
   remediationId: string | null;
+  proposalId?: string;
+  status?: 'validated_pending_retest';
+  originalHash?: string;
+  changedHash?: string;
+  createdAt?: string;
+  updatedAt?: string;
   findingId: string;
   projectRoot: string;
   authorizationStatus: 'missing' | 'rejected' | 'authorized';
@@ -682,7 +762,7 @@ export async function remediateFinding(config: AppConfig, input: ControlledRemed
       if (valid === false || receipt.postChangeHashes[file] !== proposedHash) throw new Error('validation failed');
       receipt.remediationStatus = valid === null ? 'applied_pending_validation' : 'validated_pending_retest';
       if (valid !== null && beforeFinding) {
-        const remediationId = `controlled-${crypto.randomUUID()}`;
+        const remediationId = input.proposalId ?? `controlled-${crypto.randomUUID()}`;
         receipt.remediationId = remediationId;
         if (beforeFinding.before.originalReceiptId && beforeFinding.before.sourceId) linkSecurityReceiptToRemediation(beforeFinding.before.sourceId, beforeFinding.before.originalReceiptId, remediationId, config.projectRoot);
         if (controlledRecords.size >= MAX_RECORDS) controlledRecords.delete(controlledRecords.keys().next().value!);
