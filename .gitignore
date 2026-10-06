@@ -37,3 +37,4 @@ coverage/
 
 # Interrupted controlled-remediation staging files
 *.codesentinel-*.tmp
+readme.png
