@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./R.png" alt="CodeSentinel" width="100%">
+  <img src="./R.png" alt="CodeSentinel" width="72%">
 </p>
 
 # CodeSentinel
