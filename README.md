@@ -1,176 +1,184 @@
 # CodeSentinel
 
-A local MCP server for source-backed security auditing and explicitly authorized, controlled remediation.
+> Find security issues. Apply controlled fixes. Verify what changed.
 
-CodeSentinel helps an MCP client inspect a project, identify rule-backed security candidates, investigate evidence, and test a proposed fix. Normal discovery, scanning, auditing, investigation, retesting, and sweeps do not change target source files. A separate remediation call can write a supported fix after the operator supplies explicit authorization for a local, non-production test repository.
+CodeSentinel is a local security auditor and remediation engine exposed through the Model Context Protocol (MCP). It turns source-backed findings into an evidence trail: investigate the issue, propose a specific change, require explicit authorization, validate the write, independently retest the original finding, sweep for remaining or new issues, and roll back when needed. Normal auditing never edits target source files.
 
-## How it works
+![Package version 1.0.0](https://img.shields.io/badge/version-1.0.0-2563eb) ![License metadata ISC](https://img.shields.io/badge/license-ISC-334155) ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6) ![MCP stdio](https://img.shields.io/badge/MCP-stdio-0f766e)
 
 ```text
-Discover → Scan → Investigate → Propose → Authorize → Dry run → Apply
-                                                        ↓
-                                       Validate → Retest → Sweep → Roll back if needed
+FIND → INVESTIGATE → PROPOSE → AUTHORIZE → DRY RUN → APPLY
+                                                   ↓
+                              VALIDATE → RETEST → SWEEP
+                                                    ↘ ROLLBACK, if needed
 ```
 
-- **Detection:** Deterministic static rules return source locations, evidence, severity, confidence, and coverage limits. A match is a candidate, not proof of exploitability.
-- **Investigation:** Read-only discovery, route analysis, access-control analysis, and reports connect findings to evidence. Review signals are separate from rule-backed findings.
-- **Remediation:** A proposal records the intended content and original SHA-256. The controlled apply path checks authorization, project scope, Git cleanliness, file identity, and content hashes before writing.
-- **Verification:** Validation leaves a successful write at `validated_pending_retest`. An independent retest checks the current source; a sweep correlates the original finding, remediation, retest, fresh analysis, and new findings.
-- **Recovery:** Rollback restores recorded original bytes only while the file still matches the expected post-remediation hash.
+**A successful file change is not a resolved vulnerability.** CodeSentinel keeps a remediation at `validated_pending_retest` until independent retesting examines the original finding. A resolved finding does not imply that the entire project is secure.
 
-A finding classified as `resolved` does not establish that the whole project is secure. Missing coverage, unsupported proof, and blocked runtime prerequisites remain visible in the result.
+## What is CodeSentinel?
 
-## Quickstart
+CodeSentinel analyzes a selected local application, reports rule-backed security candidates with source evidence, and supports a guarded path from finding to file change. The operator or MCP client supplies the proposed content; CodeSentinel validates the proposal and controls the write.
 
-Prerequisites: Node.js and npm, plus a local project that CodeSentinel can read. Git is required for the guarded write workflow. Install dependencies and build from this repository:
+| Stage | What CodeSentinel does |
+| --- | --- |
+| Detection | Runs deterministic static rules and reports findings, severity, confidence, source locations, and coverage limits. |
+| Investigation | Connects findings to project, route, access-control, and source evidence. |
+| Remediation | Stores a proposal tied to an actual finding and an original file hash. |
+| Controlled write | Applies a supported change only after explicit authorization and integrity checks. |
+| Verification | Validates the changed file, then independently retests the original issue. |
+| Sweep | Runs fresh analysis and separates resolved, remaining, unsupported, inconclusive, blocked, and new findings. |
+| Rollback | Restores recorded original bytes only if the current file still matches the expected post-write state. |
+
+### Why the lifecycle matters
+
+A static match can be useful without proving exploitability. A patch can pass syntax validation without fixing its finding. CodeSentinel records those distinctions instead of treating either event as a security conclusion. Dry runs leave target bytes unchanged; writes require explicit authorization; rollback refuses to overwrite unrelated later edits.
+
+## Quick Start
+
+Use a recent Node.js installation with npm. Git is needed for the guarded remediation workflow. Clone the repository, install dependencies, and build the MCP server:
 
 ```sh
+git clone https://github.com/KeshavKandoi/CodeSentinel.git
+cd CodeSentinel/security-auditor-mcp
 npm install
 npm run build
 ```
 
-The server uses MCP over **stdio**. An MCP client normally starts it with `node /absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js`; `npm start` runs the same built entrypoint from this directory. Standard output is reserved for MCP messages.
+1. Register the built stdio server in an MCP client using the configuration below, then connect the client.
+2. Confirm the client can list tools such as `scan_project` and `run_full_security_audit`.
+3. Run `scan_project` with `{"projectRoot":"/absolute/path/to/project"}`. Review rule execution and coverage alongside any findings.
+4. Investigate a real finding before proposing a fix. Use remediation tools only for an explicitly authorized, local, non-production test repository.
 
-`PROJECT_ROOT` is an optional server-level default. For the tools that accept `projectRoot`, pass an absolute path in the call to select that project; it overrides `PROJECT_ROOT`. If neither is available, those tools return a validation error. Some ancillary tools still require a configured `PROJECT_ROOT`; check the advertised MCP schema for per-call `projectRoot` support in a rootless session. The selected root must exist and resolve to a directory, and the root itself cannot be a symlink.
+`PROJECT_ROOT` may be set as a server-level default. A tool's explicit, absolute `projectRoot` takes precedence where that tool advertises the field. If a root is required and neither source supplies one, the tool returns a validation error. Some ancillary tools require `PROJECT_ROOT`; consult each advertised MCP schema.
 
-```sh
-PROJECT_ROOT=/absolute/path/to/project npm start
+## MCP Integration
+
+CodeSentinel runs locally over **MCP stdio**. Its built entrypoint is `dist/index.js`; `npm start` executes `node dist/index.js` from this package directory. The client launches the server process and exchanges MCP messages over standard input and output. Diagnostic logging uses standard error.
+
+For MCP clients that accept an `mcpServers` JSON entry, configure a local stdio process like this, replacing the example paths:
+
+```json
+{
+  "mcpServers": {
+    "codesentinel": {
+      "command": "node",
+      "args": ["/absolute/path/to/CodeSentinel/security-auditor-mcp/dist/index.js"],
+      "env": {
+        "PROJECT_ROOT": "/absolute/path/to/project"
+      }
+    }
+  }
+}
 ```
 
-Do not point the write workflow at a production or shared working tree. A disposable local Git checkout is the intended remediation target.
+The `env` block is optional when using tools that accept a per-call `projectRoot`. Register the same `node` command and absolute entrypoint in clients with a different MCP configuration format. Restart the client after changing the configuration or rebuilding the server, then use its tool discovery interface (`tools/list`) to confirm the registered tools and input schemas. The selected project must be accessible to the server process. CodeSentinel does not provide a hosted endpoint.
 
-## Connect an MCP client
+## Security Workflow
 
-Use the absolute path to this repository's built `dist/index.js`. Build again after changing source and restart the MCP client to load the new server.
+The proposal-based path is:
 
-### Codex CLI and IDE
+| Step | Tool or result | Decision point |
+| --- | --- | --- |
+| Find | `scan_project` | Require a genuine rule-backed finding and inspect scan coverage. |
+| Investigate | `start_security_investigation`, then `run_security_analysis` | Use the returned investigation `id` as `investigationId`; select a finding from that analysis. |
+| Propose | `propose_remediation` | Provide structured file changes and the current original SHA-256. No file is written. |
+| Authorize | `authorization` object on `apply_remediation` | Name the exact canonical project root and explicitly allow a local, non-production write. |
+| Dry run | `apply_remediation` with `dryRun: true` | Validate the candidate without changing target bytes. |
+| Apply and validate | `apply_remediation` with `dryRun: false` | A successful controlled write returns `validated_pending_retest`. |
+| Retest | `retest_finding` | Independently recheck the original finding against current source; use supported runtime proof where applicable. |
+| Sweep | `security_remediation_sweep` | Correlate the original finding, remediation, retest, fresh analysis, and new findings. |
+| Roll back, if needed | `rollback_remediation` | Restore original bytes only after project and post-write hash checks. |
 
-```sh
-codex mcp add codesentinel -- node /absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js
-codex mcp list
+`run_full_security_audit` offers the broader read-only pipeline in one call. `start_security_audit` creates a bounded audit session. Neither path automatically applies remediation.
+
+### Controlled Remediation
+
+A proposal's `files` field is an array of objects, not an array of path strings. Each object requires `path` (relative to the selected root), `originalContentHash` (64 lowercase SHA-256 hex characters), `proposedContent` (full replacement content), and `description`. The proposal also requires `investigationId`, `findingId`, `description`, `rationale`, `expectedSecurityEffect`, and `requiresRuntimeVerification`. When runtime verification is required, include the schema's `runtimeVerification` input.
+
+The controlled `apply_remediation` path currently supports **exactly one finding file per proposal**, although the proposal schema accepts an array. Pass the returned `proposalId` as `remediationId`. Its authorization contract is:
+
+```json
+{
+  "projectRoot": "/absolute/path/to/project",
+  "localTarget": true,
+  "allowRemediation": true,
+  "nonProductionTestTarget": true
+}
 ```
 
-Set an optional default root when registering instead:
+The authorization root must equal the canonical selected project root exactly. A write also requires an eligible local test repository, the expected original file hash, and a clean target state. Project-root containment, traversal and symlink checks, file identity checks, and cross-project isolation remain in force. CodeSentinel never infers authorization from a finding or a successful dry run.
 
-```sh
-codex mcp add codesentinel --env PROJECT_ROOT=/absolute/path/to/project -- node /absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js
+Apply records the original and changed SHA-256 values. Validation failure triggers a guarded automatic rollback. After a successful write, `validated_pending_retest` means only that validation passed. `retest_finding` determines whether the original condition remains; the sweep then checks the wider current project for remaining and new findings. `rollback_remediation` requires authorization, rejects a different project or a repeated rollback, and refuses to replace a file changed unexpectedly after remediation. Proposal and remediation records are held in server memory, so continue the lifecycle in the same server process.
+
+`remediate_finding` is a separate, direct single-file strategy tool. It also requires explicit authorization for a write. Scans, investigations, dry runs, retests, and sweeps remain read-only for target source files.
+
+### Synthetic example
+
+The following illustrates the workflow; the filename and line are placeholders, not a production finding:
+
+```text
+Rule-backed candidate: CS-NODE-009
+Severity: high (illustrative)
+File: src/example.ts
+Line: <line reported by scan_project>
+
+finding → investigation → one-file proposal → explicit authorization
+        → dry run (no byte change) → controlled apply → validated_pending_retest
+        → independent retest → sweep → optional guarded rollback
 ```
 
-Codex shares MCP configuration between its CLI and IDE extension. See the [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) for configuration details.
+Use the actual IDs and hashes returned or computed for the selected disposable project. A retest result of `resolved` applies to the **original finding**. If proof or coverage is incomplete, the overall security status can still be `inconclusive`. Unsupported or inconclusive conditions are not promoted to resolved, and newly introduced findings are reported separately.
 
-### Claude Code
+## Public MCP Tools
 
-```sh
-claude mcp add --transport stdio codesentinel -- node /absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js
-claude mcp list
-```
+These names come from the current MCP registry. `retest_finding` is the independent retest tool; there is no `security_remediation_retest` alias.
 
-To configure an optional default root:
-
-```sh
-claude mcp add --env PROJECT_ROOT=/absolute/path/to/project --transport stdio codesentinel -- node /absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js
-```
-
-The `--` separates Claude Code options from the server command. Check the connection with `claude mcp get codesentinel` or `/mcp` inside Claude Code. See the [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
-
-The client must be able to access the selected local path. This stdio configuration does not expose a hosted or remote scan service.
-
-## Public MCP tools
-
-These names are registered by the current server. `retest_finding` is the independent retest tool; there is no `security_remediation_retest` alias.
-
-| Purpose | Tools |
+| Area | Registered tools |
 | --- | --- |
 | Project access and discovery | `list_files`, `read_file`, `search_files`, `get_project_info`, `analyze_project`, `run_command` |
-| Static security analysis | `scan_project`, `discover_routes`, `analyze_access_control`, `run_deep_security_audit`, `get_security_graph` |
+| Static analysis | `scan_project`, `discover_routes`, `analyze_access_control`, `run_deep_security_audit`, `get_security_graph` |
 | Audit and investigation | `run_full_security_audit`, `start_security_audit`, `start_security_investigation`, `run_security_analysis`, `get_investigation`, `record_security_hypothesis`, `generate_security_report`, `get_security_finding` |
-| Controlled remediation | `propose_remediation`, `apply_remediation`, `remediate_finding`, `retest_finding`, `security_remediation_sweep`, `verify_remediation`, `rollback_remediation` |
+| Remediation | `propose_remediation`, `apply_remediation`, `remediate_finding`, `retest_finding`, `security_remediation_sweep`, `verify_remediation`, `rollback_remediation` |
 | Runtime proof | `list_verification_cases`, `verify_finding`, `list_security_proof_cases`, `prove_security_finding`, `request_runtime_verification` |
 | Audit orchestration | `dispatch_security_action`, `plan_security_investigation`, `get_security_audit_state`, `run_audit_analysis`, `record_audit_hypothesis`, `request_audit_verification`, `complete_security_audit`, `generate_security_audit_report`, `get_security_agent_instructions` |
 
-Each tool advertises its input schema through MCP `tools/list`. Use those schemas for optional limits, runtime targets, sessions, and detailed responses. `start_security_audit` creates an audit session; `run_full_security_audit` runs the read-only pipeline in one call.
+Use MCP `tools/list` for the exact schema of each operation. Read-only tools can still perform bounded local runtime HTTP requests when an authorized target is supplied; source-file read-only status does not guarantee the running application has no side effects.
 
-## Read-only and write boundaries
+## Security Model
 
-| Operation | Reads target | Writes target source |
+| Operation | Reads project | Writes project source |
 | --- | --- | --- |
-| Discovery, scan, audit, investigation, reports | Yes | No |
-| Proposal and dry run | Yes | No |
-| Independent retest, verification, remediation sweep | Yes | No |
-| Explicitly authorized remediation apply | Yes | Yes, to the approved finding file |
+| Discovery, scan, audit, investigation, proposal | Yes | No |
+| Dry run, verification, independent retest, sweep | Yes | No |
+| Explicitly authorized apply | Yes | Yes, to the approved file |
 | Explicitly authorized rollback | Yes | Yes, restoring the recorded original bytes |
 
-Runtime verification can make bounded requests to an explicitly authorized local runtime target. It does not edit source files, but an operator should use an isolated target because HTTP requests can have application side effects. Normal scan and audit do not install dependencies or start the target application.
+- **Project boundary:** The selected root is canonicalized; unsafe file paths and symlink escapes are rejected. A remediation recorded for one root cannot be applied or rolled back against another.
+- **Integrity boundary:** Original-content and post-write hashes detect stale proposals and unexpected changes. Rollback checks the saved snapshot and current file before restoring bytes.
+- **Write boundary:** Authorization explicitly names a local, non-production test target. Dirty-target guards and file validation constrain the controlled write path.
+- **Evidence boundary:** Static candidates, runtime-verified results, heuristic review signals, unsupported domains, and incomplete proof have distinct meanings. Output is bounded and redacted.
 
-## Use CodeSentinel on a project
+Only audit projects you are authorized to inspect. Use an isolated, disposable local repository for remediation and runtime testing. Normal scans and audits do not install target dependencies or start the target application.
 
-These are **MCP tool arguments**, not shell commands. Replace the example path and use IDs, file content, and hashes returned or computed for your own disposable project. Never copy an example hash or finding ID into a live call.
+## Coverage and Limitations
 
-1. Select a root and run `scan_project` with `{"projectRoot":"/absolute/path/to/project"}`. Inspect `findings`, `rulesRun`, skipped files, and limitations. Run `run_full_security_audit` with the same `projectRoot` for the wider read-only audit.
-2. For a rule-backed finding, call `start_security_investigation` with `{"projectRoot":"/absolute/path/to/project","scope":["authorization"],"hypothesis":"Review the reported authorization finding."}`. Then call `run_security_analysis` with the returned `id` as `investigationId` and the same root. Use the investigation's finding ID for the proposal.
-3. Call `propose_remediation` with `projectRoot`, `investigationId`, `findingId`, `description`, `rationale`, `files`, `expectedSecurityEffect`, and `requiresRuntimeVerification`. The `files` field is an array of **objects**, not path strings. Each object has a root-relative `path`, the current `originalContentHash` as a lowercase SHA-256 hex digest, full `proposedContent`, and `description`. If `requiresRuntimeVerification` is `true`, supply `runtimeVerification` as required by the tool schema. Proposal creation does not write.
-4. Check the proposal and intentionally authorize a **local, non-production test target**. The apply and rollback authorization object is:
+The current static rule registry contains `CS-NODE-001` through `CS-NODE-025` for detected Node.js projects. The rules cover indicators of secrets exposure, injection, command execution, path traversal, SSRF, XSS, redirects, CORS, authentication and authorization, uploads, deserialization, insecure configuration, dependency risk, CSRF, webhook signature handling, mass assignment, weak password storage, and WebSocket security. These are source-backed candidates, not proof that every path is exploitable.
 
-   ```json
-   {
-     "projectRoot": "/absolute/path/to/project",
-     "localTarget": true,
-     "allowRemediation": true,
-     "nonProductionTestTarget": true
-   }
-   ```
+Project discovery recognizes Node.js, Python, Go, and Rust markers. Route adapters cover Express, Fastify, NestJS, Next.js, FastAPI, and Django. Recognizing a stack or discovering routes does not imply full security-rule support: `scan_project` currently runs its security rules for detected Node.js roots. Unsupported domains are reported rather than treated as passes, and heuristic review signals are not included in rule-backed vulnerability counts.
 
-   `authorization.projectRoot` must equal the canonical selected root exactly. `apply_remediation` requires this authorization and the returned `proposalId` passed as `remediationId`. `remediate_finding` is the separate direct single-file strategy path; it also requires explicit authorization for a write.
-5. First call `apply_remediation` with `{"remediationId":"<returned proposal ID>","projectRoot":"/absolute/path/to/project","authorization":{...},"dryRun":true}`. This checks the change without changing target bytes. Then make a separate call with `dryRun: false` after reviewing the result. A successful controlled write reports `validated_pending_retest`, **not** `fixed` or `resolved`.
-6. Call `retest_finding` with the original scan `findingId` and `projectRoot`. Then call `security_remediation_sweep` with `projectRoot` and `remediationIds` containing the proposal ID. Inspect `findings.resolved`, `findings.stillVulnerable`, `findings.inconclusive`, `findings.unsupported`, `findings.blocked`, `newFindings`, and overall `securityStatus`. If needed, call `rollback_remediation` with the proposal ID, the same root, and the authorization object.
+Runtime proof exists only for registered adapters and authorized local targets. If proof-eligible findings lack an authorized runtime target, execution is blocked and security status remains inconclusive. Static retesting can establish resolution for a supported original finding without proving the whole application secure. An empty scan has the same limitation: review skipped files, failed rules, and unsupported domains before interpreting it.
 
-The abbreviated `{...}` in step 5 means the complete authorization object shown above; it is explanatory notation, not literal JSON. The controlled proposal apply path currently accepts **exactly one finding file**, even though the proposal schema permits an array of structured file changes. Propose one file for a controlled write.
+The controlled proposal apply path is limited to one finding file. CodeSentinel does not generate a correct fix for every rule, install dependencies into a target project, provide universal runtime proof, or certify whole-project security.
 
-### Safe disposable test workflow
+## Verified Capabilities
 
-Create a temporary local Git repository with synthetic source and a supported rule-backed finding. Record its starting Git status and the target file's SHA-256. Run `scan_project` and require a real finding ID before proposing a change. Confirm an unauthorized apply is rejected and a dry run leaves the hash unchanged. Review the exact proposed content, then explicitly authorize the write, retest, sweep, and roll back while checking the restored hash. Remove the disposable repository only after collecting the results. Do not use production credentials or services.
+A built-MCP integration test uses a disposable Git fixture with a genuine `CS-NODE-009` scanner finding. It exercises investigation, structured proposal creation, unauthorized-write rejection, a write-free dry run, CodeSentinel's controlled file write, validation, independent static retest, a security sweep, and authorized rollback with exact original SHA-256 restoration. It also checks cross-project rejection, unchanged unrelated files, and repeated-rollback protection.
 
-### Lifecycle states
+That test demonstrates this lifecycle for one supported rule and fixture. It does not establish that every finding can be remediated or that a project with one resolved finding is secure. When coverage or proof is incomplete, the sweep can classify overall security as inconclusive even if the original finding is resolved.
 
-```text
-finding → proposal → authorization → dry_run → validated_pending_retest
-                                                ↓
-                           independent retest → resolved | still_present | inconclusive | blocked
-                                                ↓
-                                  sweep → remaining/new findings + coverage
-                                                ↓
-                                        rollback, if needed
-```
+## Development & Testing
 
-`validated_pending_retest` means the proposed source change passed validation. It does not establish resolution. Retest independently rechecks the original condition against current source and uses supported runtime proof only when supplied and applicable. The sweep performs fresh analysis and separates original, remaining, and newly introduced findings. Unsupported and inconclusive work is never promoted to resolved merely because a static match disappeared.
-
-## Safety and scope
-
-- Roots and file paths are checked against the canonical selected project. Path traversal, symlink escapes, and cross-project remediation IDs are rejected.
-- Controlled writes require an eligible local test repository, explicit authorization, a matching original file hash, and a clean target state. Only the intended finding file may be changed by the controlled apply path.
-- Apply records original and changed SHA-256 hashes. Rollback checks the stored snapshot and current post-change hash before restoring the exact original bytes; unexpected later edits and repeated rollback are rejected.
-- Validation failure triggers guarded automatic rollback. Scan, audit, retest, and sweep stay read-only for target source files.
-- Evidence and reports use bounded output and redaction, but operators should still avoid scanning or transmitting secrets they are not authorized to handle.
-
-Only inspect, test, or modify projects you are authorized to access. Remediation is intended for a disposable or isolated local test target, with review before applying a change.
-
-## Coverage and limits
-
-The registered static security rules are `CS-NODE-001` through `CS-NODE-025` for detected Node.js projects. They cover indicators including credential exposure, injection, command execution, path traversal, SSRF, XSS, redirects, CORS, authentication and authorization, uploads, deserialization, configuration, dependency risk, CSRF, webhook signatures, mass assignment, password storage, and WebSocket security. Rule-backed matches are source-backed candidates, not universal exploit proofs.
-
-Project discovery recognizes Node.js, Python, Go, and Rust markers. The registered route adapters cover Express, Fastify, NestJS, Next.js, FastAPI, and Django. The current `scan_project` security rules run for detected Node.js roots; recognizing another ecosystem or discovering its routes does not mean it has equivalent rule coverage. Unsupported domains are reported as unsupported rather than passed. Heuristic review signals are counted separately from rule-backed findings.
-
-Runtime proof is limited to registered adapters and an authorized local target. Where proof-eligible findings exist but no authorized target is supplied, the audit reports blocked execution and an inconclusive security status. A completed static retest can resolve a supported original finding without establishing a universal runtime proof. Coverage gaps and unsupported or inconclusive conditions remain explicit.
-
-The controlled proposal apply path supports one finding file at a time. CodeSentinel does not automatically generate a correct fix for every finding, install target dependencies, guarantee full framework coverage, or certify the security of an entire application.
-
-## Verification evidence
-
-A built-MCP integration test uses a disposable Git fixture with a genuine `CS-NODE-009` rule-backed finding. It exercises scan → investigation → structured proposal → unauthorized rejection → dry run → CodeSentinel file write → `validated_pending_retest` → independent static retest → sweep → authorized rollback. The test checks exact original SHA-256 restoration, cross-project rejection, unchanged unrelated files, and repeated-rollback rejection. This demonstrates that controlled writes work for that supported case; it does not generalize to every rule or runtime environment.
-
-A separate real-project scan previously produced zero remediation-eligible rule-backed findings; unsupported heuristic signals were not counted as vulnerabilities. That result is not a claim that the project was secure or that a remediation was performed.
-
-The full suite passed locally with **945 tests across 44 test files** during this README update. Re-run these commands after implementation changes to obtain a fresh result:
+From `security-auditor-mcp/`:
 
 ```sh
 npm test
@@ -179,37 +187,42 @@ npm run build
 git diff --check
 ```
 
-Some integration tests bind to local loopback addresses. A restricted execution environment that denies loopback sockets may fail those tests before their assertions run.
+The suite covers rule detection, project-root and path isolation, route and access analysis, runtime proof, reporting, remediation guards, retesting, rollback, and MCP integration. Some integration tests bind local loopback sockets; the test environment must permit that. A local verification of this repository tree passed **945 tests in 44 test files**. Re-run the suite after implementation changes for the current result.
 
-## Development and troubleshooting
-
-| Symptom | Check |
-| --- | --- |
-| MCP tools are missing or old | Run `npm run build`, restart the MCP client, and verify its configured `dist/index.js` path. |
-| `PROJECT_ROOT` error | Supply an absolute `projectRoot` to an explicit-root tool or configure `PROJECT_ROOT` for the server. |
-| `EPERM` while Vitest writes `node_modules/.vite-temp` | Check local ownership and write permission of `node_modules` and its `.vite-temp` directory; run tests as a user allowed to write there. |
-| Remediation rejected for a dirty target | Use a clean disposable Git checkout and inspect the rejection; do not bypass the guard. |
-| Original or post-change hash mismatch | Re-scan or re-propose from the current file; rollback will not overwrite unrelated newer edits. |
-| Runtime target missing or proof unsupported | Provide an authorized isolated local target when the adapter supports it; otherwise retain the blocked or unsupported classification. |
-
-The source layout is:
+## Architecture
 
 ```text
-src/
-  index.ts                MCP stdio entrypoint
-  tools/                 Public tool registry and project metadata
-  discovery/             Project profile detection
-  security/              Static scanner and rule registry
-  routes/ and access/    Route and access-control analysis
-  audit/ and investigation/  Audit pipeline and investigation state
-  proof/ and runtime/    Bounded runtime verification
-  remediation/           Proposal, controlled apply, retest, sweep, rollback
-  report/ and validation/  Reports, redaction, and input schemas
-tests/                   Unit and MCP integration tests
+MCP stdio entrypoint → tool registry → project-root validation
+                                      ├─ discovery → scanner → findings
+                                      ├─ routes and access → investigation → reports
+                                      ├─ authorized runtime proof
+                                      └─ proposal → guarded apply → validation
+                                                       → retest → sweep → rollback
 ```
 
-Contributions should include evidence-backed tests for changed behavior and preserve the project-root and authorization boundaries. Report suspected security issues privately to the maintainer rather than publishing exploit details in a public issue.
+The registry exposes bounded operations and validates inputs. Discovery and analysis provide evidence for findings; remediation keeps its own proposal and snapshot state, then retests against current project content. The sweep combines retest evidence with fresh analysis to classify the original finding and newly observed findings.
+
+## Repository Structure
+
+```text
+security-auditor-mcp/
+├── src/
+│   ├── index.ts           MCP stdio server
+│   ├── tools/            Tool registry and project metadata
+│   ├── discovery/        Project profile detection
+│   ├── security/         Static scanner and rules
+│   ├── routes/           Route discovery
+│   ├── access/           Access-control analysis
+│   ├── audit/            Audit pipeline
+│   ├── investigation/    Investigation state
+│   ├── proof/            Security proof engine
+│   ├── runtime/          Runtime verification
+│   ├── remediation/      Proposal, apply, retest, sweep, rollback
+│   ├── report/           Reporting and redaction
+│   └── validation/       Input schemas
+└── tests/                Unit and MCP integration tests
+```
 
 ## License
 
-`package.json` declares the package license as ISC. This repository currently has no separate `LICENSE` file; check the package metadata before redistribution.
+The package metadata declares ISC. This repository currently has no separate `LICENSE` file.
