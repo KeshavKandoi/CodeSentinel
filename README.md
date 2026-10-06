@@ -1,329 +1,215 @@
 # CodeSentinel
 
-## What it is
+A local MCP server for source-backed security auditing and explicitly authorized, controlled remediation.
 
-CodeSentinel is an agentic, deterministic security auditor that implements a phased, bounded security workflow for AI coding assistants. It provides a Model Context Protocol (MCP) server that empowers AI clients to systematically discover projects, analyze access control, surface suspected vulnerabilities (static-only), run localized proof payloads (runtime-proven), and apply authorized remediations.
+CodeSentinel helps an MCP client inspect a project, identify rule-backed security candidates, investigate evidence, and test a proposed fix. Normal discovery, scanning, auditing, investigation, retesting, and sweeps do not change target source files. A separate remediation call can write a supported fix after the operator supplies explicit authorization for a local, non-production test repository.
 
-CodeSentinel delegates the high-level security reasoning and contextual judgment to the external AI agent while strictly enforcing deterministic boundaries: CodeSentinel performs all target validation, evidence collection, and state transitions, ensuring that no arbitrary commands or unrestricted external HTTP requests are executed.
+## How it works
 
-## Security Architecture
-
-CodeSentinel's architecture implements an explicit separation of concerns:
-- **Client (AI Agent)**: Drives the workflow, proposes hypotheses, selects findings, designs the remediation, and queries states.
-- **Server (CodeSentinel)**: Executes deterministic analysis, enforces target isolation (e.g. localhost/private boundaries), validates schemas, caps evidence collection and request limits, and manages verifiable snapshots.
-
-CodeSentinel operates in 11 explicit phases:
-- Phase 1: Bounded Source Access
-- Phase 2: Project Discovery and Framework Detection
-- Phase 3: Static Security Analysis
-- Phase 4: Route Discovery
-- Phase 5: Access-Control Analysis
-- Phase 6: Runtime Target Isolation & Evidence Collection
-- Phase 7: Security Agent Orchestration (State Machine)
-- Phase 8: Reporting and Remediation Intelligence
-- Phase 9: Controlled Remediation
-- Phase 10: Security Analysis Orchestration
-- Phase 11: Real-world Semantic Vulnerability Proofs
-
-## MCP Integration
-
-CodeSentinel supports the standard MCP `stdio` transport. All protocol messages are cleanly isolated on `stdout`, while diagnostic logs are directed to `stderr` to ensure protocol integrity. CodeSentinel's tools, orchestration commands, and file operations are strictly bound to the configured `PROJECT_ROOT` environment variable.
-
-- **transport**: `stdio`
-- **local support**: `Supported` (fully isolated, sandboxed execution)
-- **remote support**: `Unsupported` (requires custom deployment, see ChatGPT Integration)
-
-## Claude Code Setup
-
-Claude Code runs CodeSentinel locally through the standard stdio transport.
-
-To install and use CodeSentinel in Claude Code, run the following command in your terminal. Replace `/absolute/path/to/project` with the actual path to the repository you are auditing, and `/absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js` with the correct path to the CodeSentinel dist output.
-
-```bash
-claude mcp add codesentinel node /absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js
-```
-Then, configure your environment before running Claude Code:
-```bash
-export PROJECT_ROOT=/absolute/path/to/project
-claude
+```text
+Discover → Scan → Investigate → Propose → Authorize → Dry run → Apply
+                                                        ↓
+                                       Validate → Retest → Sweep → Roll back if needed
 ```
 
-## Claude Setup
+- **Detection:** Deterministic static rules return source locations, evidence, severity, confidence, and coverage limits. A match is a candidate, not proof of exploitability.
+- **Investigation:** Read-only discovery, route analysis, access-control analysis, and reports connect findings to evidence. Review signals are separate from rule-backed findings.
+- **Remediation:** A proposal records the intended content and original SHA-256. The controlled apply path checks authorization, project scope, Git cleanliness, file identity, and content hashes before writing.
+- **Verification:** Validation leaves a successful write at `validated_pending_retest`. An independent retest checks the current source; a sweep correlates the original finding, remediation, retest, fresh analysis, and new findings.
+- **Recovery:** Rollback restores recorded original bytes only while the file still matches the expected post-remediation hash.
 
-To integrate CodeSentinel into Claude Desktop, add the following to your `claude_desktop_config.json`:
+A finding classified as `resolved` does not establish that the whole project is secure. Missing coverage, unsupported proof, and blocked runtime prerequisites remain visible in the result.
 
-```json
-{
-  "mcpServers": {
-    "codesentinel": {
-      "command": "node",
-      "args": ["/absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js"],
-      "env": {
-        "PROJECT_ROOT": "/absolute/path/to/project"
-      }
-    }
-  }
-}
+## Quickstart
+
+Prerequisites: Node.js and npm, plus a local project that CodeSentinel can read. Git is required for the guarded write workflow. Install dependencies and build from this repository:
+
+```sh
+npm install
+npm run build
 ```
 
-## ChatGPT Integration
+The server uses MCP over **stdio**. An MCP client normally starts it with `node /absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js`; `npm start` runs the same built entrypoint from this directory. Standard output is reserved for MCP messages.
 
-ChatGPT runs its MCP clients from the cloud and requires a remote transport layer (like HTTP SSE). CodeSentinel currently **does not** bundle a remote transport server because directly exposing a local development directory to the public internet violates the local security sandbox boundary.
+`PROJECT_ROOT` is an optional server-level default. For the tools that accept `projectRoot`, pass an absolute path in the call to select that project; it overrides `PROJECT_ROOT`. If neither is available, those tools return a validation error. Some ancillary tools still require a configured `PROJECT_ROOT`; check the advertised MCP schema for per-call `projectRoot` support in a rootless session. The selected root must exist and resolve to a directory, and the root itself cannot be a symlink.
 
-If you must integrate CodeSentinel with ChatGPT, you must deploy a custom remote transport wrapper (e.g. an Express app implementing `@modelcontextprotocol/sdk/server/sse.js`) and host CodeSentinel in a sandboxed container (like AWS ECS or a Kubernetes Pod) that holds a clone of your repository. **Never** expose your local development machine's filesystem directly to a remote AI.
+```sh
+PROJECT_ROOT=/absolute/path/to/project npm start
+```
 
-## Available MCP Tools
+Do not point the write workflow at a production or shared working tree. A disposable local Git checkout is the intended remediation target.
 
-CodeSentinel provides discovery, static, orchestration, proof, and separately invoked remediation tools. Every tool rejects unknown arguments. Some notable tools include:
+## Connect an MCP client
 
-- `analyze_project`: Detects the programming language, framework, database, and ecosystem. (STATIC-ONLY)
-- `scan_project`: Runs deterministic security rules to detect static code issues. (STATIC-ONLY)
-- `discover_routes`: Generates an inventory of externally reachable API routes. (METADATA-ONLY)
-- `analyze_access_control`: Classifies route authentication (public/authenticated/roles) and surfaces IDOR/BOLA candidates. (STATIC-ONLY)
-- `run_full_security_audit`: Runs the unified read-only audit pipeline with stable finding IDs and an optional loopback proof stage. (STATIC + RUNTIME-PROVEN when a target is supplied)
-- `start_security_audit`: Creates a bounded session with specific scopes. (METADATA-ONLY)
-- `prove_security_finding`: Issues a verifiable payload to prove a vulnerability locally. (RUNTIME-PROVEN)
-- `propose_remediation`: Submits an AI-generated fix for verification. (METADATA-ONLY)
-- `remediate_finding`: Dry-runs or applies one explicitly authorized, bounded file change and returns a pending-retest receipt. (WRITES ONLY WHEN EXPLICITLY AUTHORIZED)
-- `retest_finding`: Independently checks the current source or replays an authorized runtime proof for a validated controlled remediation. (READ-ONLY FOR SOURCE FILES)
-- `security_remediation_sweep`: Retests recorded remediations, runs fresh source and access scans plus the full read-only audit pipeline, and reports correlated final finding states and new findings. (READ-ONLY FOR SOURCE FILES)
-- `apply_remediation`: Applies an existing validated proposal only with explicit local test-target authorization. Application alone does not verify a fix.
+Use the absolute path to this repository's built `dist/index.js`. Build again after changing source and restart the MCP client to load the new server.
 
-`propose_remediation` requires an existing analyzed investigation and finding. Its `files` input is an array of 1–10 objects, each with `path` (a project-relative file), `originalContentHash` (the file's lowercase SHA-256 hex digest), `proposedContent` (the replacement source), and `description` (a non-empty explanation). A path-only string cannot describe or safely validate a proposed edit. The proposal stores a validated record and remains read-only. The public `apply_remediation` controlled path currently supports one finding file per proposal. It requires the `proposalId` as `remediationId` and explicit canonical-root, local, non-production write authorization. `dryRun: true` validates the proposal without writing. An authorized write returns `validated_pending_retest` with the same proposal ID; use `retest_finding` and `security_remediation_sweep` for independent classification. Multi-file proposals are rejected at this controlled apply boundary.
+### Codex CLI and IDE
 
-### Phase 2 Node and WebSocket detection
+```sh
+codex mcp add codesentinel -- node /absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js
+codex mcp list
+```
 
-`scan_project` keeps the original CS-NODE-001 through CS-NODE-021 rules and adds bounded AST-based rules:
+Set an optional default root when registering instead:
 
-| Rule | Detection |
+```sh
+codex mcp add codesentinel --env PROJECT_ROOT=/absolute/path/to/project -- node /absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js
+```
+
+Codex shares MCP configuration between its CLI and IDE extension. See the [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) for configuration details.
+
+### Claude Code
+
+```sh
+claude mcp add --transport stdio codesentinel -- node /absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js
+claude mcp list
+```
+
+To configure an optional default root:
+
+```sh
+claude mcp add --env PROJECT_ROOT=/absolute/path/to/project --transport stdio codesentinel -- node /absolute/path/to/codesentinel/security-auditor-mcp/dist/index.js
+```
+
+The `--` separates Claude Code options from the server command. Check the connection with `claude mcp get codesentinel` or `/mcp` inside Claude Code. See the [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
+
+The client must be able to access the selected local path. This stdio configuration does not expose a hosted or remote scan service.
+
+## Public MCP tools
+
+These names are registered by the current server. `retest_finding` is the independent retest tool; there is no `security_remediation_retest` alias.
+
+| Purpose | Tools |
 | --- | --- |
-| CS-NODE-022 | A parsed WebSocket message supplies an identity directly to connection registration, without a visible verification call. |
-| CS-NODE-023 | A `/metrics` HTTP handler returns runtime metrics without a visible authentication guard. |
-| CS-NODE-024 | A WebSocket server has no explicit `maxPayload` while its message handler parses incoming data and passes it to sensitive processing. |
-| CS-NODE-025 | A request field flows through a local variable to `child_process.exec` or `execSync`. Fixed commands and `execFile` argument arrays are excluded. |
+| Project access and discovery | `list_files`, `read_file`, `search_files`, `get_project_info`, `analyze_project`, `run_command` |
+| Static security analysis | `scan_project`, `discover_routes`, `analyze_access_control`, `run_deep_security_audit`, `get_security_graph` |
+| Audit and investigation | `run_full_security_audit`, `start_security_audit`, `start_security_investigation`, `run_security_analysis`, `get_investigation`, `record_security_hypothesis`, `generate_security_report`, `get_security_finding` |
+| Controlled remediation | `propose_remediation`, `apply_remediation`, `remediate_finding`, `retest_finding`, `security_remediation_sweep`, `verify_remediation`, `rollback_remediation` |
+| Runtime proof | `list_verification_cases`, `verify_finding`, `list_security_proof_cases`, `prove_security_finding`, `request_runtime_verification` |
+| Audit orchestration | `dispatch_security_action`, `plan_security_investigation`, `get_security_audit_state`, `run_audit_analysis`, `record_audit_hypothesis`, `request_audit_verification`, `complete_security_audit`, `generate_security_audit_report`, `get_security_agent_instructions` |
 
-For example, a message handler that parses `data`, then calls `manager.registerUser(info.id, parsed.userId)`, can yield a high-severity CS-NODE-022 finding at the registration line. Results include a rule ID, severity, category, file and line, redacted source evidence, impact in the description, and remediation. A protected metrics handler or a server with an explicit `maxPayload` does not trigger the corresponding rule.
+Each tool advertises its input schema through MCP `tools/list`. Use those schemas for optional limits, runtime targets, sessions, and detailed responses. `start_security_audit` creates an audit session; `run_full_security_audit` runs the read-only pipeline in one call.
 
-These are static candidates. The analyzer does not prove that an upstream proxy lacks authentication or payload limits, and it cannot resolve every custom verifier or alias. It does not report missing Origin checks, generic rate limits, or `ws://` from absence alone; those require deployment context or stronger source evidence. The scanner reads bounded source files locally and does not execute or alter the target project.
+## Read-only and write boundaries
 
-Each static finding now includes an `impact` field alongside severity, confidence, source evidence, and remediation. If a legacy rule has no separate impact text, its description is used; this is explanatory text, not a claim of runtime verification. `status: "suspected"` and `verificationStatus: "not_verified"` remain the initial scanner state. `verify_finding` handles supported access-control candidates, while `prove_security_finding` and `run_full_security_audit` use registered proof adapters and an explicitly authorized local target. Other static findings stay unverified until a suitable proof path exists.
+| Operation | Reads target | Writes target source |
+| --- | --- | --- |
+| Discovery, scan, audit, investigation, reports | Yes | No |
+| Proposal and dry run | Yes | No |
+| Independent retest, verification, remediation sweep | Yes | No |
+| Explicitly authorized remediation apply | Yes | Yes, to the approved finding file |
+| Explicitly authorized rollback | Yes | Yes, restoring the recorded original bytes |
 
-The configured `projectRoot` should be the application directory containing `package.json`. Node analysis runs for that root. Python markers are recognized but Node rules do not run on Python projects. When an unknown root contains immediate child directories with Node manifests, `scan_project` warns with candidate directories and asks for an explicit application root; it does not automatically combine unrelated packages. Oversized source files and source trees beyond the AST walk depth limit are reported in scan warnings. Discovery reads at most 2 MB from each manifest or likely source file; an oversized `package.json` produces an explicit incomplete-discovery warning.
+Runtime verification can make bounded requests to an explicitly authorized local runtime target. It does not edit source files, but an operator should use an isolated target because HTTP requests can have application side effects. Normal scan and audit do not install dependencies or start the target application.
 
-CS-NODE-001 also scores hardcoded credential literals using their value and file context. Recognizable credential formats and long, varied values receive high confidence even in test or fixture files. Obvious markers such as `fake-key`, `dummy-api-key`, and `redacted` are skipped; weakly suggestive literals in test files are also skipped. An unrecognized production literal can still be reported at medium confidence. Entropy and naming are heuristics: they cannot prove whether a value is active, and a real credential with an obvious fixture marker may be missed. Evidence is redacted before it is returned.
+## Use CodeSentinel on a project
 
-### Scan report
+These are **MCP tool arguments**, not shell commands. Replace the example path and use IDs, file content, and hashes returned or computed for your own disposable project. Never copy an example hash or finding ID into a live call.
 
-Call `scan_project` with a per-call `projectRoot` or a configured `PROJECT_ROOT`. Its JSON result includes project identity, support status, nested project candidates and package manager, rule execution counts with skipped and failed rule reasons, bounded file coverage, finding counts by severity, category and confidence, individual redacted findings, warnings, a plain-language message, and limitations. Git worktree status is `not_checked`: static scanning does not invoke Git or project commands. `fileAnalysis.discovered` counts eligible JavaScript/TypeScript files and the root `package.json` within the bounded inventory; `analyzed` counts those actually read by a scanner rule. The inventory may be incomplete when `MAX_LIST_RESULTS` is reached.
+1. Select a root and run `scan_project` with `{"projectRoot":"/absolute/path/to/project"}`. Inspect `findings`, `rulesRun`, skipped files, and limitations. Run `run_full_security_audit` with the same `projectRoot` for the wider read-only audit.
+2. For a rule-backed finding, call `start_security_investigation` with `{"projectRoot":"/absolute/path/to/project","scope":["authorization"],"hypothesis":"Review the reported authorization finding."}`. Then call `run_security_analysis` with the returned `id` as `investigationId` and the same root. Use the investigation's finding ID for the proposal.
+3. Call `propose_remediation` with `projectRoot`, `investigationId`, `findingId`, `description`, `rationale`, `files`, `expectedSecurityEffect`, and `requiresRuntimeVerification`. The `files` field is an array of **objects**, not path strings. Each object has a root-relative `path`, the current `originalContentHash` as a lowercase SHA-256 hex digest, full `proposedContent`, and `description`. If `requiresRuntimeVerification` is `true`, supply `runtimeVerification` as required by the tool schema. Proposal creation does not write.
+4. Check the proposal and intentionally authorize a **local, non-production test target**. The apply and rollback authorization object is:
 
-An example finding has `ruleId: "CS-NODE-022"`, `severity: "high"`, `confidence: "medium"`, `file: "src/server.ts"`, `line: 196`, source-backed `evidence`, `impact`, `remediation`, `status: "suspected"`, and `verificationStatus: "not_verified"`. High confidence means strong static evidence; medium means useful evidence with possible external context; low needs more review. Confidence does not change severity.
+   ```json
+   {
+     "projectRoot": "/absolute/path/to/project",
+     "localTarget": true,
+     "allowRemediation": true,
+     "nonProductionTestTarget": true
+   }
+   ```
 
-Abbreviated example from a WebSocket scan (the actual result includes all findings, evidence, counts, and limitations):
+   `authorization.projectRoot` must equal the canonical selected root exactly. `apply_remediation` requires this authorization and the returned `proposalId` passed as `remediationId`. `remediate_finding` is the separate direct single-file strategy path; it also requires explicit authorization for a write.
+5. First call `apply_remediation` with `{"remediationId":"<returned proposal ID>","projectRoot":"/absolute/path/to/project","authorization":{...},"dryRun":true}`. This checks the change without changing target bytes. Then make a separate call with `dryRun: false` after reviewing the result. A successful controlled write reports `validated_pending_retest`, **not** `fixed` or `resolved`.
+6. Call `retest_finding` with the original scan `findingId` and `projectRoot`. Then call `security_remediation_sweep` with `projectRoot` and `remediationIds` containing the proposal ID. Inspect `findings.resolved`, `findings.stillVulnerable`, `findings.inconclusive`, `findings.unsupported`, `findings.blocked`, `newFindings`, and overall `securityStatus`. If needed, call `rollback_remediation` with the proposal ID, the same root, and the authorization object.
 
-```json
-{
-  "project": { "name": "realtime-10m-websocket-server", "ecosystem": "node", "support": "supported" },
-  "ruleExecution": { "executed": 25, "skipped": 0, "failed": 0 },
-  "summary": { "total": 3, "bySeverity": { "critical": 0, "high": 1, "medium": 2, "low": 0, "info": 0 } },
-  "findings": [{ "ruleId": "CS-NODE-022", "file": "src/server.ts", "line": 196, "severity": "high", "confidence": "medium", "status": "suspected", "verificationStatus": "not_verified" }],
-  "runtimeVerificationPerformed": false
-}
+The abbreviated `{...}` in step 5 means the complete authorization object shown above; it is explanatory notation, not literal JSON. The controlled proposal apply path currently accepts **exactly one finding file**, even though the proposal schema permits an array of structured file changes. Propose one file for a controlled write.
+
+### Safe disposable test workflow
+
+Create a temporary local Git repository with synthetic source and a supported rule-backed finding. Record its starting Git status and the target file's SHA-256. Run `scan_project` and require a real finding ID before proposing a change. Confirm an unauthorized apply is rejected and a dry run leaves the hash unchanged. Review the exact proposed content, then explicitly authorize the write, retest, sweep, and roll back while checking the restored hash. Remove the disposable repository only after collecting the results. Do not use production credentials or services.
+
+### Lifecycle states
+
+```text
+finding → proposal → authorization → dry_run → validated_pending_retest
+                                                ↓
+                           independent retest → resolved | still_present | inconclusive | blocked
+                                                ↓
+                                  sweep → remaining/new findings + coverage
+                                                ↓
+                                        rollback, if needed
 ```
 
-For a clean Node scan, `summary.total` is `0` and `message` states that no vulnerabilities were detected **by the enabled static rules**. It also reports rules run, file coverage and limits; zero findings does not prove the project secure. For an empty or unsupported root, the message says why rules did not run, and `rulesSkipped` explains each rule. Python, Go, and Rust are recognized by their root manifests but have no security rules yet. A root with immediate nested Node projects receives a warning asking for the intended application directory.
+`validated_pending_retest` means the proposed source change passed validation. It does not establish resolution. Retest independently rechecks the original condition against current source and uses supported runtime proof only when supplied and applicable. The sweep performs fresh analysis and separates original, remaining, and newly introduced findings. Unsupported and inconclusive work is never promoted to resolved merely because a static match disappeared.
 
-`run_full_security_audit` also merges broad, low-confidence deep-analysis review signals. Its finding count can be larger than `scan_project`'s rule-backed count, including on a project where the scanner reports zero findings. Deep-only entries have no `ruleId`, stay unsupported/unverified without an adapter, and require human review; their count is not a vulnerability count. In the current read-only validation fixtures, `scan_project` reports CS-NODE-022/023/024 for the WebSocket server and zero findings for TraceOps, while the unified audit additionally reports heuristic candidates in both projects.
+## Safety and scope
 
-An abbreviated clean result says: `{"summary":{"total":0},"message":"No vulnerabilities were detected by the enabled static-analysis rules. This does not prove the project is secure.","runtimeVerificationPerformed":false}`. Inspect `ruleExecution`, `fileAnalysis`, and `limitations` before deciding what further review is needed.
+- Roots and file paths are checked against the canonical selected project. Path traversal, symlink escapes, and cross-project remediation IDs are rejected.
+- Controlled writes require an eligible local test repository, explicit authorization, a matching original file hash, and a clean target state. Only the intended finding file may be changed by the controlled apply path.
+- Apply records original and changed SHA-256 hashes. Rollback checks the stored snapshot and current post-change hash before restoring the exact original bytes; unexpected later edits and repeated rollback are rejected.
+- Validation failure triggers guarded automatic rollback. Scan, audit, retest, and sweep stay read-only for target source files.
+- Evidence and reports use bounded output and redaction, but operators should still avoid scanning or transmitting secrets they are not authorized to handle.
 
-`scan_project` is read-only: it reads and parses bounded local files and never executes target code, package scripts, or network requests. Runtime proof is a separate, explicitly authorized workflow. A static finding remains suspected unless a registered proof adapter supplies a verified result.
+Only inspect, test, or modify projects you are authorized to access. Remediation is intended for a disposable or isolated local test target, with review before applying a change.
 
-## Recommended AI Workflow
+## Coverage and limits
 
-CodeSentinel works best with a highly structured workflow:
+The registered static security rules are `CS-NODE-001` through `CS-NODE-025` for detected Node.js projects. They cover indicators including credential exposure, injection, command execution, path traversal, SSRF, XSS, redirects, CORS, authentication and authorization, uploads, deserialization, configuration, dependency risk, CSRF, webhook signatures, mass assignment, password storage, and WebSocket security. Rule-backed matches are source-backed candidates, not universal exploit proofs.
 
-1. **discover project** (`analyze_project`)
-2. **scan project** (`scan_project`)
-3. **discover routes** (`discover_routes`)
-4. **analyze access control** (`analyze_access_control`)
-5. **investigate finding** (Create hypothesis using audit orchestration tools)
-6. **prove finding when supported** (`prove_security_finding`)
-7. **generate evidence/report** (`generate_security_audit_report`)
-8. **propose remediation** (`propose_remediation`)
-9. **apply controlled remediation only when explicitly authorized** (`apply_remediation`)
-10. **re-analyze** (Rerun analysis/proof tools)
-11. **replay proof** (`verify_remediation`)
-12. **report final verification state** (Mark audit completed)
+Project discovery recognizes Node.js, Python, Go, and Rust markers. The registered route adapters cover Express, Fastify, NestJS, Next.js, FastAPI, and Django. The current `scan_project` security rules run for detected Node.js roots; recognizing another ecosystem or discovering its routes does not mean it has equivalent rule coverage. Unsupported domains are reported as unsupported rather than passed. Heuristic review signals are counted separately from rule-backed findings.
 
-## Security Boundaries
+Runtime proof is limited to registered adapters and an authorized local target. Where proof-eligible findings exist but no authorized target is supplied, the audit reports blocked execution and an inconclusive security status. A completed static retest can resolve a supported original finding without establishing a universal runtime proof. Coverage gaps and unsupported or inconclusive conditions remain explicit.
 
-CodeSentinel explicitly enforces:
-- File paths are restricted to the configured `PROJECT_ROOT`.
-- Directory traversal (`../`) is blocked.
-- Shell commands (`run_command`) are restricted to a pre-defined allowlist.
-- Proof adapters (`prove_security_finding`, `run_full_security_audit`) execute only against loopback origins. `verify_finding` may additionally target a private-network origin only when `allowPrivateNetworkTarget` is set. Public hosts, hostnames other than `localhost`, cloud metadata addresses, and redirects that leave the configured origin are always rejected.
-- Protocol Integrity: Output logging is isolated to `stderr`, leaving `stdout` purely for JSON-RPC MCP messages.
-- Error schemas mask arbitrary file paths, environment variables, or token exposures.
+The controlled proposal apply path supports one finding file at a time. CodeSentinel does not automatically generate a correct fix for every finding, install target dependencies, guarantee full framework coverage, or certify the security of an entire application.
 
-## Runtime Proof
+## Verification evidence
 
-CodeSentinel distinguishes between theoretical vulnerabilities and **RUNTIME-PROVEN** vulnerabilities. The AI client cannot execute arbitrary requests to external targets; it can only invoke `prove_security_finding` against an explicitly authorized local target. A verified receipt records the bounded behavior established by its fixed semantic oracle; it does not prove every deployment or attack path is exploitable. Receipts are bound to both the canonical project root and target origin, so matching finding IDs in different projects cannot reuse proof state. Investigation and remediation operations are also bound to the project root where the investigation began. `prove_security_finding` returns `NOT_FOUND` for a finding ID that matches no scan or access-control finding, and an unknown ID creates no receipt and consumes no proof budget. For state-changing access-control proofs, a write is reported as a state change only when two baseline reads are identical and the post-write read differs, so volatile response fields cannot cause a false `verified`.
+A built-MCP integration test uses a disposable Git fixture with a genuine `CS-NODE-009` rule-backed finding. It exercises scan → investigation → structured proposal → unauthorized rejection → dry run → CodeSentinel file write → `validated_pending_retest` → independent static retest → sweep → authorized rollback. The test checks exact original SHA-256 restoration, cross-project rejection, unchanged unrelated files, and repeated-rollback rejection. This demonstrates that controlled writes work for that supported case; it does not generalize to every rule or runtime environment.
 
-## Remediation and Replay
+A separate real-project scan previously produced zero remediation-eligible rule-backed findings; unsupported heuristic signals were not counted as vulnerabilities. That result is not a claim that the project was secure or that a remediation was performed.
 
-When a finding is proven and a remediation is applied, CodeSentinel snapshots the files. You can invoke `verify_remediation` to replay the original payload. If the payload is successfully blocked (or resolved securely), the status is updated to **VERIFIED_RESOLVED**. If the remediation breaks deterministic functionality or fails the replay, `rollback_remediation` restores the files to their pre-remediation hashes.
+The full suite passed locally with **945 tests across 44 test files** during this README update. Re-run these commands after implementation changes to obtain a fresh result:
 
-### Controlled remediation foundation
-
-The read-only flow is `audit → findings → report`. It never invokes a write tool. The separate controlled flow is `finding → explicit authorization → patch → syntax validation → remediation receipt → pending security retest`.
-
-`remediate_finding` accepts an explicit canonical `projectRoot`, a confirmed or explicitly approved finding ID and root-relative file, a `patch` (one exact text span) or `replace` strategy, and `dryRun`. Write mode also requires `authorization` with the same canonical root and all three flags set to `true`: `localTarget`, `allowRemediation`, and `nonProductionTestTarget`. Missing or mismatched authorization produces a receipt with no write. Production-like paths, symlinked files, traversal, dirty target files, and repositories without readable Git status are rejected. Other pre-existing working-tree changes are preserved.
-
-Dry run calculates hashes and checks JavaScript, TypeScript, or JSON syntax without changing files. Write mode snapshots the original bytes and Git status, checks the original hash again before replacing the file, validates syntax after the write, and automatically restores the original bytes if validation fails. Receipts contain paths, hashes, status, a bounded change summary, and rollback outcome; they omit source contents and credentials. `validated_pending_retest` means the edit passed this narrow validation. **validated_pending_retest does not mean fixed.** No dependencies are installed and no target application is started by this operation.
-
-`retest_finding` is the established public MCP name for independent remediation retesting. It accepts the original `findingId` and selected `projectRoot` after a validated controlled remediation. It checks that the applied file still has its validated hash, then independently scans the current source and compares the original rule, file, finding class, and evidence. A changed line number does not change the lifecycle identity. For proof-eligible findings, supply an authorized isolated local `target` to replay a trusted before proof against the same origin. The tool is read-only for source files and returns structured before/after evidence and separate security, execution, and verification states.
-
-`rollback_remediation` accepts the `remediationId` returned by a successful `remediate_finding`, the exact `projectRoot`, and the same explicit authorization object required for the write. It restores the captured original bytes only while the file still matches the validated post-change hash. It rejects another project root, a symlinked or changed target, a superseded edit, and a repeated rollback. The receipt reports the original and restored SHA-256 hashes. Legacy proposal-based remediation rollback continues to use its existing investigation record.
-
-Example lifecycle: run a read-only audit, select a finding, explicitly authorize `remediate_finding`, receive `validated_pending_retest`, then call `retest_finding` with the original finding ID. `resolved` means a supported static retest no longer detects that condition or a trusted runtime proof no longer reproduces it at the same origin. `still_present` means the condition is detected again. `inconclusive` means the evidence cannot establish the outcome. `blocked` means a required execution prerequisite is unavailable; a missing runtime target returns `runtime_target_missing` and a recommended next step. `not_verifiable` means no supported verification method exists. No result claims that the whole project is secure. Audit and scan tools remain read-only; only explicitly authorized remediation can modify source.
-
-Controlled remediation baselines and proof receipts are bounded in-memory records. Retest the finding in the same running MCP server session; after a server restart, rerun the audit and establish a new remediation baseline. Runtime resolution requires a trusted before proof at the same authorized target origin.
-
-Phase 3 completes the lifecycle: finding → explicit authorization → remediation → validation → independent retest → full security sweep → final determination. Call `security_remediation_sweep` with the selected `projectRoot` after remediation. It independently retests each recorded finding, compares the pre-remediation fingerprint baseline with a fresh post-remediation scan, and reports `resolved`, `still_vulnerable`, `inconclusive`, `unsupported`, or `blocked` for each remediated finding. `newFindings` lists newly detected rule-backed findings separately; `uncertainFindings` lists post-scan findings whose changed evidence could not be matched confidently. A moved line is correlated by rule, file, finding class, route, and evidence fingerprint. A changed but uncertain condition remains inconclusive. The sweep also runs the read-only full audit pipeline to report detector coverage and source-tree integrity.
-
-`securityStatus` (`secure`, `inconclusive`, or `vulnerable`) describes the evidence-backed security result. `executionStatus` (`completed`, `blocked`, or `not_required`) describes runtime execution separately. Missing runtime targets and setup failures are blockers, never successful verification. Unsupported coverage prevents an automatic secure conclusion. **A zero static finding count alone does not prove that a vulnerability was resolved.** A validated edit, trusted retest, and complete post-remediation evidence chain are required. The in-memory baseline does not survive a server restart; an externally reverted file is rechecked and cannot retain a stale resolved result.
-
-The existing proposal-based `apply_remediation` and `rollback_remediation` write tools now require the same explicit authorization object. `verify_remediation` retains its existing separate replay behavior; neither audit nor scan invokes remediation automatically.
-
-## Demo
-
-CodeSentinel includes a comprehensive demo fixture under `tests/fixtures/security-cases`. The fixture contains realistic vulnerable routes (e.g. `vulnerable.ts` demonstrating SQLi, XSS, SSRF) and secure equivalents (`safe.ts`).
-
-You can point CodeSentinel at this directory (`export PROJECT_ROOT=$(pwd)/tests/fixtures/security-cases`) to explore its static scanner, route analysis, and semantic runtime proof capabilities safely.
-
-## Local Development
-
-1. Install dependencies: `npm ci`
-2. Build the project: `npm run build`
-3. Run the development server (for manual tests): `npm run dev`
-
-## Testing
-
-CodeSentinel relies on `vitest` for the test suite.
-
-```bash
-npm run test
-```
-*Note: Some Phase 6 and Phase 11 networking verification tests use explicit IP (127.0.0.1) network bindings. Ensure your environment permits local loopback binding when running tests.*
-
-## Production Deployment
-
-For production deployments, package CodeSentinel into an isolated container alongside the target codebase. Expose it solely via local stdin/stdout piping to the invoking MCP client.
-
-## Limitations
-
-- `inconsistent_authorization` only compares methods that share the same file and normalized resource path.
-- Weak password storage rules and cryptography misuse rules remain **STATIC-ONLY** and cannot be dynamically proven by CodeSentinel's runtime framework.
-- CodeSentinel requires the target codebase to be available on the local filesystem of the executing environment.
-- Complex IDOR analysis lacks full inter-procedural data-flow tracing; it relies on deterministic pattern heuristics.
-- `generate_security_report` fails closed with `REPORT_INVALID` for an investigation with more than 100 findings or 250 evidence items instead of truncating.
-- Receipts, remediation records, and investigations are held in memory and are lost on restart; stores are bounded.
-- A `NOT_FOUND` proof lookup re-runs the static scan and route discovery to confirm the ID is unknown; the cost is bounded per call.
-- Redaction is pattern-based; secret formats not covered by the shared redactor may still appear in evidence text.
-- Proof attempt budgets (10 per finding, 500 per process) are held in memory and reset on restart.
-- Reflected-XSS proof verifies only when the server returns the probe value unescaped.
-- Body-marker and open-redirect proof adapters verify only against servers that emit their fixed marker, so real applications may produce false negatives, never false positives from a generic response.
-- The permissive-CORS proof sends no Origin header and does not detect servers that reflect the request origin.
-- Access-control remediation replay is refused unless the replay origin matches the origin of the original verified runtime result; only the refusal path has an end-to-end test.
-- Several guarantees (static rules, route and access analysis) are covered by behavioral tests rather than formal analysis.
-
-## Unified audit pipeline
-
-`run_full_security_audit` runs one read-only, deterministic audit over the configured `PROJECT_ROOT`. No LLM or API key is involved.
-
-### Stages
-
-`discovery` → `route_discovery` → `static_scan` → `access_control` → `deep_analysis` → `candidate_classification` → `runtime_proof` → `graph_construction` → `report`
-
-Each stage is recorded with status (`completed`, `skipped`, `failed`, `blocked`), duration, and item count. A failed optional stage records a structured issue (`stage`, `code`, safe `message`, `recoverable`, `affectedFindings`) and the audit continues. Route, scan, and access results are computed once and shared with deep analysis and graph construction.
-
-### Audit context
-
-An internal `AuditContext` carries the profile, route inventory, stage outputs, merged findings, receipts, remediation records, graph, issues, stage records, and execution limits between stages. It is in-memory and never persisted. The returned result is a bounded, redacted projection: no credentials, cookies, authorization headers, tokens, or raw request data.
-
-### Finding identity and merging
-
-Each finding gets a deterministic ID `cs-<hash>` derived from the canonical category, normalized file, route (or line for source findings), and, only when neither file nor route exists, the title. Findings from the scanner, access-control analysis, and deep analysis that share an identity are merged into one finding with all sources and stages listed. Deep-analysis findings that wrap a scanner or access finding are merged by source ID. Random IDs are used only for run identifiers (`runId`) and receipts' own identifiers.
-
-### Finding lifecycle
-
-`candidate → analyzed → proof_eligible → verified`, or `candidate/analyzed → unsupported | blocked | inconclusive`, or `proof_eligible → not_reproduced | inconclusive | blocked`. After remediation: `verified → remediation_applied → verified_resolved`.
-
-`verified` can only be reached through a receipt from a registered executable adapter with a verified semantic oracle. A regex match, an existing route, an HTTP 200, a successful request, a static rule, or a differing response never verifies a finding. `verified_resolved` additionally requires a `verified_resolved` remediation record and a `not_reproduced` replay receipt.
-
-### Proof classification
-
-Phase 4 adds a per-finding `verification` assessment to `run_full_security_audit`. It reports the audit finding ID, source rule IDs, original severity and confidence, `verificationStatus`, existing `proofStatus`, proof method, bounded source evidence, limitations, safety constraints, and receipt IDs. The scanner still emits `suspected` / `not_verified`; the assessment does not mutate scanner findings. `verificationStatus` is `not_verified` for an eligible candidate or a safe negative result, `not_verifiable` when no registered adapter can test the claim, `verification_failed` when an attempted proof is blocked or inconclusive, and `verified` only after the existing receipt and semantic oracle checks pass. The detailed `proofStatus` distinguishes `eligible`, `not_reproduced`, `blocked`, and `inconclusive`.
-
-For example, a CS-NODE-022 source trace from a parsed WebSocket message into `registerUser` reports `static_source_to_sink_trace` but remains `not_verifiable` without an authorized adapter that can prove the deployed identity boundary. CS-NODE-023 may be protected by a proxy or network policy, and CS-NODE-024 may be bounded by the `ws` default payload limit. Neither finding is promoted from source evidence alone.
-
-The proof adapter registry is the single source of truth, queried through `resolveProofSupport`. Each finding reports:
-
-- `proofSupport`: `runtime` (a registered adapter handles this class), `requires-adapter` (a proof type exists but no executable adapter), or `static-only`.
-- `proofStatus`: `eligible`, `unsupported`, `blocked`, or the receipt outcome (`verified`, `not_reproduced`, `inconclusive`, `blocked`).
-
-`runtime` / `eligible` means a proof can be attempted; it is not a claim that a proof ran.
-
-### Runtime verification
-
-Runtime proof runs only when `target` is supplied, is bounded by `maxProofAttempts`, and goes through `proveSecurityFinding`, which applies the existing target guard (loopback or explicitly authorized origin), session, request, redirect, timeout, response-size, and destructive-method controls. Existing receipts are reused instead of repeating a verified proof.
-
-### Security graph
-
-The graph contains files, routes, handlers, middleware, authentication boundaries, authorization checks, ownership checks, findings, proof receipts, and remediation records, joined by evidence-backed edges. It is not an AST or taint graph. Pass `includeGraph: true` to include nodes and edges (capped); otherwise only counts are returned.
-
-### Remediation and replay
-
-The audit never applies remediation. Pass `investigationId` to attach remediation records (from `propose_remediation` / `apply_remediation` / `verify_remediation`) and replay receipts. Findings whose remediation was verified and replayed as `not_reproduced` appear as `verified_resolved`.
-
-### Per-finding scoring and advisory output
-
-Each finding carries a deterministic `riskScore` (0-100, computed from final state), a redacted, bounded `evidenceSynthesis` naming only the engines that contributed, and `correlation` metadata when more than one source contributed. `nearDuplicates` lists advisory groups of structurally similar findings; it never merges findings, changes IDs, lifecycle or proof eligibility, or adds graph edges. This audit result is the report surface for these fields; the investigation-based `generate_security_report` is a separate workflow that does not consume `AuditResult`. Each of its findings carries its own deterministic `riskScore`, a redacted, bounded `evidenceSynthesis` and a read-only `remediationState`, derived from that finding's investigation data with the same scoring and synthesis functions. Runtime verification is described only when a runtime result exists. Neither field nor any remediation record changes a finding's `status`, which comes only from runtime verification. Correlation and `nearDuplicates` are not part of that report because investigation findings are never merged across engines. Investigation views and reports share one redactor, which covers bearer, Basic, JWT, `sk_`-style keys, URL credentials, PEM keys, secret-like pairs, and `Cookie`/`Set-Cookie` header lines.
-
-### Report
-
-The result lists, per finding: stable ID, category, severity, confidence, status, proof support, proof status, file, line, route, evidence, remediation status, and replay status, plus summary counts (total, per severity, runtime verified, static-only, unsupported, blocked, inconclusive, resolved), stage records, issues, and limitations.
-
-### Read-only behavior and safety
-
-No stage writes to the project. The result reports `readOnly.sourceTreeUnchanged`, computed from file size and modification time before and after the run (bounded by `MAX_LIST_RESULTS`). Existing path guards, command allowlist, and Phase 6 runtime controls are unchanged.
-
-### Limitations
-
-- Deep-analysis findings are line-pattern heuristics and stay static-only unless merged into a finding a registered adapter handles.
-- Each proof attempt re-derives the route inventory inside the proof engine.
-- Receipts and remediation records live in memory only.
-- Remediation and replay status requires the same server process and an `investigationId`.
-- Runtime proof covers only the classes registered in the proof adapter registry.
-
-## Analyze Any Local Project
-
-You do not need to copy or clone your project into CodeSentinel. Install CodeSentinel anywhere and point it at any local directory.
-
-**Option 1: pass `projectRoot` in the tool call (no config edits per project).**
-
-```json
-{ "name": "scan_project", "arguments": { "projectRoot": "/absolute/path/to/your/project" } }
+```sh
+npm test
+npx tsc --noEmit
+npm run build
+git diff --check
 ```
 
-Ask Claude: "Scan this project: /Users/me/my-project". `projectRoot` must be an absolute path to an existing directory and must not be a symbolic link. It is supported by these read-only tools: `get_project_info`, `scan_project`, `analyze_project`, `list_files`, `read_file`, `search_files`, `get_security_graph`, `discover_routes`, `analyze_access_control`, `run_deep_security_audit`, `list_verification_cases`, and `list_security_proof_cases`. File paths inside the project still cannot escape it.
+Some integration tests bind to local loopback addresses. A restricted execution environment that denies loopback sockets may fail those tests before their assertions run.
 
-**Option 2: set `PROJECT_ROOT` as a default.**
+## Development and troubleshooting
 
-```json
-{ "mcpServers": { "codesentinel": { "command": "node", "args": ["/path/to/security-auditor-mcp/dist/index.js"], "env": { "PROJECT_ROOT": "/absolute/path/to/your/project" } } } }
+| Symptom | Check |
+| --- | --- |
+| MCP tools are missing or old | Run `npm run build`, restart the MCP client, and verify its configured `dist/index.js` path. |
+| `PROJECT_ROOT` error | Supply an absolute `projectRoot` to an explicit-root tool or configure `PROJECT_ROOT` for the server. |
+| `EPERM` while Vitest writes `node_modules/.vite-temp` | Check local ownership and write permission of `node_modules` and its `.vite-temp` directory; run tests as a user allowed to write there. |
+| Remediation rejected for a dirty target | Use a clean disposable Git checkout and inspect the rejection; do not bypass the guard. |
+| Original or post-change hash mismatch | Re-scan or re-propose from the current file; rollback will not overwrite unrelated newer edits. |
+| Runtime target missing or proof unsupported | Provide an authorized isolated local target when the adapter supports it; otherwise retain the blocked or unsupported classification. |
+
+The source layout is:
+
+```text
+src/
+  index.ts                MCP stdio entrypoint
+  tools/                 Public tool registry and project metadata
+  discovery/             Project profile detection
+  security/              Static scanner and rule registry
+  routes/ and access/    Route and access-control analysis
+  audit/ and investigation/  Audit pipeline and investigation state
+  proof/ and runtime/    Bounded runtime verification
+  remediation/           Proposal, controlled apply, retest, sweep, rollback
+  report/ and validation/  Reports, redaction, and input schemas
+tests/                   Unit and MCP integration tests
 ```
 
-An explicit `projectRoot` always overrides `PROJECT_ROOT`. If neither is provided, the tool returns: `Project root is required: pass projectRoot or set PROJECT_ROOT`.
+Contributions should include evidence-backed tests for changed behavior and preserve the project-root and authorization boundaries. Report suspected security issues privately to the maintainer rather than publishing exploit details in a public issue.
 
-`remediate_finding` accepts an explicit `projectRoot`; proposal-based remediation operations remain bound to their investigation root. Audits and scans remain read-only regardless of the selected root.
+## License
+
+`package.json` declares the package license as ISC. This repository currently has no separate `LICENSE` file; check the package metadata before redistribution.
