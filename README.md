@@ -1,4 +1,4 @@
-![CodeSentinel](./R.png)
+<p align="center"><img src="./R.png" alt="CodeSentinel" width="400"></p>
 
 # CodeSentinel 🛡️
 
