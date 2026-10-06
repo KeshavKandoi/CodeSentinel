@@ -29,3 +29,11 @@ coverage/
 
 # TypeScript build info
 *.tsbuildinfo
+
+# Local caches and scratch directories
+.cache/
+/.tmp/
+/tmp/
+
+# Interrupted controlled-remediation staging files
+*.codesentinel-*.tmp
