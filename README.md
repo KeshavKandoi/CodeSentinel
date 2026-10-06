@@ -164,6 +164,3 @@ Potential next steps for maintainer discussion: broader rule/proof coverage, a d
 
 Keep changes focused, include regression coverage, and run the development checks before submitting a pull request. Preserve project isolation and explicit authorization. Use disposable fixtures and synthetic data; never include secrets or private target source in reports. For ordinary bugs, open an [issue](https://github.com/KeshavKandoi/CodeSentinel/issues) with a minimal, redacted reproduction.
 
-## License
-
-`package.json` declares ISC, but this repository does not currently contain a license file. The maintainer should confirm the intended license and add its full text.
