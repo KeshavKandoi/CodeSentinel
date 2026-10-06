@@ -7,14 +7,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../../src/config.js';
 import { toolDefinitions } from '../../src/tools/registry.js';
 import { resetInvestigationsForTests } from '../../src/investigation/orchestrator.js';
-import { listRemediationsForInvestigation, resetRemediationsForTests } from '../../src/remediation/engine.js';
+import { applyRemediation, listRemediationsForInvestigation, resetRemediationsForTests } from '../../src/remediation/engine.js';
+import { applyRemediationSchema, safeValidate } from '../../src/validation/schemas.js';
 
 const roots: string[] = [];
 const configFor = (root: string): AppConfig => ({ projectRoot: root, commandTimeoutMs: 5000, maxOutputBytes: 1_000_000, maxReadFileBytes: 2_000_000, maxListResults: 2_000 });
 function tool(name: string) {
   const item = toolDefinitions.find((entry) => entry.name === name);
   if (!item) throw new Error(`missing tool ${name}`);
-  if (name !== 'apply_remediation' && name !== 'rollback_remediation') return item;
+  if (name === 'apply_remediation') return { ...item, handler: async (config: AppConfig, input: any) => {
+    const parsed = safeValidate(applyRemediationSchema, { ...input, authorization: { projectRoot: config.projectRoot, localTarget: true, allowRemediation: true, nonProductionTestTarget: true } });
+    if (!parsed.ok) return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: 'INVALID_INPUT', message: parsed.message }) }] };
+    const outcome = await applyRemediation(config, input.remediationId, { projectRoot: config.projectRoot, localTarget: true, allowRemediation: true, nonProductionTestTarget: true });
+    return { isError: !outcome.ok, content: [{ type: 'text', text: JSON.stringify(outcome.ok ? outcome.data : { error: outcome.error.code, message: outcome.error.message }) }] };
+  } };
+  if (name !== 'rollback_remediation') return item;
   return { ...item, handler: (config: AppConfig, input: any) => item.handler(config, { ...input, authorization: { projectRoot: config.projectRoot, localTarget: true, allowRemediation: true, nonProductionTestTarget: true } }) };
 }
 function body(response: { content: Array<{ text: string }> }) { return JSON.parse(response.content[0]!.text) as any; }

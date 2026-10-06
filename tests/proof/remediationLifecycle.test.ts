@@ -9,7 +9,7 @@ import type { AppConfig } from '../../src/config.js';
 import { toolDefinitions } from '../../src/tools/registry.js';
 import { linkSecurityReceiptToRemediation, listSecurityReceiptsForFinding, proveSecurityFinding, replaySecurityProof, resetSecurityProofsForTests } from '../../src/proof/engine.js';
 import { resetInvestigationsForTests } from '../../src/investigation/orchestrator.js';
-import { resetRemediationsForTests } from '../../src/remediation/engine.js';
+import { applyRemediation, resetRemediationsForTests } from '../../src/remediation/engine.js';
 
 const vulnerableFixture = fs.realpathSync(fileURLToPath(new URL('../fixtures/proof-runtime/vulnerable', import.meta.url)));
 const secureSource = fs.readFileSync(fileURLToPath(new URL('../fixtures/proof-runtime/secure/src/app.ts', import.meta.url)), 'utf8');
@@ -23,7 +23,11 @@ const pending: http.ServerResponse[] = [];
 function tool(name: string) {
   const found = toolDefinitions.find((item) => item.name === name);
   if (!found) throw new Error(`Missing tool ${name}`);
-  if (name !== 'apply_remediation' && name !== 'rollback_remediation') return found;
+  if (name === 'apply_remediation') return { ...found, handler: async (config: AppConfig, input: any) => {
+    const outcome = await applyRemediation(config, input.remediationId, { projectRoot: config.projectRoot, localTarget: true, allowRemediation: true, nonProductionTestTarget: true });
+    return { isError: !outcome.ok, content: [{ type: 'text', text: JSON.stringify(outcome.ok ? outcome.data : { error: outcome.error.code, message: outcome.error.message }) }] };
+  } };
+  if (name !== 'rollback_remediation') return found;
   return { ...found, handler: (config: AppConfig, input: any) => found.handler(config, { ...input, authorization: { projectRoot: config.projectRoot, localTarget: true, allowRemediation: true, nonProductionTestTarget: true } }) };
 }
 
