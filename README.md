@@ -1,10 +1,10 @@
+# CodeSentinel
+
 <div align="center">
 
 <img src="./readme.png" alt="CodeSentinel — Find. Fix. Verify." width="100%">
 
 </div>
-
-# CodeSentinel
 
 **Find. Fix. Verify.**
 
@@ -20,7 +20,7 @@ FIND → INVESTIGATE → PROPOSE → AUTHORIZE → DRY RUN → APPLY
 
 **A successful file change is not a resolved vulnerability.** CodeSentinel keeps a remediation at `validated_pending_retest` until independent retesting examines the original finding. A resolved finding does not imply that the entire project is secure.
 
-## What is CodeSentinel?
+## What CodeSentinel Does
 
 CodeSentinel analyzes a selected local application, reports rule-backed security candidates with source evidence, and supports a guarded path from finding to file change. The operator or MCP client supplies the proposed content; CodeSentinel validates the proposal and controls the write.
 
@@ -78,25 +78,18 @@ For MCP clients that accept an `mcpServers` JSON entry, configure a local stdio 
 
 The `env` block is optional when using tools that accept a per-call `projectRoot`. Register the same `node` command and absolute entrypoint in clients with a different MCP configuration format. Restart the client after changing the configuration or rebuilding the server, then use its tool discovery interface (`tools/list`) to confirm the registered tools and input schemas. The selected project must be accessible to the server process. CodeSentinel does not provide a hosted endpoint.
 
-### Claude Code
+For clients that use a TOML MCP configuration, the same stdio command is:
 
-Build first, then register the local stdio server using the absolute path to this repository's `dist/index.js`:
+```toml
+[mcp_servers.codesentinel]
+command = "node"
+args = ["/absolute/path/to/CodeSentinel/security-auditor-mcp/dist/index.js"]
 
-```sh
-claude mcp add --transport stdio codesentinel -- node /absolute/path/to/CodeSentinel/security-auditor-mcp/dist/index.js
-claude mcp list
+[mcp_servers.codesentinel.env]
+PROJECT_ROOT = "/absolute/path/to/project"
 ```
 
-Set an optional default root during registration with `--env PROJECT_ROOT=/absolute/path/to/project` before `--transport stdio`. Check the connection with `claude mcp get codesentinel` or `/mcp` inside the client. The `--` separates client options from the server command.
-
-### Codex
-
-```sh
-codex mcp add codesentinel -- node /absolute/path/to/CodeSentinel/security-auditor-mcp/dist/index.js
-codex mcp list
-```
-
-For an optional default root, add `--env PROJECT_ROOT=/absolute/path/to/project` before `--`. Both clients can also call supported tools with an explicit `projectRoot`, which overrides the server default.
+Use the format supported by your client. The environment entry is optional when calling a tool that accepts an explicit `projectRoot`; that argument overrides the server default. Confirm the connection through the client's MCP tool list and check that `scan_project` is available.
 
 ## Security Workflow
 
@@ -169,7 +162,7 @@ These names come from the current MCP registry. `retest_finding` is the independ
 
 Use MCP `tools/list` for the exact schema of each operation. Read-only tools can still perform bounded local runtime HTTP requests when an authorized target is supplied; source-file read-only status does not guarantee the running application has no side effects.
 
-## Security Model
+## Security Boundaries
 
 | Operation | Reads project | Writes project source |
 | --- | --- | --- |
@@ -185,7 +178,7 @@ Use MCP `tools/list` for the exact schema of each operation. Read-only tools can
 
 Only audit projects you are authorized to inspect. Use an isolated, disposable local repository for remediation and runtime testing. Normal scans and audits do not install target dependencies or start the target application.
 
-## Coverage and Limitations
+## Supported Coverage
 
 The current static rule registry contains `CS-NODE-001` through `CS-NODE-025` for detected Node.js projects. The rules cover indicators of secrets exposure, injection, command execution, path traversal, SSRF, XSS, redirects, CORS, authentication and authorization, uploads, deserialization, insecure configuration, dependency risk, CSRF, webhook signature handling, mass assignment, weak password storage, and WebSocket security. These are source-backed candidates, not proof that every path is exploitable.
 
@@ -193,15 +186,17 @@ Project discovery recognizes Node.js, Python, Go, and Rust markers. Route adapte
 
 Runtime proof exists only for registered adapters and authorized local targets. If proof-eligible findings lack an authorized runtime target, execution is blocked and security status remains inconclusive. Static retesting can establish resolution for a supported original finding without proving the whole application secure. An empty scan has the same limitation: review skipped files, failed rules, and unsupported domains before interpreting it.
 
-The controlled proposal apply path is limited to one finding file. CodeSentinel does not generate a correct fix for every rule, install dependencies into a target project, provide universal runtime proof, or certify whole-project security.
+## Limitations
 
-## Verified Capabilities
+The controlled proposal apply path is limited to one finding file. CodeSentinel does not generate a correct fix for every rule, install dependencies into a target project, provide universal runtime proof, or certify whole-project security. Static findings are candidates until supported verification establishes more; unsupported and inconclusive results remain explicit.
+
+## Project Status
 
 A built-MCP integration test uses a disposable Git fixture with a genuine `CS-NODE-009` scanner finding. It exercises investigation, structured proposal creation, unauthorized-write rejection, a write-free dry run, CodeSentinel's controlled file write, validation, independent static retest, a security sweep, and authorized rollback with exact original SHA-256 restoration. It also checks cross-project rejection, unchanged unrelated files, and repeated-rollback protection.
 
 That test demonstrates this lifecycle for one supported rule and fixture. It does not establish that every finding can be remediated or that a project with one resolved finding is secure. When coverage or proof is incomplete, the sweep can classify overall security as inconclusive even if the original finding is resolved.
 
-## Development & Testing
+## Development
 
 From `security-auditor-mcp/`:
 
