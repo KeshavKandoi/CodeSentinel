@@ -1,10 +1,6 @@
+![CodeSentinel](./R.png)
+
 # CodeSentinel 🛡️
-
-<div align="center">
-
-<img src="./readme.png" alt="CodeSentinel banner" width="100%">
-
-</div>
 
 **A local MCP security auditor with controlled remediation and independent verification.**
 
